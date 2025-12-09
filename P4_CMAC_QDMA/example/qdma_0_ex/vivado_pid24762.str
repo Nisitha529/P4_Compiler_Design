@@ -1,0 +1,252 @@
+/*
+
+AMD Vivado v2023.2 (64-bit) [Major: 2023, Minor: 2]
+SW Build: 4029153 on Fri Oct 13 20:13:54 MDT 2023
+IP Build: 4028589 on Sat Oct 14 00:45:43 MDT 2023
+IP Build: 4028589 on Sat Oct 14 00:45:43 MDT 2023
+
+Process ID (PID): 24762
+License: Customer
+Mode: GUI Mode
+
+Current time: 	Tue Dec 09 22:48:07 IST 2025
+Time zone: 	India Standard Time (Asia/Colombo)
+
+OS: Ubuntu
+OS Version: 6.8.0-87-generic
+OS Architecture: amd64
+Available processors (cores): 8
+LSB Release Description: DISTRIB_ID=Ubuntu
+
+Display: 1
+Screen size: 1920x1080
+Local screen bounds: x = 70, y = 27, width = 1850, height = 1053
+Screen resolution (DPI): 100
+Available screens: 2
+Default font: family=Dialog,name=Dialog,style=plain,size=12
+Scale size: 12
+OS font scaling: 100%
+Anti-Alias Enabled: false
+
+Java version: 	17.0.7 64-bit
+JavaFX version: 17.0.1
+Java home: 	/tools/Xilinx/Vivado/2023.2/tps/lnx64/jre17.0.7_7
+Java executable: 	/tools/Xilinx/Vivado/2023.2/tps/lnx64/jre17.0.7_7/bin/java
+Java arguments: 	[-Dsun.java2d.pmoffscreen=false, -Dhttps.protocols=TLSv1,TLSv1.1,TLSv1.2, -Dsun.java2d.xrender=false, -Djdk.gtk.version=2, -Dsun.java2d.uiScale.enabled=false, -Dswing.aatext=true, -XX:-UsePerfData, -Djdk.map.althashing.threshold=512, -XX:StringTableSize=4072, -XX:+UseStringDeduplication, -XX:MaxGCPauseMillis=200, -XX:+ParallelRefProcEnabled, --add-opens=java.desktop/javax.swing.plaf.synth=ALL-UNNAMED, --add-opens=java.base/java.nio=ALL-UNNAMED, --add-opens=java.desktop/sun.swing=ALL-UNNAMED, --add-opens=java.desktop/javax.swing=ALL-UNNAMED, --add-opens=java.desktop/javax.swing.tree=ALL-UNNAMED, --add-opens=java.desktop/javax.swing.plaf.basic=ALL-UNNAMED, --add-opens=java.desktop/javax.swing.plaf.synth=ALL-UNNAMED, --add-opens=java.desktop/javax.swing.plaf.basic=ALL-UNNAMED, --add-opens=java.desktop/javax.swing=ALL-UNNAMED, --add-opens=java.desktop/javax.swing.tree=ALL-UNNAMED, --add-opens=java.desktop/java.awt.event=ALL-UNNAMED, --add-exports=java.desktop/javax.swing.plaf.synth=ALL-UNNAMED, --add-exports=java.base/java.nio=ALL-UNNAMED, --add-exports=java.desktop/sun.swing=ALL-UNNAMED, --add-exports=java.desktop/javax.swing=ALL-UNNAMED, --add-exports=java.desktop/javax.swing.tree=ALL-UNNAMED, --add-exports=java.desktop/javax.swing.plaf.basic=ALL-UNNAMED, --add-exports=java.desktop/sun.swing=ALL-UNNAMED, --add-exports=java.desktop/sun.swing.table=ALL-UNNAMED, --add-exports=java.desktop/sun.swing.plaf.synth=ALL-UNNAMED, --add-exports=java.desktop/sun.awt.shell=ALL-UNNAMED, --add-exports=java.base/sun.security.action=ALL-UNNAMED, --add-exports=java.desktop/sun.font=ALL-UNNAMED, --add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED, -XX:NewSize=80m, -XX:MaxNewSize=80m, -Xms512m, -Xmx4072m, -Xss10m, -Xrs]
+Java initial memory (-Xms): 	512 MB
+Java maximum memory (-Xmx):	 3 GB
+
+User name: 	nisitha
+User home directory: /home/nisitha
+User working directory: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex
+User country: 	US
+User language: 	en
+User locale: 	en_US
+
+RDI_BASEROOT: /tools/Xilinx/Vivado
+HDI_APPROOT: /tools/Xilinx/Vivado/2023.2
+RDI_DATADIR: /tools/Xilinx/SharedData/2023.2/data:/tools/Xilinx/Vivado/2023.2/data
+RDI_BINDIR: /tools/Xilinx/Vivado/2023.2/bin
+
+Vivado preferences file: /home/nisitha/.Xilinx/Vivado/2023.2/vivado.xml
+Vivado preferences directory: /home/nisitha/.Xilinx/Vivado/2023.2/
+Vivado layouts directory: /home/nisitha/.Xilinx/Vivado/2023.2/data/layouts
+PlanAhead jar file: 	/tools/Xilinx/Vivado/2023.2/lib/classes/planAhead.jar
+Vivado log file: 	/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/vivado.log
+Vivado journal file: 	/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/vivado.jou
+Engine tmp dir: 	./.Xil/Vivado-24762-nisitha-laptop
+Non-Default Parameters:	[]
+
+Xilinx & AMD Environment Variables
+--------------------------------------------------------------------------------------------
+GNOME_SHELL_SESSION_MODE: ubuntu
+RDI_APPROOT: /tools/Xilinx/Vivado/2023.2
+RDI_BASEROOT: /tools/Xilinx/Vivado
+RDI_BINROOT: /tools/Xilinx/Vivado/2023.2/bin
+RDI_BUILD: yes
+RDI_DATADIR: /tools/Xilinx/SharedData/2023.2/data:/tools/Xilinx/Vivado/2023.2/data
+RDI_INSTALLROOT: /tools/Xilinx
+RDI_INSTALLVER: 2023.2
+RDI_JAVA_PLATFORM: 
+RDI_JAVA_VERSION: 17.0.7_7
+RDI_LIBDIR: /tools/Xilinx/Vivado/2023.2/lib/lnx64.o/Ubuntu/22:/tools/Xilinx/Vivado/2023.2/lib/lnx64.o/Ubuntu:/tools/Xilinx/Vivado/2023.2/lib/lnx64.o
+RDI_OPT_EXT: .o
+RDI_PATCHROOT: 
+RDI_PLATFORM: lnx64
+RDI_PREPEND_PATH: /tools/Xilinx/Vitis/2023.2/bin:/tools/Xilinx/Vivado/2023.2/ids_lite/ISE/bin/lin64
+RDI_PROG: /tools/Xilinx/Vivado/2023.2/bin/unwrapped/lnx64.o/vivado
+RDI_SESSION_INFO: /home/nisitha:nisitha-laptop_1765294736_4856
+RDI_SHARED_DATA: /tools/Xilinx/SharedData/2023.2/data
+RDI_TPS_ROOT: /tools/Xilinx/Vivado/2023.2/tps/lnx64
+RDI_USE_JDK17: True
+SHELL: /bin/bash
+XILINX: /tools/Xilinx/Vivado/2023.2/ids_lite/ISE
+XILINX_DSP: /tools/Xilinx/Vivado/2023.2/ids_lite/ISE
+XILINX_HLS: /tools/Xilinx/Vitis_HLS/2023.2
+XILINX_PLANAHEAD: /tools/Xilinx/Vivado/2023.2
+XILINX_SDK: /tools/Xilinx/Vitis/2023.2
+XILINX_VITIS: /tools/Xilinx/Vitis/2023.2
+XILINX_VIVADO: /tools/Xilinx/Vivado/2023.2
+XILINX_VIVADO_HLS: /tools/Xilinx/Vivado/2023.2
+
+
+GUI allocated memory:	512 MB
+GUI max memory:		4,072 MB
+Engine allocated memory: 1,458 MB
+
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2023 Advanced Micro Devices, Inc. All Rights Reserved.
+
+*/
+
+// TclEventType: START_GUI
+// Tcl Message: start_gui 
+// TclEventType: START_PROGRESS_DIALOG
+// Tcl Message: source /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/ip/qdma_0/qdma_0_ex.tcl -notrace 
+// TclEventType: DEBUG_PROBE_SET_CHANGE
+// TclEventType: FLOW_ADDED
+// Tcl Message: INFO: [open_example_project] Creating new example project... 
+// HMemoryUtils.trashcanNow. Engine heap size: 1,520 MB. GUI used memory: 72 MB. Current time: 12/9/25, 10:48:08 PM IST
+// TclEventType: FILE_SET_NEW
+// TclEventType: RUN_ADD
+// TclEventType: RUN_CURRENT
+// TclEventType: PROJECT_DASHBOARD_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_DASHBOARD_GADGET_NEW
+// TclEventType: PROJECT_DASHBOARD_GADGET_CHANGE
+// TclEventType: PROJECT_NEW
+// [GUI Memory]: 103 MB (+105210kb) [00:00:48]
+// [Engine Memory]: 1,765 MB (+1698888kb) [00:00:48]
+// [GUI Memory]: 129 MB (+21852kb) [00:00:49]
+// [GUI Memory]: 140 MB (+5231kb) [00:00:50]
+// WARNING: HEventQueue.dispatchEvent() is taking  4137 ms.
+// TclEventType: FILE_SET_OPTIONS_CHANGE
+// WARNING: HEventQueue.dispatchEvent() is taking  1036 ms.
+// HMemoryUtils.trashcanNow. Engine heap size: 1,888 MB. GUI used memory: 76 MB. Current time: 12/9/25, 10:48:28 PM IST
+// Tcl Message: INFO: [IP_Flow 19-234] Refreshing IP repositories INFO: [IP_Flow 19-1704] No user IP repositories specified INFO: [IP_Flow 19-2313] Loaded Vivado IP repository '/tools/Xilinx/Vivado/2023.2/data/ip'. 
+// TclEventType: FILE_SET_OPTIONS_CHANGE
+// [Engine Memory]: 1,889 MB (+37597kb) [00:00:52]
+// TclEventType: FILE_SET_OPTIONS_CHANGE
+// TclEventType: RUN_MODIFY
+// TclEventType: CREATE_IP_CATALOG
+// TclEventType: PART_MODIFIED
+// TclEventType: BOARD_MODIFIED
+// Tcl Message: create_project: Time (s): cpu = 00:00:43 ; elapsed = 00:00:25 . Memory (MB): peak = 7918.125 ; gain = 471.723 ; free physical = 234 ; free virtual = 6038 
+// Tcl Message: INFO: [open_example_project] Importing original IP ... 
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// HMemoryUtils.trashcanNow. Engine heap size: 1,932 MB. GUI used memory: 105 MB. Current time: 12/9/25, 10:48:34 PM IST
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// Tcl Message: INFO: [open_example_project] Generating the example project IP ... 
+// Tcl Message: INFO: [IP_Flow 19-1706] Not generating 'Instantiation Template' target for IP 'qdma_0'. Target already exists and is up to date. INFO: [IP_Flow 19-1706] Not generating 'Synthesis' target for IP 'qdma_0'. Target already exists and is up to date. INFO: [IP_Flow 19-1706] Not generating 'Simulation' target for IP 'qdma_0'. Target already exists and is up to date. INFO: [IP_Flow 19-1706] Not generating 'Implementation' target for IP 'qdma_0'. Target already exists and is up to date. 
+// Tcl Message: INFO: [open_example_project] Adding example synthesis HDL files ... INFO: [open_example_project] Adding example synthesis miscellaneous files ... INFO: [open_example_project] Adding example XDC files ... INFO: [open_example_project] Adding simulation HDL files ... 
+// TclEventType: FILE_SET_CHANGE
+// Tcl Message: INFO: [open_example_project] Adding simulation miscellaneous files ... 
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: FILE_SET_OPTIONS_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: CREATE_IP_CORE
+// TclEventType: LOAD_FEATURE
+// TclEventType: REPORT_IP_STATUS_STALE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILESET_UPDATE_IP
+// Tcl Message: INFO: [open_example_project] Sourcing example extension scripts ... INFO: [open_example_project] Sourcing extension script: gen_ex_cores.tcl 
+// TclEventType: FILESET_UPDATE_IP
+// TclEventType: CREATE_IP_CORE
+// TclEventType: REPORT_IP_STATUS_STALE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: COMPOSITE_FILE_CHANGE
+// TclEventType: FILESET_UPDATE_IP
+// TclEventType: COMPOSITE_FILE_CHANGE
+// Tcl Message: INFO: [IP_Flow 19-1686] Generating 'Change Log' target for IP 'axi_bram_ctrl_1'... INFO: [IP_Flow 19-1686] Generating 'Instantiation Template' target for IP 'blk_mem_gen_0'... INFO: [IP_Flow 19-1686] Generating 'Synthesis' target for IP 'blk_mem_gen_0'... INFO: [IP_Flow 19-1686] Generating 'Simulation' target for IP 'blk_mem_gen_0'... INFO: [IP_Flow 19-1686] Generating 'Change Log' target for IP 'blk_mem_gen_0'... 
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: DG_GRAPH_STALE
+// TclEventType: FILE_SET_CHANGE
+// TclEventType: PROJECT_CHANGE
+// Tcl Message: INFO: [open_example_project] Rebuilding top IP... 
+// Tcl Message: INFO: [exportsim-Tcl-40] Using compiled simulation libraries for IPs 
+// TclEventType: PROJECT_CHANGE
+// [GUI Memory]: 153 MB (+6265kb) [00:01:12]
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// Tcl Message: INFO: [SIM-utils-72] Using boost library from '/tools/Xilinx/Vivado/2023.2/tps/boost_1_72_0' 
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PROJECT_CHANGE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// Tcl Message: INFO: [SIM-utils-72] Using boost library from '/tools/Xilinx/Vivado/2023.2/tps/boost_1_72_0' 
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PROJECT_CHANGE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// Tcl Message: INFO: [SIM-utils-72] Using boost library from '/tools/Xilinx/Vivado/2023.2/tps/boost_1_72_0' 
+// TclEventType: PACKAGER_UNLOAD_CORE
+// TclEventType: PACKAGER_MESSAGE_RESET
+// TclEventType: PACKAGER_UNLOAD_CORE
+// Tcl Message: INFO: [exportsim-Tcl-35] Exporting simulation files for "XSIM" (AMD Vivado Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/tools/Xilinx/Vivado/2023.2/data/xsim' 
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/xsim/qdma_0.sh' INFO: [exportsim-Tcl-35] Exporting simulation files for "MODELSIM" (Siemens ModelSim Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/modelsim' 
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/modelsim/qdma_0.sh' INFO: [exportsim-Tcl-35] Exporting simulation files for "QUESTA" (Siemens Questa Advanced Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/questa' 
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/questa/qdma_0.sh' INFO: [exportsim-Tcl-5] Generating 3-step script for 'xcelium'. To create a single-step script, use the -single_step switch. INFO: [exportsim-Tcl-35] Exporting simulation files for "XCELIUM" (Cadence Xcelium Parallel Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/xcelium' 
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/xcelium/qdma_0.sh' INFO: [exportsim-Tcl-35] Exporting simulation files for "VCS" (Synopsys Verilog Compiler Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/vcs' 
+// HMemoryUtils.trashcanNow. Engine heap size: 1,960 MB. GUI used memory: 79 MB. Current time: 12/9/25, 10:49:04 PM IST
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/vcs/qdma_0.sh' INFO: [exportsim-Tcl-35] Exporting simulation files for "RIVIERA" (Aldec Riviera-PRO Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/riviera' 
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/riviera/qdma_0.sh' INFO: [exportsim-Tcl-35] Exporting simulation files for "ACTIVEHDL" (Aldec Active-HDL Simulator)... INFO: [exportsim-Tcl-29] Pre-compiled simulation library path: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.cache/compile_simlib/activehdl' 
+// TclEventType: STOP_PROGRESS_DIALOG
+// Tcl Message: INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/example/qdma_0_ex/qdma_0_ex.ip_user_files/sim_scripts/qdma_0/activehdl/qdma_0.sh' 
+// Tcl Message: export_ip_user_files: Time (s): cpu = 00:00:20 ; elapsed = 00:00:20 . Memory (MB): peak = 7979.488 ; gain = 8.887 ; free physical = 250 ; free virtual = 6032 
+// Tcl Message: INFO: [open_example_project] Open Example Project completed 
+// Elapsed Time for: 'a.d': 01m:04s
+dismissDialog("Sourcing Tcl script '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/ip/qdma_0/qdma_0_ex.tcl'"); // bq (Sourcing Tcl script '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/ip/qdma_0/qdma_0_ex.tcl' Progress)
+// TclEventType: STOP_PROGRESS_DIALOG
+// TclEventType: FILE_SET_CHANGE
+// Elapsed Time for: 'L.f': 44s
+// Tcl Message: update_compile_order -fileset sources_1 
+// Elapsed Time for: 'L.f': 48s
+// Elapsed Time for: 'L.f': 50s
+// Elapsed time: 25 seconds
+expandTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sources, xilinx_qdma_pcie_ep (xilinx_qdma_pcie_ep.sv)]", 2); // E (PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE)
+expandTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sources, SystemVerilog]", 1); // E (PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE)
+// PAPropertyPanels.initPanels (xilinx_qdma_pcie_ep.sv) elapsed time: 0.3s
+// Elapsed time: 40 seconds
+selectTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sources, xilinx_qdma_pcie_ep (xilinx_qdma_pcie_ep.sv)]", 3, true); // E (PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE) - Node
+selectTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sources, xilinx_qdma_pcie_ep (xilinx_qdma_pcie_ep.sv)]", 3, true, false, false, false, false, true); // E (PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE) - Double Click - Node
+// [Engine Memory]: 2,022 MB (+41060kb) [00:02:40]
+expandTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sources, xilinx_qdma_pcie_ep (xilinx_qdma_pcie_ep.sv)]", 3); // E (PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE)
+// HMemoryUtils.trashcanNow. Engine heap size: 2,068 MB. GUI used memory: 82 MB. Current time: 12/9/25, 10:50:18 PM IST
+// WARNING: HEventQueue.dispatchEvent() is taking  2303 ms.
+// WARNING: HEventQueue.dispatchEvent() is taking  3118 ms.
