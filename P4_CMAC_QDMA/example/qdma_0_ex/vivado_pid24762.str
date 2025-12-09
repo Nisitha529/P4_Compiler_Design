@@ -250,3 +250,15 @@ expandTree(PAResourceEtoH.FileSetPanel_FILE_SET_PANEL_TREE, "[root, Design Sourc
 // HMemoryUtils.trashcanNow. Engine heap size: 2,068 MB. GUI used memory: 82 MB. Current time: 12/9/25, 10:50:18 PM IST
 // WARNING: HEventQueue.dispatchEvent() is taking  2303 ms.
 // WARNING: HEventQueue.dispatchEvent() is taking  3118 ms.
+// WARNING: HSwingWorker (Monitor File Timestamp Swing Worker) is taking 510 ms to process. Increasing delay to 2000 ms.
+// WARNING: HSwingWorker (Monitor File Timestamp Swing Worker) is taking 510 ms to process. Increasing delay to 2000 ms.
+// WARNING: HSwingWorker (Refresh Filesets Swing Worker) is taking 3105 ms. Increasing delay to 9315 ms.
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 82 MB. Current time: 12/9/25, 11:20:18 PM IST
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 82 MB. Current time: 12/9/25, 11:50:18 PM IST
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 61 MB. Current time: 12/10/25, 12:20:18 AM IST
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 60 MB. Current time: 12/10/25, 12:50:19 AM IST
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 61 MB. Current time: 12/10/25, 1:20:19 AM IST
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 61 MB. Current time: 12/10/25, 1:50:24 AM IST
+// WARNING: HEventQueue.dispatchEvent() is taking  1191 ms.
+// HMemoryUtils.trashcanNow. Engine heap size: 2,045 MB. GUI used memory: 60 MB. Current time: 12/10/25, 2:20:19 AM IST
+// WARNING: HSwingWorker (Refresh Filesets Swing Worker) is taking 14222 ms. Increasing delay to 42666 ms.
