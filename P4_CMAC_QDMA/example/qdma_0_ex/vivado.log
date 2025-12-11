@@ -179,3 +179,5 @@ INFO: [exportsim-Tcl-29] Script generated: '/media/nisitha/My_Passport/MOODLE/P4
 export_ip_user_files: Time (s): cpu = 00:00:20 ; elapsed = 00:00:20 . Memory (MB): peak = 7979.488 ; gain = 8.887 ; free physical = 250 ; free virtual = 6032
 INFO: [open_example_project] Open Example Project completed
 update_compile_order -fileset sources_1
+exit
+INFO: [Common 17-206] Exiting Vivado at Wed Dec 10 12:35:53 2025...
