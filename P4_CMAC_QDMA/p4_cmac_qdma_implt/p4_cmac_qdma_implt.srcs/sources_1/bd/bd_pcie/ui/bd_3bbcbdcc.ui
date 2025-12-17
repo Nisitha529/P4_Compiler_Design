@@ -1,7 +1,7 @@
 {
    "ActiveEmotionalView":"Default View",
-   "Default View_ScaleFactor":"0.702352",
-   "Default View_TopLeft":"-149,-4",
+   "Default View_ScaleFactor":"0.423908",
+   "Default View_TopLeft":"-149,-142",
    "ExpandedHierarchyInLayout":"",
    "guistr":"# # String gsaved with Nlview 7.5.8 2022-09-21 7111 VDI=41 GEI=38 GUI=JA:10.0 TLS
 #  -string -flagsOSRD
@@ -20,25 +20,25 @@ preplace inst axi_smc_0 -pg 1 -lvl 4 -x 1150 -y 420 -defaultsOSRD
 preplace inst irq_concat_0 -pg 1 -lvl 5 -x 1530 -y 420 -defaultsOSRD
 preplace inst util_ds_buf_0 -pg 1 -lvl 2 -x 410 -y 440 -defaultsOSRD
 preplace inst qdma_0_axi_periph -pg 1 -lvl 4 -x 1150 -y 200 -defaultsOSRD
-preplace netloc util_ds_buf_0_IBUF_OUT 1 2 1 N 430
-preplace netloc sys_clk_100m_1 1 0 1 NJ 380
-preplace netloc irq_concat_0_dout 1 5 1 NJ 420
-preplace netloc util_ds_buf_0_IBUF_DS_ODIV2 1 2 1 590 410n
-preplace netloc sys_rst_n_1 1 0 2 20 240 NJ
-preplace netloc clk_wiz_0_locked 1 1 1 230 300n
-preplace netloc proc_sys_reset_0_peripheral_aresetn 1 2 3 600 570 960 60 1320
-preplace netloc qdma_0_axi_aresetn 1 3 1 1000 220n
-preplace netloc ddr4_0_c0_ddr4_ui_clk 1 1 5 230 150 N 150 990 70 1300J 240 1730
 preplace netloc clk_wiz_0_clk_out1 1 1 3 220 160 NJ 160 NJ
-preplace netloc qdma_0_axi_aclk 1 3 1 980 200n
-preplace netloc qdma_0_pcie_mgt 1 3 3 NJ 330 NJ 330 NJ
-preplace netloc pcie_ref_clk_1 1 0 2 NJ 440 NJ
+preplace netloc clk_wiz_0_locked 1 1 1 230 300n
+preplace netloc ddr4_0_c0_ddr4_ui_clk 1 1 5 240 150 N 150 1000 70 1290J 240 1710
+preplace netloc irq_concat_0_dout 1 5 1 NJ 420
+preplace netloc proc_sys_reset_0_peripheral_aresetn 1 2 3 610 570 970 60 1340
+preplace netloc qdma_0_axi_aclk 1 3 1 990 200n
+preplace netloc qdma_0_axi_aresetn 1 3 1 1010 220n
+preplace netloc sys_clk_100m_1 1 0 1 NJ 380
+preplace netloc sys_rst_n_1 1 0 2 20 240 NJ
+preplace netloc util_ds_buf_0_IBUF_DS_ODIV2 1 2 1 580 410n
+preplace netloc util_ds_buf_0_IBUF_OUT 1 2 1 N 430
+preplace netloc axi_smc_0_M00_AXI 1 4 1 1350 120n
 preplace netloc ddr4_0_C0_DDR4 1 5 1 NJ 60
 preplace netloc ddr4_ref_clk_1 1 0 5 NJ 80 NJ 80 NJ 80 NJ 80 NJ
-preplace netloc qdma_0_M_AXI 1 3 1 970 290n
-preplace netloc axi_smc_0_M00_AXI 1 4 1 1330 120n
-preplace netloc qdma_0_M_AXI_LITE 1 3 1 940 140n
-preplace netloc qdma_0_axi_periph_M00_AXI 1 4 1 1310 100n
+preplace netloc pcie_ref_clk_1 1 0 2 NJ 440 NJ
+preplace netloc qdma_0_M_AXI 1 3 1 980 290n
+preplace netloc qdma_0_M_AXI_LITE 1 3 1 930 140n
+preplace netloc qdma_0_axi_periph_M00_AXI 1 4 1 1300 100n
+preplace netloc qdma_0_pcie_mgt 1 3 3 NJ 330 NJ 330 NJ
 levelinfo -pg 1 0 120 410 770 1150 1530 1750
 pagesize -pg 1 -db -bbox -sgen -150 0 1940 580
 "

@@ -1,0 +1,445 @@
+#-----------------------------------------------------------
+# Vivado v2023.2 (64-bit)
+# SW Build 4029153 on Fri Oct 13 20:13:54 MDT 2023
+# IP Build 4028589 on Sat Oct 14 00:45:43 MDT 2023
+# SharedData Build 4025554 on Tue Oct 10 17:18:54 MDT 2023
+# Start of session at: Wed Dec 17 19:05:23 2025
+# Process ID: 25561
+# Current directory: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1
+# Command line: vivado -log pcie_bd_auto_ds_0.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source pcie_bd_auto_ds_0.tcl
+# Log file: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/pcie_bd_auto_ds_0.vds
+# Journal file: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/vivado.jou
+# Running On: nisitha-laptop, OS: Linux, CPU Frequency: 2050.158 MHz, CPU Physical cores: 4, Host memory: 16471 MB
+#-----------------------------------------------------------
+source pcie_bd_auto_ds_0.tcl -notrace
+create_project: Time (s): cpu = 00:00:13 ; elapsed = 00:00:14 . Memory (MB): peak = 1340.668 ; gain = 22.836 ; free physical = 208 ; free virtual = 7899
+INFO: [IP_Flow 19-6924] IPCACHE: Running cache check for IP inst: pcie_bd_auto_ds_0
+Command: synth_design -top pcie_bd_auto_ds_0 -part xcvu9p-flga2104-2L-e -incremental_mode off -mode out_of_context
+Starting synth_design
+Attempting to get a license for feature 'Synthesis' and/or device 'xcvu9p'
+INFO: [Common 17-349] Got license for feature 'Synthesis' and/or device 'xcvu9p'
+INFO: [Device 21-403] Loading part xcvu9p-flga2104-2L-e
+INFO: [Synth 8-7079] Multithreading enabled for synth_design using a maximum of 4 processes.
+INFO: [Synth 8-7078] Launching helper process for spawning children vivado processes
+INFO: [Synth 8-7075] Helper process launched with PID 26264
+---------------------------------------------------------------------------------
+Starting RTL Elaboration : Time (s): cpu = 00:00:07 ; elapsed = 00:00:27 . Memory (MB): peak = 2839.262 ; gain = 397.715 ; free physical = 168 ; free virtual = 3255
+---------------------------------------------------------------------------------
+INFO: [Synth 8-6157] synthesizing module 'pcie_bd_auto_ds_0' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ip/pcie_bd_auto_ds_0/synth/pcie_bd_auto_ds_0.v:53]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_top' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:14446]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_axi_downsizer' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:2374]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_b_downsizer' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1248]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_b_downsizer' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1248]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_a_downsizer' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_data_fifo_v2_1_28_axic_fifo' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_data_fifo_v2_1_28_fifo_gen' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:165]
+INFO: [Synth 8-6157] synthesizing module 'xpm_cdc_async_rst' [/tools/Xilinx/Vivado/2023.2/data/ip/xpm/xpm_cdc/hdl/xpm_cdc.sv:1175]
+INFO: [Synth 8-6155] done synthesizing module 'xpm_cdc_async_rst' (0#1) [/tools/Xilinx/Vivado/2023.2/data/ip/xpm/xpm_cdc/hdl/xpm_cdc.sv:1175]
+INFO: [Synth 8-6155] done synthesizing module 'axi_data_fifo_v2_1_28_fifo_gen' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:165]
+INFO: [Synth 8-6155] done synthesizing module 'axi_data_fifo_v2_1_28_axic_fifo' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_data_fifo_v2_1_28_axic_fifo__parameterized0' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_data_fifo_v2_1_28_fifo_gen__parameterized0' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:165]
+INFO: [Synth 8-6155] done synthesizing module 'axi_data_fifo_v2_1_28_fifo_gen__parameterized0' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:165]
+INFO: [Synth 8-6155] done synthesizing module 'axi_data_fifo_v2_1_28_axic_fifo__parameterized0' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/279e/hdl/axi_data_fifo_v2_1_vl_rfs.v:62]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_a_downsizer' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_w_downsizer' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:2011]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_w_downsizer' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:2011]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_a_downsizer__parameterized0' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:62]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_a_downsizer__parameterized0' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:62]
+INFO: [Synth 8-6157] synthesizing module 'axi_dwidth_converter_v2_1_29_r_downsizer' [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1529]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_r_downsizer' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1529]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_axi_downsizer' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:2374]
+INFO: [Synth 8-6155] done synthesizing module 'axi_dwidth_converter_v2_1_29_top' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:14446]
+INFO: [Synth 8-6155] done synthesizing module 'pcie_bd_auto_ds_0' (0#1) [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ip/pcie_bd_auto_ds_0/synth/pcie_bd_auto_ds_0.v:53]
+WARNING: [Synth 8-6014] Unused sequential element cmd_empty_reg was removed.  [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1052]
+WARNING: [Synth 8-6014] Unused sequential element cmd_depth_reg was removed.  [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:1053]
+WARNING: [Synth 8-6014] Unused sequential element cmd_b_push_block_reg was removed.  [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ipshared/670d/hdl/axi_dwidth_converter_v2_1_vlsyn_rfs.v:975]
+WARNING: [Synth 8-7129] Port ALMOST_FULL_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port ALMOST_EMPTY_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_ACK_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port VALID_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port OVERFLOW_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port UNDERFLOW_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[5] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[4] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[3] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[2] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[1] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DATA_COUNT_I[0] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[5] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[4] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[3] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[2] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[1] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_DATA_COUNT_I[0] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[5] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[4] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[3] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[2] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[1] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_DATA_COUNT_I[0] in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SBITERR_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DBITERR_I in module output_blk__parameterized0 is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST_FULL_FF in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_RST in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SAFETY_CKT_WR_RST in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS2[4] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS2[3] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS2[2] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS2[1] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS2[0] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS3[4] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS3[3] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS3[2] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS3[1] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS3[0] in module wr_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST in module wr_bin_cntr is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_EN_INTO_LOGIC in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_RST_INTO_LOGIC in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_EN in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_RST_BUSY in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port EMPTY in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port ALMOST_EMPTY in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH[4] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH[3] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH[2] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH[1] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH[0] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_ASSERT[4] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_ASSERT[3] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_ASSERT[2] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_ASSERT[1] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_ASSERT[0] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_NEGATE[4] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_NEGATE[3] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_NEGATE[2] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_NEGATE[1] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_FULL_THRESH_NEGATE[0] in module wr_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST in module rd_fwft is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SAFETY_CKT_RD_RST in module rd_fwft is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RAM_ALMOST_EMPTY in module rd_fwft is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SAFETY_CKT_RD_RST in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_PNTR_PLUS2[4] in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_PNTR_PLUS2[3] in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_PNTR_PLUS2[2] in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_PNTR_PLUS2[1] in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_PNTR_PLUS2[0] in module rd_status_flags_ss is either unconnected or has no load
+WARNING: [Synth 8-7129] Port SRST in module rd_bin_cntr is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_EN_INTO_LOGIC in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_RST_INTO_LOGIC in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RD_RST_BUSY in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port RST_FULL_FF in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port ALMOST_FULL_FB in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port FULL in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS1_RD[4] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS1_RD[3] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS1_RD[2] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS1_RD[1] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port WR_PNTR_PLUS1_RD[0] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH[4] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH[3] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH[2] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH[1] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH[0] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_ASSERT[4] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_ASSERT[3] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_ASSERT[2] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_ASSERT[1] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_ASSERT[0] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_NEGATE[4] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_NEGATE[3] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_NEGATE[2] in module rd_logic is either unconnected or has no load
+WARNING: [Synth 8-7129] Port PROG_EMPTY_THRESH_NEGATE[1] in module rd_logic is either unconnected or has no load
+INFO: [Common 17-14] Message 'Synth 8-7129' appears 100 times and further instances of the messages will be disabled. Use the Tcl command set_msg_config to change the current settings.
+---------------------------------------------------------------------------------
+Finished RTL Elaboration : Time (s): cpu = 00:00:14 ; elapsed = 00:00:40 . Memory (MB): peak = 3045.199 ; gain = 603.652 ; free physical = 162 ; free virtual = 2411
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:14 ; elapsed = 00:00:40 . Memory (MB): peak = 3045.199 ; gain = 603.652 ; free physical = 156 ; free virtual = 2407
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 1 : Time (s): cpu = 00:00:14 ; elapsed = 00:00:40 . Memory (MB): peak = 3045.199 ; gain = 603.652 ; free physical = 156 ; free virtual = 2407
+---------------------------------------------------------------------------------
+Netlist sorting complete. Time (s): cpu = 00:00:00.05 ; elapsed = 00:00:00.05 . Memory (MB): peak = 3053.199 ; gain = 0.000 ; free physical = 186 ; free virtual = 2267
+INFO: [Project 1-570] Preparing netlist for logic optimization
+
+Processing XDC Constraints
+Initializing timing engine
+Parsing XDC File [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ip/pcie_bd_auto_ds_0/pcie_bd_auto_ds_0_ooc.xdc] for cell 'inst'
+create_clock: Time (s): cpu = 00:00:07 ; elapsed = 00:00:14 . Memory (MB): peak = 3155.293 ; gain = 5.938 ; free physical = 183 ; free virtual = 2018
+Finished Parsing XDC File [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.gen/sources_1/bd/pcie_bd/ip/pcie_bd_auto_ds_0/pcie_bd_auto_ds_0_ooc.xdc] for cell 'inst'
+Parsing XDC File [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/dont_touch.xdc]
+Finished Parsing XDC File [/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/dont_touch.xdc]
+INFO: [Project 1-1714] 3 XPM XDC files have been applied to the design.
+Completed Processing XDC Constraints
+
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00 . Memory (MB): peak = 3155.293 ; gain = 0.000 ; free physical = 190 ; free virtual = 2026
+INFO: [Project 1-111] Unisim Transformation Summary:
+No Unisim elements were transformed.
+
+Constraint Validation Runtime : Time (s): cpu = 00:00:00.17 ; elapsed = 00:00:00.74 . Memory (MB): peak = 3155.328 ; gain = 0.000 ; free physical = 206 ; free virtual = 2031
+INFO: [Designutils 20-5008] Incremental synthesis strategy off
+---------------------------------------------------------------------------------
+Finished Constraint Validation : Time (s): cpu = 00:00:32 ; elapsed = 00:01:27 . Memory (MB): peak = 3155.328 ; gain = 713.781 ; free physical = 179 ; free virtual = 2036
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Loading Part and Timing Information
+---------------------------------------------------------------------------------
+Loading part: xcvu9p-flga2104-2L-e
+INFO: [Synth 8-6742] Reading net delay rules and data
+---------------------------------------------------------------------------------
+Finished Loading Part and Timing Information : Time (s): cpu = 00:00:32 ; elapsed = 00:01:27 . Memory (MB): peak = 3155.328 ; gain = 713.781 ; free physical = 179 ; free virtual = 2037
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying 'set_property' XDC Constraints
+---------------------------------------------------------------------------------
+Applied set_property KEEP_HIERARCHY = SOFT for inst. (constraint file  /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/dont_touch.xdc, line 9).
+Applied set_property KEEP_HIERARCHY = SOFT for inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst /\USE_WRITE.write_addr_inst /\USE_B_CHANNEL.cmd_b_queue /inst/fifo_gen_inst/inst_fifo_gen/\gconvfifo.rf /\grf.rf /rstblk/\ngwrdrst.grst.g7serrst.gnsckt_wrst.rst_wr_reg2_inst . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst /\USE_WRITE.write_addr_inst /cmd_queue/inst/fifo_gen_inst/inst_fifo_gen/\gconvfifo.rf /\grf.rf /rstblk/\ngwrdrst.grst.g7serrst.gnsckt_wrst.rst_wr_reg2_inst . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst /\USE_READ.read_addr_inst /cmd_queue/inst/fifo_gen_inst/inst_fifo_gen/\gconvfifo.rf /\grf.rf /rstblk/\ngwrdrst.grst.g7serrst.gnsckt_wrst.rst_wr_reg2_inst . (constraint file  auto generated constraint).
+---------------------------------------------------------------------------------
+Finished applying 'set_property' XDC Constraints : Time (s): cpu = 00:00:32 ; elapsed = 00:01:27 . Memory (MB): peak = 3155.328 ; gain = 713.781 ; free physical = 169 ; free virtual = 2030
+---------------------------------------------------------------------------------
+INFO: [Synth 8-802] inferred FSM for state register 'gpregsm1.curr_fwft_state_reg' in module 'rd_fwft'
+INFO: [Synth 8-6159] Found Keep on FSM register 'gpregsm1.curr_fwft_state_reg' in module 'rd_fwft', re-encoding will not be performed
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+                 invalid |                               00 |                               00
+            stage1_valid |                               10 |                               10
+       both_stages_valid |                               11 |                               11
+            stage2_valid |                               01 |                               01
+---------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:34 ; elapsed = 00:01:29 . Memory (MB): peak = 3155.328 ; gain = 713.781 ; free physical = 184 ; free virtual = 2054
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start RTL Component Statistics 
+---------------------------------------------------------------------------------
+Detailed RTL Component Info : 
++---Adders : 
+	   2 Input   64 Bit       Adders := 2     
+	   2 Input    8 Bit       Adders := 7     
+	   3 Input    8 Bit       Adders := 2     
+	   2 Input    6 Bit       Adders := 6     
+	   2 Input    5 Bit       Adders := 6     
++---XORs : 
+	   2 Input      1 Bit         XORs := 60    
++---Registers : 
+	               64 Bit    Registers := 8     
+	               35 Bit    Registers := 4     
+	               32 Bit    Registers := 16    
+	               14 Bit    Registers := 2     
+	                9 Bit    Registers := 2     
+	                8 Bit    Registers := 13    
+	                7 Bit    Registers := 2     
+	                6 Bit    Registers := 8     
+	                5 Bit    Registers := 14    
+	                4 Bit    Registers := 13    
+	                3 Bit    Registers := 4     
+	                2 Bit    Registers := 11    
+	                1 Bit    Registers := 62    
++---Muxes : 
+	   8 Input   64 Bit        Muxes := 2     
+	   2 Input   64 Bit        Muxes := 4     
+	   2 Input   32 Bit        Muxes := 16    
+	   2 Input   14 Bit        Muxes := 2     
+	   2 Input    8 Bit        Muxes := 11    
+	   8 Input    7 Bit        Muxes := 2     
+	   2 Input    6 Bit        Muxes := 4     
+	   8 Input    6 Bit        Muxes := 4     
+	   8 Input    5 Bit        Muxes := 2     
+	   2 Input    3 Bit        Muxes := 2     
+	   2 Input    2 Bit        Muxes := 44    
+	   4 Input    2 Bit        Muxes := 3     
+	   5 Input    2 Bit        Muxes := 3     
+	   3 Input    1 Bit        Muxes := 3     
+	   2 Input    1 Bit        Muxes := 27    
+	   4 Input    1 Bit        Muxes := 7     
+---------------------------------------------------------------------------------
+Finished RTL Component Statistics 
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Part Resource Summary
+---------------------------------------------------------------------------------
+Part Resources:
+DSPs: 6840 (col length:120)
+BRAMs: 4320 (col length: RAMB18 360 RAMB36 180)
+---------------------------------------------------------------------------------
+Finished Part Resource Summary
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Cross Boundary and Area Optimization
+---------------------------------------------------------------------------------
+WARNING: [Synth 8-7080] Parallel synthesis criteria is not met
+---------------------------------------------------------------------------------
+Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:00:44 ; elapsed = 00:01:39 . Memory (MB): peak = 3155.328 ; gain = 713.781 ; free physical = 168 ; free virtual = 2016
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+
+Distributed RAM: Preliminary Mapping Report (see note below)
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+|Module Name                                                                                                                         | RTL Object                                                                    | Inference      | Size (Depth x Width) | Primitives    | 
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_WRITE.write_addr_inst/USE_B_CHANNEL.cmd_b_queue/inst/fifo_gen_inst  | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 9               | RAM32M16 x 1  | 
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_WRITE.write_addr_inst/cmd_queue/inst/fifo_gen_inst                  | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 35              | RAM32M16 x 3  | 
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_READ.read_addr_inst/cmd_queue/inst/fifo_gen_inst                    | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 35              | RAM32M16 x 3  | 
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+
+Note: The table above is a preliminary report that shows the Distributed RAMs at the current stage of the synthesis flow. Some Distributed RAMs may be reimplemented as non Distributed RAM primitives later in the synthesis flow. Multiple instantiated RAMs are reported only once.
+---------------------------------------------------------------------------------
+Finished ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying XDC Timing Constraints
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Applying XDC Timing Constraints : Time (s): cpu = 00:00:52 ; elapsed = 00:02:06 . Memory (MB): peak = 3322.918 ; gain = 881.371 ; free physical = 187 ; free virtual = 1459
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Timing Optimization
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Timing Optimization : Time (s): cpu = 00:00:59 ; elapsed = 00:02:12 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 197 ; free virtual = 1311
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+
+Distributed RAM: Final Mapping Report
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+|Module Name                                                                                                                         | RTL Object                                                                    | Inference      | Size (Depth x Width) | Primitives    | 
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_WRITE.write_addr_inst/USE_B_CHANNEL.cmd_b_queue/inst/fifo_gen_inst  | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 9               | RAM32M16 x 1  | 
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_WRITE.write_addr_inst/cmd_queue/inst/fifo_gen_inst                  | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 35              | RAM32M16 x 3  | 
+|inst/\gen_downsizer.gen_simple_downsizer.axi_downsizer_inst/USE_READ.read_addr_inst/cmd_queue/inst/fifo_gen_inst                    | inst_fifo_gen/gconvfifo.rf/grf.rf/gntv_or_sync_fifo.mem/gdm.dm_gen.dm/RAM_reg | User Attribute | 32 x 35              | RAM32M16 x 3  | 
++------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------+----------------+----------------------+---------------+
+
+---------------------------------------------------------------------------------
+Finished ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Technology Mapping
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Technology Mapping : Time (s): cpu = 00:01:00 ; elapsed = 00:02:14 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 201 ; free virtual = 1304
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished IO Insertion : Time (s): cpu = 00:01:05 ; elapsed = 00:02:18 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 193 ; free virtual = 1285
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Instances
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Instances : Time (s): cpu = 00:01:05 ; elapsed = 00:02:18 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 193 ; free virtual = 1285
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Rebuilding User Hierarchy
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Rebuilding User Hierarchy : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 192 ; free virtual = 1287
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Ports
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Ports : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 192 ; free virtual = 1287
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 207 ; free virtual = 1296
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Nets
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Nets : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 206 ; free virtual = 1295
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Writing Synthesis Report
+---------------------------------------------------------------------------------
+
+Report BlackBoxes: 
++-+--------------+----------+
+| |BlackBox name |Instances |
++-+--------------+----------+
++-+--------------+----------+
+
+Report Cell Usage: 
++------+---------+------+
+|      |Cell     |Count |
++------+---------+------+
+|1     |CARRY8   |    14|
+|2     |LUT1     |    49|
+|3     |LUT2     |    90|
+|4     |LUT3     |   134|
+|5     |LUT4     |    82|
+|6     |LUT5     |   657|
+|7     |LUT6     |   619|
+|8     |MUXF7    |    72|
+|9     |RAM32M16 |     7|
+|10    |FDCE     |    69|
+|11    |FDPE     |    33|
+|12    |FDRE     |  1327|
+|13    |FDSE     |     5|
++------+---------+------+
+---------------------------------------------------------------------------------
+Finished Writing Synthesis Report : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.918 ; gain = 977.371 ; free physical = 207 ; free virtual = 1296
+---------------------------------------------------------------------------------
+Synthesis finished with 0 errors, 0 critical warnings and 1607 warnings.
+Synthesis Optimization Runtime : Time (s): cpu = 00:00:54 ; elapsed = 00:01:40 . Memory (MB): peak = 3418.918 ; gain = 867.242 ; free physical = 207 ; free virtual = 1296
+Synthesis Optimization Complete : Time (s): cpu = 00:01:05 ; elapsed = 00:02:19 . Memory (MB): peak = 3418.926 ; gain = 977.371 ; free physical = 204 ; free virtual = 1295
+INFO: [Project 1-571] Translating synthesized netlist
+Netlist sorting complete. Time (s): cpu = 00:00:00.06 ; elapsed = 00:00:00.05 . Memory (MB): peak = 3418.926 ; gain = 0.000 ; free physical = 213 ; free virtual = 1299
+INFO: [Netlist 29-17] Analyzing 93 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-570] Preparing netlist for logic optimization
+INFO: [Opt 31-138] Pushed 0 inverter(s) to 0 load pin(s).
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.05 . Memory (MB): peak = 3502.598 ; gain = 0.000 ; free physical = 190 ; free virtual = 1210
+INFO: [Project 1-111] Unisim Transformation Summary:
+  A total of 7 instances were transformed.
+  RAM32M16 => RAM32M16 (RAMD32(x14), RAMS32(x2)): 7 instances
+
+Synth Design complete | Checksum: 3c2b2cd5
+INFO: [Common 17-83] Releasing license: Synthesis
+47 Infos, 104 Warnings, 0 Critical Warnings and 0 Errors encountered.
+synth_design completed successfully
+synth_design: Time (s): cpu = 00:01:28 ; elapsed = 00:05:41 . Memory (MB): peak = 3502.633 ; gain = 2113.152 ; free physical = 802 ; free virtual = 1982
+INFO: [Common 17-2834] synth_design peak Physical Memory [PSS] (MB): overall = 2788.023; main = 2481.521; forked = 323.974
+INFO: [Common 17-2834] synth_design peak Virtual Memory [VSS] (MB): overall = 4502.734; main = 3502.602; forked = 1000.148
+Write ShapeDB Complete: Time (s): cpu = 00:00:00.19 ; elapsed = 00:00:00.75 . Memory (MB): peak = 3526.609 ; gain = 0.000 ; free physical = 639 ; free virtual = 1973
+report_design_analysis: Time (s): cpu = 00:00:00.44 ; elapsed = 00:00:36 . Memory (MB): peak = 3526.609 ; gain = 0.000 ; free physical = 344 ; free virtual = 1873
+INFO: [Common 17-1381] The checkpoint '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/pcie_bd_auto_ds_0.dcp' has been generated.
+write_checkpoint: Time (s): cpu = 00:00:01 ; elapsed = 00:00:49 . Memory (MB): peak = 3526.609 ; gain = 23.977 ; free physical = 347 ; free virtual = 1887
+INFO: [Coretcl 2-1648] Added synthesis output to IP cache for IP pcie_bd_auto_ds_0, cache-ID = eebe274d01e237be
+INFO: [Coretcl 2-1174] Renamed 58 cell refs.
+Write ShapeDB Complete: Time (s): cpu = 00:00:00.01 ; elapsed = 00:00:00.01 . Memory (MB): peak = 3526.609 ; gain = 0.000 ; free physical = 377 ; free virtual = 1941
+INFO: [Common 17-1381] The checkpoint '/media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/P4_CMAC_QDMA/p4_cmac_qdma_implt/p4_cmac_qdma_implt.runs/pcie_bd_auto_ds_0_synth_1/pcie_bd_auto_ds_0.dcp' has been generated.
+INFO: [runtcl-4] Executing : report_utilization -file pcie_bd_auto_ds_0_utilization_synth.rpt -pb pcie_bd_auto_ds_0_utilization_synth.pb
+INFO: [Common 17-206] Exiting Vivado at Wed Dec 17 19:12:32 2025...
