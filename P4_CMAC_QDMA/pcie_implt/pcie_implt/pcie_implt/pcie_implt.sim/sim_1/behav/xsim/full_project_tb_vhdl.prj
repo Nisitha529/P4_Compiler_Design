@@ -1,0 +1,11 @@
+# compile vhdl design source files
+vhdl xil_defaultlib  \
+"../../../../pcie_implt.ip_user_files/bd/pcie_block/ip/pcie_block_proc_sys_reset_0_0/sim/pcie_block_proc_sys_reset_0_0.vhd" \
+"../../../../pcie_implt.ip_user_files/bd/pcie_block/sim/pcie_block.vhd" \
+"../../../../../../full_project.vhd" \
+"../../../../pcie_implt.gen/sources_1/bd/pcie_block/hdl/pcie_block_wrapper.vhd" \
+"../../../../../../register_files.vhd" \
+"../../../../../../full_project_tb.vhd" \
+
+# Do not sort compile order
+nosort

@@ -1,0 +1,6 @@
+vhdl xil_defaultlib  \
+"../../../bd/pcie_block/ip/pcie_block_proc_sys_reset_0_0/sim/pcie_block_proc_sys_reset_0_0.vhd" \
+"../../../bd/pcie_block/sim/pcie_block.vhd" \
+
+# Do not sort compile order
+nosort

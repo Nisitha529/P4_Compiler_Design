@@ -1,0 +1,30 @@
+{
+   "ActiveEmotionalView":"Default View",
+   "Default View_ScaleFactor":"1.0",
+   "Default View_TopLeft":"-532,-171",
+   "ExpandedHierarchyInLayout":"",
+   "guistr":"# # String gsaved with Nlview 7.5.8 2022-09-21 7111 VDI=41 GEI=38 GUI=JA:10.0 TLS
+#  -string -flagsOSRD
+preplace port pcie_7x_mgt_0 -pg 1 -lvl 3 -x 800 -y 320 -defaultsOSRD
+preplace port M_AVALON_0 -pg 1 -lvl 3 -x 800 -y 150 -defaultsOSRD
+preplace port port-id_slowest_sync_clk_0 -pg 1 -lvl 0 -x 0 -y 440 -defaultsOSRD
+preplace port port-id_ext_reset_in_0 -pg 1 -lvl 0 -x 0 -y 520 -defaultsOSRD
+preplace port port-id_clock_out_62_5 -pg 1 -lvl 3 -x 800 -y 360 -defaultsOSRD
+preplace port port-id_reset_pcie_out -pg 1 -lvl 3 -x 800 -y 340 -defaultsOSRD
+preplace inst axi_pcie_0 -pg 1 -lvl 2 -x 580 -y 390 -defaultsOSRD
+preplace inst proc_sys_reset_0 -pg 1 -lvl 1 -x 210 -y 540 -defaultsOSRD
+preplace inst axi_interconnect_0 -pg 1 -lvl 1 -x 210 -y 130 -defaultsOSRD
+preplace inst axi_amm_bridge_0 -pg 1 -lvl 2 -x 580 -y 150 -defaultsOSRD
+preplace netloc slowest_sync_clk_0_1 1 0 2 30 440 N
+preplace netloc ext_reset_in_0_1 1 0 1 NJ 520
+preplace netloc proc_sys_reset_0_peripheral_aresetn 1 1 1 390 380n
+preplace netloc axi_pcie_0_user_link_up 1 0 3 20 260 400 230 780
+preplace netloc axi_pcie_0_axi_aclk_out 1 0 3 30 250 390 240 770
+preplace netloc axi_pcie_0_M_AXI 1 0 3 30 10 NJ 10 760
+preplace netloc axi_pcie_0_pcie_7x_mgt 1 2 1 NJ 320
+preplace netloc axi_amm_bridge_0_M_AVALON 1 2 1 NJ 150
+levelinfo -pg 1 0 210 580 800
+pagesize -pg 1 -db -bbox -sgen -190 0 960 640
+"
+}
+

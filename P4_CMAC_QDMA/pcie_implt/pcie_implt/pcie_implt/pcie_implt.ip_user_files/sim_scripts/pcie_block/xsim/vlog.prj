@@ -1,0 +1,14 @@
+verilog xil_defaultlib  \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/axi_pcie_v2_9_10_pcie_7x_v2_0_2_pipe_clock.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/axi_pcie_v2_9_10_pcie_7x_v2_0_2_qpll_wrapper.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/axi_pcie_v2_9_10_pcie_7x_v2_0_2_gt_common.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/axi_pcie_v2_9_10_pcie_7x_v2_0_2_qpll_drp.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/axi_pcie_v2_9_10_pcie_7x_v2_0_2_gtp_cpllpd_ovrd.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/hdl/pcie_block_axi_pcie_0_0_pcie_7x_v2_0_2.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_pcie_0_0/sim/pcie_block_axi_pcie_0_0.v" \
+"../../../bd/pcie_block/ip/pcie_block_axi_amm_bridge_0_0/sim/pcie_block_axi_amm_bridge_0_0.v" \
+
+verilog xil_defaultlib "glbl.v"
+
+# Do not sort compile order
+nosort
