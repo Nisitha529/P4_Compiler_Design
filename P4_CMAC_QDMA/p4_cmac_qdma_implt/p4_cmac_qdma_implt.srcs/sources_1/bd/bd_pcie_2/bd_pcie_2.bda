@@ -208,6 +208,63 @@
             },
             "V4": {
                 "VT": "AC",
+                "BA": "0x80000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
+                "HP": "C0_DDR4_MEMORY_MAP_HIGHADDR",
+                "MA": "Data_MM2S",
+                "MX": "/axi_dma_c2h",
+                "MI": "M_AXI_MM2S",
+                "MS": "SEG_ddr4_0_C0_DDR4_ADDRESS_BLOCK",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/ddr4_0",
+                "SI": "C0_DDR4_S_AXI",
+                "MM": "C0_DDR4_MEMORY_MAP",
+                "SS": "C0_DDR4_ADDRESS_BLOCK",
+                "SV": "xilinx.com:ip:ddr4:2.2",
+                "TM": "both",
+                "TU": "memory"
+            },
+            "V5": {
+                "VT": "AC",
+                "BA": "0x80000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
+                "HP": "C0_DDR4_MEMORY_MAP_HIGHADDR",
+                "MA": "Data_S2MM",
+                "MX": "/axi_dma_c2h",
+                "MI": "M_AXI_S2MM",
+                "MS": "SEG_ddr4_0_C0_DDR4_ADDRESS_BLOCK",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/ddr4_0",
+                "SI": "C0_DDR4_S_AXI",
+                "MM": "C0_DDR4_MEMORY_MAP",
+                "SS": "C0_DDR4_ADDRESS_BLOCK",
+                "SV": "xilinx.com:ip:ddr4:2.2",
+                "TM": "both",
+                "TU": "memory"
+            },
+            "V6": {
+                "VT": "AC",
+                "BA": "0x80000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
+                "HP": "C0_DDR4_MEMORY_MAP_HIGHADDR",
+                "MA": "Data_MM2S",
+                "MX": "/axi_dma_h2c",
+                "MI": "M_AXI_MM2S",
+                "MS": "SEG_ddr4_0_C0_DDR4_ADDRESS_BLOCK",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/ddr4_0",
+                "SI": "C0_DDR4_S_AXI",
+                "MM": "C0_DDR4_MEMORY_MAP",
+                "SS": "C0_DDR4_ADDRESS_BLOCK",
+                "SV": "xilinx.com:ip:ddr4:2.2",
+                "TM": "both",
+                "TU": "memory"
+            },
+            "V7": {
+                "VT": "AC",
                 "BA": "0x0000000080000000",
                 "HA": "0x00000000FFFFFFFF",
                 "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
@@ -225,7 +282,7 @@
                 "TM": "both",
                 "TU": "memory"
             },
-            "V5": {
+            "V8": {
                 "VT": "AC",
                 "BA": "0x80000000",
                 "HA": "0xFFFFFFFF",
@@ -244,7 +301,7 @@
                 "TM": "both",
                 "TU": "memory"
             },
-            "V6": {
+            "V9": {
                 "VT": "AC",
                 "BA": "0x0000000100000000",
                 "HA": "0x00000001FFFFFFFF",
@@ -255,6 +312,150 @@
                 "MI": "M_AXI",
                 "MS": "SEG_packet_processor_0_reg0",
                 "MV": "xilinx.com:ip:qdma:5.0",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V10": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0x00000000",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "M_AXI_LITE",
+                "MX": "/qdma_0",
+                "MI": "M_AXI_LITE",
+                "MS": "SEG_axi_dma_c2h_Reg",
+                "MV": "xilinx.com:ip:qdma:5.0",
+                "SX": "/axi_dma_c2h",
+                "SI": "S_AXI_LITE",
+                "SS": "Reg",
+                "SV": "xilinx.com:ip:axi_dma:7.1",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V11": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0x00000000",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "M_AXI_LITE",
+                "MX": "/qdma_0",
+                "MI": "M_AXI_LITE",
+                "MS": "SEG_axi_dma_h2c_Reg",
+                "MV": "xilinx.com:ip:qdma:5.0",
+                "SX": "/axi_dma_h2c",
+                "SI": "S_AXI_LITE",
+                "SS": "Reg",
+                "SV": "xilinx.com:ip:axi_dma:7.1",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V12": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_MM2S",
+                "MX": "/axi_dma_c2h",
+                "MI": "M_AXI_MM2S",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V13": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_S2MM",
+                "MX": "/axi_dma_c2h",
+                "MI": "M_AXI_S2MM",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V14": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_SG",
+                "MX": "/axi_dma_c2h",
+                "MI": "M_AXI_SG",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V15": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_MM2S",
+                "MX": "/axi_dma_h2c",
+                "MI": "M_AXI_MM2S",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V16": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_S2MM",
+                "MX": "/axi_dma_h2c",
+                "MI": "M_AXI_S2MM",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
+                "SX": "/packet_processor_0",
+                "SI": "s_axi",
+                "SS": "reg0",
+                "SV": "xilinx.com:module_ref:packet_processor:1.0",
+                "TM": "both",
+                "TU": "register"
+            },
+            "V17": {
+                "VT": "ACE",
+                "BA": "0x00000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C_BASEADDR",
+                "HP": "C_HIGHADDR",
+                "MA": "Data_SG",
+                "MX": "/axi_dma_h2c",
+                "MI": "M_AXI_SG",
+                "MS": "SEG_packet_processor_0_reg0",
+                "MV": "xilinx.com:ip:axi_dma:7.1",
                 "SX": "/packet_processor_0",
                 "SI": "s_axi",
                 "SS": "reg0",
@@ -289,6 +490,61 @@
             },
             {
                 "src": "V6",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V7",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V8",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V9",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V10",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V11",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V12",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V13",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V14",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V15",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V16",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V17",
                 "trg": "V2",
                 "EH": "2"
             }
