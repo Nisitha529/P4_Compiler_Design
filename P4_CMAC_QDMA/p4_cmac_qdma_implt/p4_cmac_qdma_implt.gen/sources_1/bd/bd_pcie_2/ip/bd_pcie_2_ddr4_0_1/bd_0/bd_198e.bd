@@ -8,7 +8,8 @@
       "rev_ctrl_bd_flag": "RevCtrlBdOff",
       "scoped": "true",
       "synth_flow_mode": "None",
-      "tool_version": "2023.2"
+      "tool_version": "2023.2",
+      "validated": "true"
     },
     "design_tree": {
       "microblaze_I": "",
@@ -43,8 +44,24 @@
           "ASSOCIATED_ASYNC_RESET": {
             "value": "Reset"
           },
+          "CLK_DOMAIN": {
+            "value": "bd_198e_Clk",
+            "value_src": "constant"
+          },
           "FREQ_HZ": {
             "value": "100000000"
+          },
+          "FREQ_TOLERANCE_HZ": {
+            "value": "0",
+            "value_src": "default"
+          },
+          "INSERT_VIP": {
+            "value": "0",
+            "value_src": "default"
+          },
+          "PHASE": {
+            "value": "0.0",
+            "value_src": "default"
           }
         }
       },
@@ -52,6 +69,10 @@
         "type": "rst",
         "direction": "I",
         "parameters": {
+          "INSERT_VIP": {
+            "value": "0",
+            "value_src": "default"
+          },
           "POLARITY": {
             "value": "ACTIVE_HIGH"
           }

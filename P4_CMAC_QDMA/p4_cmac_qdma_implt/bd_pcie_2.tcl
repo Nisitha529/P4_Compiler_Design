@@ -245,21 +245,6 @@ proc create_root_design { parentCell } {
    CONFIG.FREQ_HZ {250000000} \
    ] $default_250mhz_clk1
 
-  set qdma_c2h [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 qdma_c2h ]
-
-  set qdma_h2c [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 qdma_h2c ]
-  set_property -dict [ list \
-   CONFIG.HAS_TKEEP {0} \
-   CONFIG.HAS_TLAST {0} \
-   CONFIG.HAS_TREADY {1} \
-   CONFIG.HAS_TSTRB {0} \
-   CONFIG.LAYERED_METADATA {undef} \
-   CONFIG.TDATA_NUM_BYTES {64} \
-   CONFIG.TDEST_WIDTH {0} \
-   CONFIG.TID_WIDTH {0} \
-   CONFIG.TUSER_WIDTH {0} \
-   ] $qdma_h2c
-
 
   # Create ports
   set pcie_perstn [ create_bd_port -dir I -type rst pcie_perstn ]
@@ -308,7 +293,7 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.HAS_ARESETN {1} \
     CONFIG.NUM_CLKS {2} \
-    CONFIG.NUM_MI {1} \
+    CONFIG.NUM_MI {2} \
     CONFIG.NUM_SI {2} \
   ] $axi_smartconnect_0
 
@@ -329,6 +314,7 @@ proc create_root_design { parentCell } {
   
   # Create interface connections
   connect_bd_intf_net -intf_net axi_smartconnect_0_M00_AXI [get_bd_intf_pins axi_smartconnect_0/M00_AXI] [get_bd_intf_pins packet_processor_0/s_axi]
+  connect_bd_intf_net -intf_net axi_smartconnect_0_M01_AXI [get_bd_intf_pins axi_smartconnect_0/M01_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
   connect_bd_intf_net -intf_net ddr4_0_C0_DDR4 [get_bd_intf_ports ddr4_sdram_c1_062] [get_bd_intf_pins ddr4_0/C0_DDR4]
   connect_bd_intf_net -intf_net default_250mhz_clk1_1 [get_bd_intf_ports default_250mhz_clk1] [get_bd_intf_pins ddr4_0/C0_SYS_CLK]
   connect_bd_intf_net -intf_net pcie_refclk_1 [get_bd_intf_ports pcie_refclk] [get_bd_intf_pins util_ds_buf_0/CLK_IN_D]
@@ -358,6 +344,7 @@ proc create_root_design { parentCell } {
   # Restore current instance
   current_bd_instance $oldCurInst
 
+  validate_bd_design
   save_bd_design
 }
 # End of create_root_design()
@@ -369,6 +356,4 @@ proc create_root_design { parentCell } {
 
 create_root_design ""
 
-
-common::send_gid_msg -ssname BD::TCL -id 2053 -severity "WARNING" "This Tcl script was generated from a block design that has not been validated. It is possible that design <$design_name> may result in errors during validation."
 

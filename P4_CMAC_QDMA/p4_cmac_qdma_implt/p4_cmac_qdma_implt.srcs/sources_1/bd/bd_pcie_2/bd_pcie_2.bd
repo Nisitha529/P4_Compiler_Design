@@ -1,13 +1,14 @@
 {
   "design": {
     "design_info": {
-      "boundary_crc": "0x6B1CAB7CB096E481",
+      "boundary_crc": "0x6B1CAB7C1EF3F14E",
       "device": "xcvu9p-flga2104-2L-e",
       "gen_directory": "../../../../p4_cmac_qdma_implt.gen/sources_1/bd/bd_pcie_2",
       "name": "bd_pcie_2",
       "rev_ctrl_bd_flag": "RevCtrlBdOff",
       "synth_flow_mode": "Hierarchical",
-      "tool_version": "2023.2"
+      "tool_version": "2023.2",
+      "validated": "true"
     },
     "design_tree": {
       "qdma_0": "",
@@ -81,11 +82,11 @@
         "parameters": {
           "AXI_ARBITRATION_SCHEME": {
             "value": "RD_PRI_REG",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "BURST_LENGTH": {
             "value": "8",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "CAN_DEBUG": {
             "value": "false",
@@ -93,47 +94,47 @@
           },
           "CAS_LATENCY": {
             "value": "18",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "CAS_WRITE_LATENCY": {
             "value": "12",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "CS_ENABLED": {
             "value": "true",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "CUSTOM_PARTS": {
             "value": "no_file_loaded",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "DATA_MASK_ENABLED": {
             "value": "DM_NO_DBI",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "DATA_WIDTH": {
             "value": "64",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "MEMORY_PART": {
             "value": "MT40A256M16LY-062E",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "MEMORY_TYPE": {
             "value": "Components",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "MEM_ADDR_MAP": {
             "value": "ROW_COLUMN_BANK",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "SLOT": {
             "value": "Single",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           },
           "TIMEPERIOD_PS": {
             "value": "833",
-            "value_src": "default_prop"
+            "value_src": "user_prop"
           }
         },
         "port_maps": {
@@ -230,107 +231,6 @@
             "direction": "I"
           }
         }
-      },
-      "qdma_c2h": {
-        "mode": "Master",
-        "vlnv_bus_definition": "xilinx.com:interface:axis:1.0",
-        "vlnv": "xilinx.com:interface:axis_rtl:1.0",
-        "parameters": {
-          "FREQ_HZ": {
-            "value": "100000000",
-            "value_src": "default"
-          },
-          "HAS_TKEEP": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "HAS_TLAST": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "HAS_TREADY": {
-            "value": "1",
-            "value_src": "default"
-          },
-          "HAS_TSTRB": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "INSERT_VIP": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "LAYERED_METADATA": {
-            "value": "undef",
-            "value_src": "default"
-          },
-          "PHASE": {
-            "value": "0.0",
-            "value_src": "default"
-          },
-          "TDATA_NUM_BYTES": {
-            "value": "1",
-            "value_src": "default"
-          },
-          "TDEST_WIDTH": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "TID_WIDTH": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "TUSER_WIDTH": {
-            "value": "0",
-            "value_src": "default"
-          }
-        }
-      },
-      "qdma_h2c": {
-        "mode": "Slave",
-        "vlnv_bus_definition": "xilinx.com:interface:axis:1.0",
-        "vlnv": "xilinx.com:interface:axis_rtl:1.0",
-        "parameters": {
-          "FREQ_HZ": {
-            "value": "100000000",
-            "value_src": "default"
-          },
-          "HAS_TKEEP": {
-            "value": "0"
-          },
-          "HAS_TLAST": {
-            "value": "0"
-          },
-          "HAS_TREADY": {
-            "value": "1"
-          },
-          "HAS_TSTRB": {
-            "value": "0"
-          },
-          "INSERT_VIP": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "LAYERED_METADATA": {
-            "value": "undef"
-          },
-          "PHASE": {
-            "value": "0.0",
-            "value_src": "default"
-          },
-          "TDATA_NUM_BYTES": {
-            "value": "64"
-          },
-          "TDEST_WIDTH": {
-            "value": "0"
-          },
-          "TID_WIDTH": {
-            "value": "0"
-          },
-          "TUSER_WIDTH": {
-            "value": "0"
-          }
-        }
       }
     },
     "ports": {
@@ -338,6 +238,10 @@
         "type": "rst",
         "direction": "I",
         "parameters": {
+          "INSERT_VIP": {
+            "value": "0",
+            "value_src": "default"
+          },
           "POLARITY": {
             "value": "ACTIVE_LOW"
           }
@@ -347,6 +251,10 @@
         "type": "rst",
         "direction": "I",
         "parameters": {
+          "INSERT_VIP": {
+            "value": "0",
+            "value_src": "default"
+          },
           "POLARITY": {
             "value": "ACTIVE_HIGH"
           }
@@ -502,7 +410,7 @@
             "value": "2"
           },
           "NUM_MI": {
-            "value": "1"
+            "value": "2"
           },
           "NUM_SI": {
             "value": "2"
@@ -513,22 +421,97 @@
             "mode": "Slave",
             "vlnv_bus_definition": "xilinx.com:interface:aximm:1.0",
             "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
+            "parameters": {
+              "NUM_READ_OUTSTANDING": {
+                "value": "32"
+              },
+              "NUM_WRITE_OUTSTANDING": {
+                "value": "32"
+              }
+            },
             "bridges": [
-              "M00_AXI"
+              "M00_AXI",
+              "M01_AXI"
             ]
           },
           "S01_AXI": {
             "mode": "Slave",
             "vlnv_bus_definition": "xilinx.com:interface:aximm:1.0",
             "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
+            "parameters": {
+              "NUM_READ_OUTSTANDING": {
+                "value": "1"
+              },
+              "NUM_WRITE_OUTSTANDING": {
+                "value": "1"
+              }
+            },
             "bridges": [
-              "M00_AXI"
+              "M00_AXI",
+              "M01_AXI"
             ]
           },
           "M00_AXI": {
             "mode": "Master",
             "vlnv_bus_definition": "xilinx.com:interface:aximm:1.0",
-            "vlnv": "xilinx.com:interface:aximm_rtl:1.0"
+            "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
+            "parameters": {
+              "MAX_BURST_LENGTH": {
+                "value": "1"
+              },
+              "NUM_READ_OUTSTANDING": {
+                "value": "32"
+              },
+              "NUM_READ_THREADS": {
+                "value": "1"
+              },
+              "NUM_WRITE_OUTSTANDING": {
+                "value": "32"
+              },
+              "NUM_WRITE_THREADS": {
+                "value": "1"
+              },
+              "RUSER_BITS_PER_BYTE": {
+                "value": "0"
+              },
+              "SUPPORTS_NARROW_BURST": {
+                "value": "0"
+              },
+              "WUSER_BITS_PER_BYTE": {
+                "value": "0"
+              }
+            }
+          },
+          "M01_AXI": {
+            "mode": "Master",
+            "vlnv_bus_definition": "xilinx.com:interface:aximm:1.0",
+            "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
+            "parameters": {
+              "MAX_BURST_LENGTH": {
+                "value": "256"
+              },
+              "NUM_READ_OUTSTANDING": {
+                "value": "32"
+              },
+              "NUM_READ_THREADS": {
+                "value": "1"
+              },
+              "NUM_WRITE_OUTSTANDING": {
+                "value": "32"
+              },
+              "NUM_WRITE_THREADS": {
+                "value": "1"
+              },
+              "RUSER_BITS_PER_BYTE": {
+                "value": "0"
+              },
+              "SUPPORTS_NARROW_BURST": {
+                "value": "0"
+              },
+              "WUSER_BITS_PER_BYTE": {
+                "value": "0"
+              }
+            }
           }
         }
       },
@@ -587,6 +570,14 @@
               "HAS_TLAST": {
                 "value": "1",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
               }
             },
             "port_maps": {
@@ -658,6 +649,14 @@
               "HAS_TLAST": {
                 "value": "1",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
               }
             },
             "port_maps": {
@@ -729,6 +728,14 @@
               "HAS_TLAST": {
                 "value": "1",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
               }
             },
             "port_maps": {
@@ -800,6 +807,14 @@
               "HAS_TLAST": {
                 "value": "1",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
               }
             },
             "port_maps": {
@@ -847,6 +862,10 @@
               "PROTOCOL": {
                 "value": "AXI4LITE",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
               },
               "ID_WIDTH": {
                 "value": "0",
@@ -931,6 +950,26 @@
               "MAX_BURST_LENGTH": {
                 "value": "1",
                 "value_src": "auto"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
+              },
+              "NUM_READ_THREADS": {
+                "value": "1",
+                "value_src": "user_prop"
+              },
+              "NUM_WRITE_THREADS": {
+                "value": "1",
+                "value_src": "user_prop"
+              },
+              "RUSER_BITS_PER_BYTE": {
+                "value": "0",
+                "value_src": "user_prop"
+              },
+              "WUSER_BITS_PER_BYTE": {
+                "value": "0",
+                "value_src": "user_prop"
               }
             },
             "memory_map_ref": "s_axi",
@@ -1044,6 +1083,14 @@
               "ASSOCIATED_RESET": {
                 "value": "aresetn",
                 "value_src": "constant"
+              },
+              "FREQ_HZ": {
+                "value": "250000000",
+                "value_src": "user_prop"
+              },
+              "CLK_DOMAIN": {
+                "value": "bd_pcie_2_qdma_0_0_axi_aclk",
+                "value_src": "default_prop"
               }
             }
           },
@@ -1074,6 +1121,12 @@
         "interface_ports": [
           "axi_smartconnect_0/M00_AXI",
           "packet_processor_0/s_axi"
+        ]
+      },
+      "axi_smartconnect_0_M01_AXI": {
+        "interface_ports": [
+          "axi_smartconnect_0/M01_AXI",
+          "ddr4_0/C0_DDR4_S_AXI"
         ]
       },
       "ddr4_0_C0_DDR4": {

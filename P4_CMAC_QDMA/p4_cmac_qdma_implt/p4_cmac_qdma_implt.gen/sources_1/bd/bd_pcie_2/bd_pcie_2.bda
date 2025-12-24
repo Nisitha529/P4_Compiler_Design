@@ -208,6 +208,44 @@
             },
             "V4": {
                 "VT": "AC",
+                "BA": "0x0000000080000000",
+                "HA": "0x00000000FFFFFFFF",
+                "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
+                "HP": "C0_DDR4_MEMORY_MAP_HIGHADDR",
+                "MA": "M_AXI",
+                "MX": "/qdma_0",
+                "MI": "M_AXI",
+                "MS": "SEG_ddr4_0_C0_DDR4_ADDRESS_BLOCK",
+                "MV": "xilinx.com:ip:qdma:5.0",
+                "SX": "/ddr4_0",
+                "SI": "C0_DDR4_S_AXI",
+                "MM": "C0_DDR4_MEMORY_MAP",
+                "SS": "C0_DDR4_ADDRESS_BLOCK",
+                "SV": "xilinx.com:ip:ddr4:2.2",
+                "TM": "both",
+                "TU": "memory"
+            },
+            "V5": {
+                "VT": "AC",
+                "BA": "0x80000000",
+                "HA": "0xFFFFFFFF",
+                "BP": "C0_DDR4_MEMORY_MAP_BASEADDR",
+                "HP": "C0_DDR4_MEMORY_MAP_HIGHADDR",
+                "MA": "M_AXI_LITE",
+                "MX": "/qdma_0",
+                "MI": "M_AXI_LITE",
+                "MS": "SEG_ddr4_0_C0_DDR4_ADDRESS_BLOCK",
+                "MV": "xilinx.com:ip:qdma:5.0",
+                "SX": "/ddr4_0",
+                "SI": "C0_DDR4_S_AXI",
+                "MM": "C0_DDR4_MEMORY_MAP",
+                "SS": "C0_DDR4_ADDRESS_BLOCK",
+                "SV": "xilinx.com:ip:ddr4:2.2",
+                "TM": "both",
+                "TU": "memory"
+            },
+            "V6": {
+                "VT": "AC",
                 "BA": "0x0000000100000000",
                 "HA": "0x00000001FFFFFFFF",
                 "BP": "C_BASEADDR",
@@ -241,6 +279,16 @@
             },
             {
                 "src": "V4",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V5",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V6",
                 "trg": "V2",
                 "EH": "2"
             }
