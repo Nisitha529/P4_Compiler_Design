@@ -143,6 +143,7 @@ xilinx.com:ip:util_ds_buf:2.2\
 xilinx.com:ip:ddr4:2.2\
 xilinx.com:ip:smartconnect:1.0\
 xilinx.com:ip:proc_sys_reset:5.0\
+xilinx.com:ip:axi_dma:7.1\
 "
 
    set list_ips_missing ""
@@ -293,8 +294,8 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.HAS_ARESETN {1} \
     CONFIG.NUM_CLKS {2} \
-    CONFIG.NUM_MI {2} \
-    CONFIG.NUM_SI {2} \
+    CONFIG.NUM_MI {4} \
+    CONFIG.NUM_SI {8} \
   ] $axi_smartconnect_0
 
 
@@ -312,22 +313,42 @@ proc create_root_design { parentCell } {
      return 1
    }
   
+  # Create instance: axi_dma_h2c, and set properties
+  set axi_dma_h2c [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:7.1 axi_dma_h2c ]
+  set_property CONFIG.c_mm2s_burst_size {256} $axi_dma_h2c
+
+
+  # Create instance: axi_dma_c2h, and set properties
+  set axi_dma_c2h [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:7.1 axi_dma_c2h ]
+  set_property CONFIG.c_mm2s_burst_size {256} $axi_dma_c2h
+
+
   # Create interface connections
+  connect_bd_intf_net -intf_net axi_dma_c2h_M_AXI_MM2S [get_bd_intf_pins axi_dma_c2h/M_AXI_MM2S] [get_bd_intf_pins axi_smartconnect_0/S04_AXI]
+  connect_bd_intf_net -intf_net axi_dma_c2h_M_AXI_S2MM [get_bd_intf_pins axi_dma_c2h/M_AXI_S2MM] [get_bd_intf_pins axi_smartconnect_0/S03_AXI]
+  connect_bd_intf_net -intf_net axi_dma_c2h_M_AXI_SG [get_bd_intf_pins axi_dma_c2h/M_AXI_SG] [get_bd_intf_pins axi_smartconnect_0/S05_AXI]
+  connect_bd_intf_net -intf_net axi_dma_h2c_M_AXIS_MM2S [get_bd_intf_pins axi_dma_h2c/M_AXIS_MM2S] [get_bd_intf_pins packet_processor_0/s_axis_qdma_h2c]
+  connect_bd_intf_net -intf_net axi_dma_h2c_M_AXI_MM2S [get_bd_intf_pins axi_dma_h2c/M_AXI_MM2S] [get_bd_intf_pins axi_smartconnect_0/S02_AXI]
+  connect_bd_intf_net -intf_net axi_dma_h2c_M_AXI_S2MM [get_bd_intf_pins axi_dma_h2c/M_AXI_S2MM] [get_bd_intf_pins axi_smartconnect_0/S06_AXI]
+  connect_bd_intf_net -intf_net axi_dma_h2c_M_AXI_SG [get_bd_intf_pins axi_dma_h2c/M_AXI_SG] [get_bd_intf_pins axi_smartconnect_0/S07_AXI]
   connect_bd_intf_net -intf_net axi_smartconnect_0_M00_AXI [get_bd_intf_pins axi_smartconnect_0/M00_AXI] [get_bd_intf_pins packet_processor_0/s_axi]
   connect_bd_intf_net -intf_net axi_smartconnect_0_M01_AXI [get_bd_intf_pins axi_smartconnect_0/M01_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
+  connect_bd_intf_net -intf_net axi_smartconnect_0_M02_AXI [get_bd_intf_pins axi_smartconnect_0/M02_AXI] [get_bd_intf_pins axi_dma_h2c/S_AXI_LITE]
+  connect_bd_intf_net -intf_net axi_smartconnect_0_M03_AXI [get_bd_intf_pins axi_smartconnect_0/M03_AXI] [get_bd_intf_pins axi_dma_c2h/S_AXI_LITE]
   connect_bd_intf_net -intf_net ddr4_0_C0_DDR4 [get_bd_intf_ports ddr4_sdram_c1_062] [get_bd_intf_pins ddr4_0/C0_DDR4]
   connect_bd_intf_net -intf_net default_250mhz_clk1_1 [get_bd_intf_ports default_250mhz_clk1] [get_bd_intf_pins ddr4_0/C0_SYS_CLK]
+  connect_bd_intf_net -intf_net packet_processor_0_m_axis_qdma_c2h [get_bd_intf_pins packet_processor_0/m_axis_qdma_c2h] [get_bd_intf_pins axi_dma_c2h/S_AXIS_S2MM]
   connect_bd_intf_net -intf_net pcie_refclk_1 [get_bd_intf_ports pcie_refclk] [get_bd_intf_pins util_ds_buf_0/CLK_IN_D]
   connect_bd_intf_net -intf_net qdma_0_M_AXI [get_bd_intf_pins qdma_0/M_AXI] [get_bd_intf_pins axi_smartconnect_0/S00_AXI]
   connect_bd_intf_net -intf_net qdma_0_M_AXI_LITE [get_bd_intf_pins qdma_0/M_AXI_LITE] [get_bd_intf_pins axi_smartconnect_0/S01_AXI]
   connect_bd_intf_net -intf_net qdma_0_pcie_mgt [get_bd_intf_ports pci_express_x16] [get_bd_intf_pins qdma_0/pcie_mgt]
 
   # Create port connections
-  connect_bd_net -net ddr4_0_c0_ddr4_ui_clk [get_bd_pins ddr4_0/c0_ddr4_ui_clk] [get_bd_pins axi_smartconnect_0/aclk1] [get_bd_pins rst_ddr4_0_300M/slowest_sync_clk]
+  connect_bd_net -net ddr4_0_c0_ddr4_ui_clk [get_bd_pins ddr4_0/c0_ddr4_ui_clk] [get_bd_pins axi_smartconnect_0/aclk1] [get_bd_pins rst_ddr4_0_300M/slowest_sync_clk] [get_bd_pins axi_dma_c2h/m_axi_mm2s_aclk] [get_bd_pins axi_dma_c2h/m_axi_sg_aclk] [get_bd_pins axi_dma_h2c/m_axi_s2mm_aclk] [get_bd_pins axi_dma_h2c/m_axi_sg_aclk]
   connect_bd_net -net ddr4_0_c0_ddr4_ui_clk_sync_rst [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_ddr4_0_300M/ext_reset_in]
   connect_bd_net -net pcie_perstn_1 [get_bd_ports pcie_perstn] [get_bd_pins qdma_0/sys_rst_n]
-  connect_bd_net -net qdma_0_axi_aclk [get_bd_pins qdma_0/axi_aclk] [get_bd_pins axi_smartconnect_0/aclk] [get_bd_pins packet_processor_0/aclk]
-  connect_bd_net -net qdma_0_axi_aresetn [get_bd_pins qdma_0/axi_aresetn] [get_bd_pins axi_smartconnect_0/aresetn] [get_bd_pins packet_processor_0/aresetn]
+  connect_bd_net -net qdma_0_axi_aclk [get_bd_pins qdma_0/axi_aclk] [get_bd_pins axi_smartconnect_0/aclk] [get_bd_pins packet_processor_0/aclk] [get_bd_pins axi_dma_c2h/s_axi_lite_aclk] [get_bd_pins axi_dma_h2c/s_axi_lite_aclk] [get_bd_pins axi_dma_h2c/m_axi_mm2s_aclk] [get_bd_pins axi_dma_c2h/m_axi_s2mm_aclk]
+  connect_bd_net -net qdma_0_axi_aresetn [get_bd_pins qdma_0/axi_aresetn] [get_bd_pins axi_smartconnect_0/aresetn] [get_bd_pins packet_processor_0/aresetn] [get_bd_pins axi_dma_c2h/axi_resetn] [get_bd_pins axi_dma_h2c/axi_resetn]
   connect_bd_net -net reset_1 [get_bd_ports reset] [get_bd_pins ddr4_0/sys_rst]
   connect_bd_net -net rst_ddr4_0_300M_peripheral_aresetn [get_bd_pins rst_ddr4_0_300M/peripheral_aresetn] [get_bd_pins ddr4_0/c0_ddr4_aresetn]
   connect_bd_net -net util_ds_buf_0_IBUF_DS_ODIV2 [get_bd_pins util_ds_buf_0/IBUF_DS_ODIV2] [get_bd_pins qdma_0/sys_clk]
@@ -339,12 +360,24 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x000100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces qdma_0/M_AXI] [get_bd_addr_segs packet_processor_0/s_axi/reg0] -force
   assign_bd_address -offset 0x80000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces qdma_0/M_AXI_LITE] [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces qdma_0/M_AXI_LITE] [get_bd_addr_segs packet_processor_0/s_axi/reg0] -force
+  assign_bd_address -offset 0x80000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces axi_dma_h2c/Data_MM2S] [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] -force
+  assign_bd_address -offset 0x80000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces axi_dma_c2h/Data_MM2S] [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] -force
+  assign_bd_address -offset 0x80000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces axi_dma_c2h/Data_S2MM] [get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK] -force
+
+  # Exclude Address Segments
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_c2h/Data_MM2S] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_c2h/Data_S2MM] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_c2h/Data_SG] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_h2c/Data_MM2S] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_h2c/Data_S2MM] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -offset 0x00000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces axi_dma_h2c/Data_SG] [get_bd_addr_segs packet_processor_0/s_axi/reg0]
+  exclude_bd_addr_seg -target_address_space [get_bd_addr_spaces qdma_0/M_AXI_LITE] [get_bd_addr_segs axi_dma_c2h/S_AXI_LITE/Reg]
+  exclude_bd_addr_seg -target_address_space [get_bd_addr_spaces qdma_0/M_AXI_LITE] [get_bd_addr_segs axi_dma_h2c/S_AXI_LITE/Reg]
 
 
   # Restore current instance
   current_bd_instance $oldCurInst
 
-  validate_bd_design
   save_bd_design
 }
 # End of create_root_design()
@@ -356,4 +389,6 @@ proc create_root_design { parentCell } {
 
 create_root_design ""
 
+
+common::send_gid_msg -ssname BD::TCL -id 2053 -severity "WARNING" "This Tcl script was generated from a block design that has not been validated. It is possible that design <$design_name> may result in errors during validation."
 
