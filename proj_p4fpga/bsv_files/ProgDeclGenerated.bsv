@@ -1,0 +1,1 @@
+method _routing_add_entry=ingress._routing_add_entry;
