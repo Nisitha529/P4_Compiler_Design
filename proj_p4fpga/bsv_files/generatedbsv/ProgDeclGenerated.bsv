@@ -1,0 +1,3 @@
+method _forward_add_entry=ingress._forward_add_entry;
+method _ipv4_lpm_add_entry=ingress._ipv4_lpm_add_entry;
+method _send_frame_add_entry=egress._send_frame_add_entry;
