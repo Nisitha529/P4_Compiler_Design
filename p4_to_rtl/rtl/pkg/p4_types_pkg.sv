@@ -20,7 +20,8 @@ package p4_types_pkg;
     logic               drop;
     logic      [63 : 0] ingress_timestamp;
     logic      [15 : 0] parsed_bytes;
-    p4_error_t          parser_error;
+    // p4_error_t          parser_error;
+    logic      [7 : 0]  parser_error;
   } standard_metadata_t;
 
   // User metadata
@@ -38,6 +39,7 @@ package p4_types_pkg;
     headers_t           hdr;
     metadata_t          meta;
     standard_metadata_t smeta;
+    logic               valid;
   } parser_bus_t;
 
   // AXI Stream packet word

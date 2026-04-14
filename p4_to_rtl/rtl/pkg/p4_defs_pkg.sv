@@ -1,15 +1,15 @@
 package p4_defs_pkg;
 
   // Global configuration
-  localparam int   P4_DATA_W           = 128;
-  localparam int   P4_KEEP_W           = P4_DATA_W / 8;
+  localparam int   P4_DATA_W             = 128;
+  localparam int   P4_KEEP_W             = P4_DATA_W / 8;
 
   // Generic booleans and flags
-  localparam logic P4_FALSE            = 1'b0;
-  localparam logic P4_TRUE             = 1'b1;
+  localparam logic P4_FALSE              = 1'b0;
+  localparam logic P4_TRUE               = 1'b1;
 
-  localparam logic P4_DROP_KEEP_METADA = 1'b0;
-  localparam logic P4_DROP_PACKET      = 1'b1;
+  localparam logic P4_DROP_KEEP_METADATA = 1'b0;
+  localparam logic P4_DROP_PACKET        = 1'b1;
 
   // Parser state machine
   // Needed to be expanded in the future
@@ -49,7 +49,8 @@ package p4_defs_pkg;
   // Match results
   typedef struct packed {
     logic                   hit;
-    p4_action_id_t          action_id;
+    // p4_action_id_t          action_id;
+    logic          [7 : 0]  action_id;
     logic          [63 : 0] action_data;
   } table_result_t;
 
@@ -70,11 +71,13 @@ package p4_defs_pkg;
   localparam logic                     P4_AXIS_READY_DFLT    = 1'b1;
 
   // Null and default pipeline helper values
-  localparam p4_action_id_t            P4_DEFAULT_ACTION     = P4_ACTION_ID_NOACTION;
-  localparam p4_table_id_t             P4_DEFAULT_TABLE      = P4_TABLE_ID_NONE;
+  // localparam p4_action_id_t            P4_DEFAULT_ACTION     = P4_ACTION_ID_NOACTION;
+  // localparam p4_table_id_t             P4_DEFAULT_TABLE      = P4_TABLE_ID_NONE;
+  localparam logic [7 : 0]             P4_DEFAULT_ACTION     = 8'd0;
+  localparam logic [7 : 0]             P4_DEFAULT_TABLE      = 8'd0;
 
   // Helper functions
-  function automatic logic [P4_KEEP_W - 1 : 0] keep_fron_nbytes (input int nbytes);
+  function automatic logic [P4_KEEP_W - 1 : 0] keep_from_nbytes (input int nbytes);
     logic [P4_KEEP_W - 1 : 0] tmp;
     int                       i;
 
