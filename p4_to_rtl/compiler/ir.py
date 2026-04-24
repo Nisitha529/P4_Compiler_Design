@@ -1,18 +1,19 @@
 class ParserState:
-    def __init__(self, name, transition):
-        self.name = name
-        self.transition = transition
-
+    def __init__(self, name, transition, extract = None, select = None):
+        self.name       = name
+        self.transition = transition,
+        self.extract    = extract,
+        self.select     = select
 
 class HeaderField:
     def __init__(self, name, width):
-        self.name = name
+        self.name  = name
         self.width = width
 
 
 class Header:
     def __init__(self, name):
-        self.name = name
+        self.name   = name
         self.fields = []
 
     def add_field(self, field):
@@ -21,14 +22,14 @@ class Header:
 
 class Table:
     def __init__(self, name):
-        self.name = name
-        self.keys = []
+        self.name    = name
+        self.keys    = []
         self.actions = []
 
 
 class Action:
     def __init__(self, name):
-        self.name = name
+        self.name   = name
         self.params = []
 
 
@@ -38,15 +39,13 @@ class IR:
         self.parser_states = []
 
         # Headers
-        self.headers = []
+        self.headers       = []
 
         # Match-action
-        self.tables = []
-        self.actions = []
+        self.tables        = []
+        self.actions       = []
 
-    # -------------------------
     # Helper methods
-    # -------------------------
     def add_parser_state(self, name, transition):
         self.parser_states.append(ParserState(name, transition))
 
