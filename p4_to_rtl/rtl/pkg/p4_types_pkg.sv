@@ -29,9 +29,15 @@ package p4_types_pkg;
     logic dummy;
   } metadata_t;
 
+  typedef struct packed {
+    logic [47 : 0] dst_mac;
+    logic [47 : 0] src_mac;
+    logic [15 : 0] eth_type;
+  } ethernet_t;
+
   // Parsed headers
   typedef struct packed {
-    logic dummy;
+    ethernet_t ethernet;
   } headers_t;
 
   // Parser -> Processing sideband bundle

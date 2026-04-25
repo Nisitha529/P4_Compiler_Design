@@ -1,8 +1,8 @@
 class ParserState:
     def __init__(self, name, transition, extract = None, select = None):
         self.name       = name
-        self.transition = transition,
-        self.extract    = extract,
+        self.transition = transition
+        self.extract    = extract
         self.select     = select
 
 class HeaderField:
@@ -46,8 +46,8 @@ class IR:
         self.actions       = []
 
     # Helper methods
-    def add_parser_state(self, name, transition):
-        self.parser_states.append(ParserState(name, transition))
+    def add_parser_state(self, name, transition, extract, select):
+        self.parser_states.append(ParserState(name, transition, extract, select))
 
     def add_header(self, header):
         self.headers.append(header)
