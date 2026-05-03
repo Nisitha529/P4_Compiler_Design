@@ -1,6 +1,6 @@
 // ============================================================
 // parser_default.sv
-// DATAPATH for P4 parser
+// DATAPATH for P4 parser (FINAL CORRECTED VERSION)
 // ============================================================
 
 import p4_defs_pkg::*;
@@ -10,22 +10,16 @@ module parser_default (
   input  logic        clk,
   input  logic        rst_n,
 
-  // ============================================================
-  // AXI Stream input
-  // ============================================================
+  // AXI input
   input  axis_word_t  s_axis,
   input  logic        s_valid,
   output logic        s_ready,
 
-  // ============================================================
-  // Parser → Processing interface
-  // ============================================================
+  // Parser → Processing
   output parser_bus_t bus_out,
   output logic        valid_out,
 
-  // ============================================================
   // Packet passthrough
-  // ============================================================
   output axis_word_t  pkt_out,
   output logic        pkt_valid,
   input  logic        pkt_ready
@@ -42,35 +36,42 @@ module parser_default (
   standard_metadata_t smeta_reg;
 
   // ============================================================
-  // CONTROL SIGNALS from parser_generated
+  // CONTROL SIGNALS (MATCH parser_generated)
   // ============================================================
-  logic extract_ethernet;   // CHANGED: control-driven extraction
-  logic done;               // CHANGED: parsing completion
+  logic extract_eth;
+  logic extract_ipv4;
+  logic extract_udp;
+  logic done;
 
   // ============================================================
-  // Extracted fields (fed back to control)
+  // FEEDBACK SIGNALS (ZERO LATENCY)
   // ============================================================
   logic [15:0] eth_type_wire;
+  logic [7:0]  ipv4_protocol_wire;
+
+  assign eth_type_wire      = data_reg.tdata[31:16];
+  assign ipv4_protocol_wire = data_reg.tdata[23:16]; // future-safe
 
   // ============================================================
-  // CONTROL MODULE (generated from P4)
+  // CONTROL FSM (GENERATED)
   // ============================================================
   parser_generated u_parser_ctrl (
-    .clk              (clk),
-    .rst_n            (rst_n),
+    .clk(clk),
+    .rst_n(rst_n),
+    .valid_in(valid_reg),
 
-    .valid_in         (valid_reg),
+    .eth_type(eth_type_wire),
+    .ipv4_protocol(ipv4_protocol_wire),
 
-    // CHANGED: feedback signal for select()
-    .eth_type         (eth_type_wire),
+    .extract_eth(extract_eth),
+    .extract_ipv4(extract_ipv4),
+    .extract_udp(extract_udp),
 
-    // CHANGED: control signals
-    .extract_ethernet (extract_ethernet),
-    .done             (done)
+    .done(done)
   );
 
   // ============================================================
-  // AXI HANDSHAKE LOGIC (STABLE)
+  // AXI HANDSHAKE
   // ============================================================
   assign s_ready   = !valid_reg || pkt_ready;
   assign pkt_valid = valid_reg;
@@ -81,13 +82,11 @@ module parser_default (
       valid_reg <= 1'b0;
     end else begin
 
-      // Capture incoming packet
       if (s_valid && s_ready) begin
         valid_reg <= 1'b1;
         data_reg  <= s_axis;
       end
 
-      // Release after downstream accepts
       if (pkt_valid && pkt_ready) begin
         valid_reg <= 1'b0;
       end
@@ -95,7 +94,7 @@ module parser_default (
   end
 
   // ============================================================
-  // PARSER DATAPATH (CONTROL-DRIVEN)
+  // PARSER DATAPATH
   // ============================================================
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -106,35 +105,32 @@ module parser_default (
     end else if (valid_reg) begin
 
       // --------------------------------------------------------
-      // CHANGED: extraction controlled by FSM signals
+      // Ethernet extraction
       // --------------------------------------------------------
-      if (extract_ethernet) begin
-
-        // Ethernet header extraction
+      if (extract_eth) begin
         hdr_reg.ethernet.dst_mac  <= data_reg.tdata[127:80];
         hdr_reg.ethernet.src_mac  <= data_reg.tdata[79:32];
         hdr_reg.ethernet.eth_type <= data_reg.tdata[31:16];
 
-        // Update metadata
-        smeta_reg.parsed_bytes    <= 16'd14;
-        smeta_reg.parser_error    <= 8'd0;
-
+        smeta_reg.parsed_bytes <= 16'd14;
       end
 
       // --------------------------------------------------------
-      // FUTURE EXTENSIONS (NOT YET IMPLEMENTED)
+      // IPv4 extraction (placeholder)
       // --------------------------------------------------------
-      // if (extract_ipv4) begin ...
-      // if (extract_tcp)  begin ...
-      // if (extract_udp)  begin ...
+      if (extract_ipv4) begin
+        // TODO: correct offset using cursor later
+        // hdr_reg.ipv4 <= ...
+      end
 
+      // --------------------------------------------------------
+      // UDP extraction (placeholder)
+      // --------------------------------------------------------
+      if (extract_udp) begin
+        // TODO
+      end
     end
   end
-
-  // ============================================================
-  // FEEDBACK TO CONTROL (FOR SELECT)
-  // ============================================================
-  assign eth_type_wire = hdr_reg.ethernet.eth_type;
 
   // ============================================================
   // OUTPUT BUS
@@ -142,8 +138,8 @@ module parser_default (
   assign bus_out.hdr   = hdr_reg;
   assign bus_out.meta  = meta_reg;
   assign bus_out.smeta = smeta_reg;
-  assign bus_out.valid = valid_reg;   // CHANGED: explicit valid in bus
+  assign bus_out.valid = valid_reg;
 
-  assign valid_out = valid_reg;
+  assign valid_out = valid_reg; // or (valid_reg & done)
 
 endmodule

@@ -1,5 +1,6 @@
 import re
 
+
 def parse_p4_file(filepath):
     with open(filepath, "r") as f:
         lines = f.readlines()
@@ -7,65 +8,110 @@ def parse_p4_file(filepath):
     parser_states = []
     current_state = None
 
-    in_parser_block = False
+    in_parser = False
+    in_select = False
+
+    select_expr = None
+    select_cases = []
+    select_default = None
 
     for line in lines:
         line = line.strip()
 
-        # Enter parser block
+        # -------------------------------
+        # Enter parser
+        # -------------------------------
         if re.match(r"parser\s+\w+", line):
-            in_parser_block = True
+            in_parser = True
             continue
 
-        if not in_parser_block:
+        if not in_parser:
             continue
 
-        # Detect state definition
-        # Example: state start {
+        # -------------------------------
+        # State start
+        # -------------------------------
         state_match = re.match(r"state\s+(\w+)", line)
         if state_match:
             current_state = {
                 "name": state_match.group(1),
-                "transition": None,
                 "extract": None,
+                "transition": None,
                 "select": None
             }
             continue
 
-        # Detect extract
-        # Example: packet.extract(hdr.ethernet);
+        # -------------------------------
+        # Extract
+        # -------------------------------
         extract_match = re.search(r"extract\s*\(\s*hdr\.(\w+)\s*\)", line)
-        if extract_match and current_state is not None:
+        if extract_match and current_state:
             current_state["extract"] = extract_match.group(1)
             continue
 
-        # Detect transition
-        # Example: transition accept;
-        if line.startswith("transition") and current_state is not None:
-            transition = line.split("transition")[1].strip(" ;")
+        # -------------------------------
+        # transition select(...)
+        # -------------------------------
+        if line.startswith("transition select") and current_state:
+            in_select = True
+
+            select_expr = re.search(r"select\s*\((.*?)\)", line).group(1)
+
+            select_cases = []
+            select_default = None
+            continue
+
+        # -------------------------------
+        # Inside select block
+        # -------------------------------
+        if in_select:
+            case_match = re.match(r"(.*?)\s*:\s*(\w+)\s*;", line)
+
+            if case_match:
+                key = case_match.group(1).strip()
+                val = case_match.group(2).strip()
+
+                if key in ["default", "_"]:
+                    select_default = val
+                else:
+                    select_cases.append((key, val))
+                continue
+
+            # end select
+            if line == "}":
+                current_state["select"] = {
+                    "expr": select_expr,
+                    "cases": select_cases,
+                    "default": select_default
+                }
+                in_select = False
+                continue
+
+        # -------------------------------
+        # Simple transition
+        # -------------------------------
+        if line.startswith("transition") and current_state and not in_select:
+
+            if "select" in line:
+                continue
+
+            transition = line.replace("transition", "").strip(" ;")
             current_state["transition"] = transition
             continue
 
-        # Detect select-based transition
-        # Example:
-        # transition select(hdr.ethernet.etherType)
-        select_match = re.search(r"select\s*\(\s*(.*?)\s*\)", line)
-        if select_match and current_state is not None:
-            current_state["select"] = select_match.group(1)
-            continue
-
-        # End of state block
-        if line == "}" and current_state is not None:
-            # only append valid states
-            if current_state["transition"] is not None:
-                parser_states.append(current_state)
-
+        # -------------------------------
+        # End state
+        # -------------------------------
+        if line == "}" and current_state and not in_select:
+            parser_states.append(current_state)
             current_state = None
             continue
 
-        # Exit parser block
-        if line.endswith("}"):
-            in_parser_block = False
+        # -------------------------------
+        # Exit parser
+        # -------------------------------
+        if line == "}" and not current_state:
+            in_parser = False
 
     return {
         "parser": {
