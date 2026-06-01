@@ -15,7 +15,7 @@ def emit_deparser(ir, output_path):
     emit_list = ir.pipeline.deparser.emit_list
     inst_map  = {inst.inst_name: inst for inst in ir.header_instances}
 
-    # ── Build ordered slot list, skip header stacks ──────────────────────
+    # Build ordered slot list, skip header stacks
     hdr_slots   = []   # [(inst_name, Header type obj, total_width_bits)]
     stack_names = []
 
@@ -48,7 +48,7 @@ def emit_deparser(ir, output_path):
 
     with open(output_path, 'w') as f:
 
-        # ── Module declaration ────────────────────────────────────────────
+        # Module declaration
         f.write('module deparser_generated (\n')
         f.write('  input  logic        clk,\n')
         f.write('  input  logic        rst_n,\n')
@@ -71,7 +71,7 @@ def emit_deparser(ir, output_path):
         f.write('  output logic         valid_out\n')
         f.write(');\n\n')
 
-        # ── Combinational packing ─────────────────────────────────────────
+        # Combinational packing
         f.write('  always_comb begin\n')
         f.write("    pkt_hdr_out = '0;\n")
         f.write('    pkt_hdr_len = 0;\n\n')
@@ -93,7 +93,7 @@ def emit_deparser(ir, output_path):
 
         f.write('  end\n\n')
 
-        # ── Pipeline register ─────────────────────────────────────────────
+        # Pipeline register
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) valid_out <= 0;\n')
         f.write('    else        valid_out <= valid_in;\n')
