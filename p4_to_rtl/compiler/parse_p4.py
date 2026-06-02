@@ -5,6 +5,21 @@ import re
 # Utilities
 # ============================================================
 
+def extract_defines(src):
+    """Collect #define NAME VALUE → {NAME: VALUE_str} before stripping."""
+    defs = {}
+    for m in re.finditer(r'^[ \t]*#define\s+(\w+)\s+(.+)$', src, re.MULTILINE):
+        defs[m.group(1)] = m.group(2).strip()
+    return defs
+
+
+def apply_defines(src, defs):
+    """Substitute #define constants so downstream parsing sees resolved values."""
+    for name, val in defs.items():
+        src = re.sub(r'\b' + re.escape(name) + r'\b', val, src)
+    return src
+
+
 def strip_comments(src):
     src = re.sub(r'/\*.*?\*/', '', src, flags=re.DOTALL)
     src = re.sub(r'//[^\n]*', '', src)
@@ -259,33 +274,62 @@ def _parse_action_body(name, params_str, body):
         p = re.sub(r'^(in|out|inout)\s+', '', p.strip())
         pm = re.match(r'([\w<>]+)\s+(\w+)', p)
         if pm:
-            params.append(pm.group(2))
+            params.append({'name': pm.group(2), 'type': pm.group(1).strip()})
 
     statements = []
     _KEYWORDS = {'if', 'else', 'for', 'while', 'switch', 'return'}
 
-    # Assignments: lhs = rhs;
+    # ── Assignments: lhs = rhs; ───────────────────────────────────────────
     for m in re.finditer(r'([\w.\[\]]+)\s*=\s*([^;{]+?)\s*;', body):
         lhs = m.group(1).strip()
         if lhs not in _KEYWORDS:
             statements.append({'type': 'assign', 'lhs': lhs, 'rhs': m.group(2).strip()})
 
-    # No-argument calls: fn();  or  obj.method();
-    for m in re.finditer(r'\b(\w+)\s*\(\s*\)\s*;', body):
-        fn = m.group(1)
-        if fn not in _KEYWORDS:
-            statements.append({'type': 'call', 'name': fn})
-
-    # Method calls with arguments: obj.method(args);
-    for m in re.finditer(r'\b(\w+)\.(\w+)\s*\(([^)]+)\)\s*;', body):
+    # ── All call forms (bracket-aware, handles nested parens / braces) ────
+    # Pass 1: method calls — obj.method(args);
+    pos = 0
+    while pos < len(body):
+        m = re.search(r'\b(\w+)\.(\w+)\s*\(', body[pos:])
+        if not m:
+            break
         obj    = m.group(1)
         method = m.group(2)
-        args   = [a.strip() for a in m.group(3).split(',') if a.strip()]
-        if method not in _KEYWORDS:
-            statements.append({
-                'type': 'method_call',
-                'obj': obj, 'method': method, 'args': args,
-            })
+        paren_pos = pos + m.end() - 1
+        if method in _KEYWORDS:
+            pos = paren_pos + 1
+            continue
+        try:
+            args_str, paren_end = find_matching_paren(body, paren_pos)
+        except (ValueError, AssertionError):
+            pos = paren_pos + 1
+            continue
+        rest = body[paren_end + 1:].lstrip()
+        if rest.startswith(';'):
+            args = [a.strip() for a in split_top_level(args_str, ',') if a.strip()]
+            statements.append({'type': 'method_call', 'obj': obj, 'method': method, 'args': args})
+        pos = paren_end + 1
+
+    # Pass 2: plain function calls — fn(args);   (not preceded by a dot)
+    pos = 0
+    while pos < len(body):
+        m = re.search(r'(?<!\.)\b(\w+)\s*\(', body[pos:])
+        if not m:
+            break
+        fn = m.group(1)
+        paren_pos = pos + m.end() - 1
+        if fn in _KEYWORDS:
+            pos = paren_pos + 1
+            continue
+        try:
+            args_str, paren_end = find_matching_paren(body, paren_pos)
+        except (ValueError, AssertionError):
+            pos = paren_pos + 1
+            continue
+        rest = body[paren_end + 1:].lstrip()
+        if rest.startswith(';'):
+            args = [a.strip() for a in split_top_level(args_str, ',') if a.strip()]
+            statements.append({'type': 'call', 'name': fn, 'args': args})
+        pos = paren_end + 1
 
     return {'name': name, 'params': params, 'body': statements}
 
@@ -414,7 +458,53 @@ def parse_apply_body(apply_body):
             pos += m.end()
             continue
 
-        # ── action_name(); ────────────────────────────────────────────────────
+        # ── obj.method(args); — e.g. bloom_filter_1.write(pos, 1) ──────────────
+        m = re.match(r'(\w+)\.(\w+)\s*\(', apply_body[pos:])
+        if m:
+            obj    = m.group(1)
+            method = m.group(2)
+            paren_abs = pos + m.end() - 1
+            if method not in _SKIP:
+                try:
+                    args_str, pend = find_matching_paren(apply_body, paren_abs)
+                    rest = apply_body[pend + 1:].lstrip()
+                    if rest.startswith(';'):
+                        args = [a.strip() for a in split_top_level(args_str, ',') if a.strip()]
+                        stmts.append({'type': 'method_call', 'obj': obj,
+                                      'method': method, 'args': args})
+                        pos = pend + 1
+                        # advance past the semicolon
+                        while pos < len(apply_body) and apply_body[pos] != ';':
+                            pos += 1
+                        pos += 1
+                        continue
+                except (ValueError, AssertionError):
+                    pass
+
+        # ── action_name(args); — calls with arguments ─────────────────────────
+        m = re.match(r'(\w+)\s*\(', apply_body[pos:])
+        if m:
+            fn = m.group(1)
+            paren_abs = pos + m.end() - 1
+            if fn not in _SKIP:
+                try:
+                    args_str, pend = find_matching_paren(apply_body, paren_abs)
+                    rest = apply_body[pend + 1:].lstrip()
+                    if rest.startswith(';'):
+                        args = [a.strip() for a in split_top_level(args_str, ',') if a.strip()]
+                        if args:
+                            stmts.append({'type': 'action_call', 'action': fn, 'args': args})
+                        else:
+                            stmts.append({'type': 'action_call', 'action': fn})
+                        pos = pend + 1
+                        while pos < len(apply_body) and apply_body[pos] != ';':
+                            pos += 1
+                        pos += 1
+                        continue
+                except (ValueError, AssertionError):
+                    pass
+
+        # ── action_name(); — zero-arg calls (fallback) ───────────────────────
         m = re.match(r'(\w+)\s*\(\s*\)\s*;', apply_body[pos:])
         if m:
             fn = m.group(1)
@@ -445,11 +535,40 @@ def parse_apply_body(apply_body):
 # Control block parsing
 # ============================================================
 
+def _parse_ctrl_local_vars(body, typedefs):
+    """Parse bare  type varname;  declarations (not inside sub-blocks)."""
+    vars_ = []
+    for m in re.finditer(
+        r'\b(bit\s*<\s*\d+\s*>|int\s*<\s*\d+\s*>|bool)\s+(\w+)\s*;',
+        body
+    ):
+        type_str = m.group(1).strip()
+        vname    = m.group(2).strip()
+        w        = resolve_width(type_str, typedefs)
+        if w and vname not in ('apply', 'if', 'else', 'for'):
+            vars_.append({'name': vname, 'type': type_str, 'width': w})
+    return vars_
+
+
+def _parse_ctrl_registers(body):
+    """Parse  register<bit<N>>(size) name;  declarations."""
+    regs = []
+    for m in re.finditer(
+        r'\bregister\s*<\s*bit\s*<\s*(\d+)\s*>\s*>\s*\(\s*(\d+)\s*\)\s+(\w+)\s*;',
+        body
+    ):
+        regs.append({'name': m.group(3), 'data_width': int(m.group(1)),
+                     'size': int(m.group(2))})
+    return regs
+
+
 def parse_control_block(body):
     result = {
-        'tables':  [],
-        'actions': [],
-        'apply':   {'stmts': [], 'emits': []},
+        'tables':     [],
+        'actions':    [],
+        'local_vars': [],
+        'registers':  [],
+        'apply':      {'stmts': [], 'emits': []},
     }
 
     # Tables
@@ -488,6 +607,10 @@ def parse_control_block(body):
             for em in re.finditer(r'packet\.emit\s*\(\s*hdr\.(\w+)\s*\)\s*;', apply_body)
         ]
 
+    # Local variable declarations and register externs (needs typedefs from caller)
+    # Store raw body so parse_p4_file can run them with the correct typedefs
+    result['_raw_body'] = body
+
     return result
 
 
@@ -499,7 +622,10 @@ def parse_p4_file(filepath):
     with open(filepath, 'r') as f:
         src = f.read()
 
-    src = strip_comments(src)
+    # Resolve #define constants before stripping preprocessor lines
+    defines = extract_defines(src)
+    src     = apply_defines(src, defines)
+    src     = strip_comments(src)
 
     result = {
         'typedefs': {},
@@ -584,7 +710,12 @@ def parse_p4_file(filepath):
         _, par_end = find_matching_paren(src, paren_pos)
         brace_pos  = src.index('{', par_end)
         ctrl_body, brace_end = find_matching_brace(src, brace_pos)
-        result['controls'][ctrl_name] = parse_control_block(ctrl_body)
+        ctrl_data = parse_control_block(ctrl_body)
+        # Parse local variable declarations and register externs using typedefs
+        raw = ctrl_data.pop('_raw_body', ctrl_body)
+        ctrl_data['local_vars'] = _parse_ctrl_local_vars(raw, typedefs)
+        ctrl_data['registers']  = _parse_ctrl_registers(raw)
+        result['controls'][ctrl_name] = ctrl_data
         pos = brace_end + 1
 
     # 7. pipeline instantiation  ─  V1Switch(...) main;

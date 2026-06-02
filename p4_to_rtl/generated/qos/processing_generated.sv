@@ -43,15 +43,51 @@ module processing_generated (
   output logic [31:0] out_ipv4_srcAddr,
   output logic [31:0] out_ipv4_dstAddr,
 
+  // Standard metadata outputs
+  output logic [8:0] out_std_meta_egress_spec,
+
+  // Control-plane write ports for table instances
+  input  logic        ipv4_lpm_cp_wr_en,
+  input  logic [9:0] ipv4_lpm_cp_wr_idx,
+  input  logic [31:0] ipv4_lpm_cp_wr_key_dstAddr,
+  input  logic [5:0] ipv4_lpm_cp_wr_pfx_len,
+  input  logic [1:0] ipv4_lpm_cp_wr_action,
+  input  logic [47:0] ipv4_lpm_cp_wr_p_dstAddr,
+  input  logic [8:0] ipv4_lpm_cp_wr_p_port,
+
   output logic        valid_out,
   output logic        drop
 );
 
-  logic [31:0] standard_metadata_egress_spec;
+  // Table lookup result wires
+  logic        ipv4_lpm_hit;
+  logic [1:0] ipv4_lpm_act_id;
+  logic [47:0] ipv4_lpm_p_dstAddr;
+  logic [8:0] ipv4_lpm_p_port;
+
+  // Table module instantiations
+  ipv4_lpm_table #(.DEPTH(1024)) u_ipv4_lpm (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .lkp_dstAddr    (ipv4_dstAddr),
+    .hit       (ipv4_lpm_hit),
+    .action_id (ipv4_lpm_act_id),
+    .p_dstAddr  (ipv4_lpm_p_dstAddr),
+    .p_port  (ipv4_lpm_p_port),
+    .cp_wr_en  (ipv4_lpm_cp_wr_en),
+    .cp_wr_idx (ipv4_lpm_cp_wr_idx),
+    .cp_wr_key_dstAddr (ipv4_lpm_cp_wr_key_dstAddr),
+    .cp_wr_pfx_len (ipv4_lpm_cp_wr_pfx_len),
+    .cp_wr_action (ipv4_lpm_cp_wr_action),
+    .cp_wr_p_dstAddr (ipv4_lpm_cp_wr_p_dstAddr),
+    .cp_wr_p_port (ipv4_lpm_cp_wr_p_port)
+  );
 
   always_comb begin
     drop = 0;
-    standard_metadata_egress_spec = 32'b0;
+
+    // Standard metadata defaults
+    out_std_meta_egress_spec = 9'b0;
 
     // pass-through defaults
     out_ethernet_dstAddr = ethernet_dstAddr;
@@ -84,8 +120,21 @@ module processing_generated (
         end
       end
       // ipv4_lpm.apply()
-      //   key: ipv4_dstAddr [lpm]
-      //   default_action: NoAction()
+      if (ipv4_lpm_hit) begin
+        unique case (ipv4_lpm_act_id)
+          2'd0: ; // NoAction
+          2'd1: begin // ipv4_forward
+            out_std_meta_egress_spec = ipv4_lpm_p_port;
+            out_ethernet_srcAddr = ethernet_dstAddr;
+            out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
+            out_ipv4_ttl = ipv4_ttl - 1;
+          end
+          2'd2: begin // drop
+            drop = 1;
+          end
+          default: ; // default = NoAction
+        endcase
+      end
     end
   end
 

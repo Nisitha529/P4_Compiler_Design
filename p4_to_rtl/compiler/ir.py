@@ -127,11 +127,19 @@ class Assignment:
         self.rhs = rhs
 
 
+class ActionParam:
+    """A typed action parameter: name, P4 type string, resolved bit width."""
+    def __init__(self, name, type_str, width=None):
+        self.name     = name
+        self.type_str = type_str
+        self.width    = width   # None means unresolved
+
+
 class Action:
     def __init__(self, name):
         self.name = name
-        self.params = []
-        self.body = []   # list of Assignment / ExternCall
+        self.params = []        # list[ActionParam]
+        self.body = []          # list[Assignment | ExternCall]
 
     def add_param(self, param):
         self.params.append(param)
@@ -173,12 +181,30 @@ class ExternCall(Statement):
         self.args = args
 
 
+class LocalVar:
+    """A control-block-level variable: bit<N> name;"""
+    def __init__(self, name, type_str, width):
+        self.name     = name
+        self.type_str = type_str
+        self.width    = width
+
+
+class RegisterDecl:
+    """A register<bit<N>>(size) name; extern declaration."""
+    def __init__(self, name, data_width, size):
+        self.name       = name
+        self.data_width = data_width
+        self.size       = size
+
+
 class ControlBlock:
     def __init__(self, name):
         self.name = name
         self.statements = []     # list[Statement]  (apply-block order)
         self.tables = []         # list[Table]       (local to this block)
         self.actions = []        # list[Action]      (local to this block)
+        self.local_vars = []     # list[LocalVar]    (bit<N> x; declarations)
+        self.registers  = []     # list[RegisterDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -188,6 +214,12 @@ class ControlBlock:
 
     def add_action(self, action):
         self.actions.append(action)
+
+    def add_local_var(self, var):
+        self.local_vars.append(var)
+
+    def add_register(self, reg):
+        self.registers.append(reg)
 
 
 # ============================================================

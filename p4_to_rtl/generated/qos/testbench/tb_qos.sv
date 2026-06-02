@@ -17,7 +17,8 @@
 //
 // Compile (from this directory):
 //   iverilog -g2012 -o sim tb_qos.sv \
-//     ../parser_generated.sv ../processing_generated.sv ../deparser_generated.sv
+//     ../parser_generated.sv ../processing_generated.sv \
+//     ../deparser_generated.sv ../ipv4_lpm_table.sv
 //   vvp sim
 // ============================================================================
 `timescale 1ns/1ps
@@ -76,6 +77,16 @@ module tb_qos;
   logic [15:0] pr_o_ipv4_len, pr_o_ipv4_id, pr_o_ipv4_chk;
   logic  [2:0] pr_o_ipv4_flg;  logic [12:0] pr_o_ipv4_off;
   logic        pr_valid_out, pr_drop;
+  logic  [8:0] pr_o_egress_spec;
+
+  // CP write port signals for ipv4_lpm table
+  logic        lpm_cp_en    = 0;
+  logic  [9:0] lpm_cp_idx   = 0;
+  logic [31:0] lpm_cp_key   = 0;
+  logic  [5:0] lpm_cp_pfx   = 0;
+  logic  [1:0] lpm_cp_act   = 0;
+  logic [47:0] lpm_cp_dstM  = 0;
+  logic  [8:0] lpm_cp_port  = 0;
 
   processing_generated proc_dut (
     .clk                    (clk),                .rst_n           (rst_n),
@@ -99,8 +110,35 @@ module tb_qos;
     .out_ipv4_ttl           (pr_o_ipv4_ttl),       .out_ipv4_protocol(pr_o_ipv4_proto),
     .out_ipv4_hdrChecksum   (pr_o_ipv4_chk),       .out_ipv4_srcAddr(pr_o_ipv4_src),
     .out_ipv4_dstAddr       (pr_o_ipv4_dst),
-    .valid_out              (pr_valid_out),         .drop            (pr_drop)
+    .valid_out                  (pr_valid_out),
+    .drop                       (pr_drop),
+    .out_std_meta_egress_spec   (pr_o_egress_spec),
+    // CP write ports for ipv4_lpm table
+    .ipv4_lpm_cp_wr_en          (lpm_cp_en),
+    .ipv4_lpm_cp_wr_idx         (lpm_cp_idx),
+    .ipv4_lpm_cp_wr_key_dstAddr (lpm_cp_key),
+    .ipv4_lpm_cp_wr_pfx_len     (lpm_cp_pfx),
+    .ipv4_lpm_cp_wr_action      (lpm_cp_act),
+    .ipv4_lpm_cp_wr_p_dstAddr   (lpm_cp_dstM),
+    .ipv4_lpm_cp_wr_p_port      (lpm_cp_port)
   );
+
+  // Task: write one entry into the ipv4_lpm table via the CP port
+  task tbl_write(
+    input [9:0]  idx,
+    input [31:0] key,
+    input [5:0]  pfx,
+    input [1:0]  act,
+    input [47:0] dstM,
+    input [8:0]  port_val
+  );
+    @(negedge clk);
+    lpm_cp_idx  = idx;  lpm_cp_key  = key;  lpm_cp_pfx = pfx;
+    lpm_cp_act  = act;  lpm_cp_dstM = dstM; lpm_cp_port = port_val;
+    lpm_cp_en   = 1;
+    @(posedge clk); #1;
+    lpm_cp_en   = 0;
+  endtask
 
   // ============================================================================
   // 3. DEPARSER DUT
@@ -364,6 +402,82 @@ module tb_qos;
     chk("INT2: dep diffserv = 44",         dep_pkt_out[DS_HI:DS_LO] == 6'd44);
 
     // ──────────────────────────────────────────────────────────────────────────
+    // SECTION 5 — ipv4_lpm TABLE LOOKUP
+    // Action IDs:  0=NoAction  1=ipv4_forward  2=drop
+    // ──────────────────────────────────────────────────────────────────────────
+    $display("\n══ Section 5: ipv4_lpm Table Lookup ══════════════════════════");
+
+    do_reset();
+
+    // Stable packet inputs for the processing DUT
+    pr_eth_valid  = 1; pr_ipv4_valid = 1;
+    pr_eth_dst    = 48'hAABBCCDDEEFF; pr_eth_src = 48'h112233445566;
+    pr_eth_type   = 16'h0800;
+    pr_ipv4_ver   = 4'h4; pr_ipv4_ihl = 4'h5;
+    pr_ipv4_ds    = 6'd0;  pr_ipv4_ecn = 2'd0;
+    pr_ipv4_len   = 16'd40; pr_ipv4_id = 16'd1;
+    pr_ipv4_flg   = 3'b010; pr_ipv4_off = 13'd0;
+    pr_ipv4_ttl   = 8'd64; pr_ipv4_chk = 16'hBEEF;
+    pr_ipv4_src   = 32'hC0A80001;
+    pr_ipv4_proto = 8'd1;   // ICMP — no DSCP change
+
+    // ── T1: Table empty → miss → NoAction (no field changes) ─────────────────
+    $display("  T1: Table miss (empty) → NoAction");
+    pr_ipv4_dst = 32'h0A000001; #1;
+    chk("T1: no hit → drop=0",             !pr_drop);
+    chk("T1: no hit → ttl unchanged",      pr_o_ipv4_ttl == 8'd64);
+    chk("T1: no hit → egress_spec=0",      pr_o_egress_spec == 9'd0);
+    chk("T1: no hit → eth_dst unchanged",  pr_o_eth_dst == 48'hAABBCCDDEEFF);
+
+    // ── T2: Write ipv4_forward entry → /24 prefix, port 3, new MAC ──────────
+    $display("  T2: Write ipv4_forward entry (10.0.0.0/24) then hit");
+    // Write entry 0: key=10.0.0.0, pfx=24, action=1 (ipv4_forward),
+    //               dstAddr=DE:AD:BE:EF:CA:FE, port=3
+    tbl_write(10'd0, 32'h0A000000, 6'd24, 2'd1,
+              48'hDEADBEEFCAFE, 9'd3);
+    #1;
+
+    pr_ipv4_dst = 32'h0A000042;  // 10.0.0.66 — matches /24
+    #1;
+    chk("T2: hit → drop=0",                !pr_drop);
+    chk("T2: hit → out_eth_dst rewritten", pr_o_eth_dst == 48'hDEADBEEFCAFE);
+    chk("T2: hit → out_eth_src = old_dst", pr_o_eth_src == 48'hAABBCCDDEEFF);
+    chk("T2: hit → TTL decremented",       pr_o_ipv4_ttl == 8'd63);
+    chk("T2: hit → egress_spec=3",         pr_o_egress_spec == 9'd3);
+
+    // ── T3: Different dst — does NOT match /24 entry → miss → pass-through ──
+    $display("  T3: dst outside /24 → miss → pass-through");
+    pr_ipv4_dst = 32'h0B000001;  // 11.0.0.1
+    #1;
+    chk("T3: miss → drop=0",               !pr_drop);
+    chk("T3: miss → eth_dst unchanged",    pr_o_eth_dst == 48'hAABBCCDDEEFF);
+    chk("T3: miss → TTL unchanged",        pr_o_ipv4_ttl == 8'd64);
+    chk("T3: miss → egress_spec=0",        pr_o_egress_spec == 9'd0);
+
+    // ── T4: Write drop entry for 192.168.1.0/24 ─────────────────────────────
+    $display("  T4: Write drop entry (192.168.1.0/24) then hit → drop=1");
+    tbl_write(10'd1, 32'hC0A80100, 6'd24, 2'd2,
+              48'h0, 9'd0);
+    #1;
+
+    pr_ipv4_dst = 32'hC0A80101;  // 192.168.1.1 — matches /24
+    #1;
+    chk("T4: drop entry → drop=1",         pr_drop);
+    chk("T4: drop entry → egress_spec=0",  pr_o_egress_spec == 9'd0);
+
+    // ── T5: UDP on /24-hit path → DSCP set AND MAC rewritten, TTL--  ─────────
+    $display("  T5: UDP proto + ipv4_forward hit → diffserv=46 AND MAC rewritten");
+    pr_ipv4_proto = 8'd17;   // UDP
+    pr_ipv4_dst   = 32'h0A000010;  // 10.0.0.16 — hits entry 0
+    pr_ipv4_ttl   = 8'd128;
+    #1;
+    chk("T5: diffserv=46 (QoS wins)",      pr_o_ipv4_ds  == 6'd46);
+    chk("T5: MAC rewritten (tbl wins)",    pr_o_eth_dst  == 48'hDEADBEEFCAFE);
+    chk("T5: TTL decremented to 127",      pr_o_ipv4_ttl == 8'd127);
+    chk("T5: egress_spec=3",               pr_o_egress_spec == 9'd3);
+    chk("T5: not dropped",                 !pr_drop);
+
+    // ──────────────────────────────────────────────────────────────────────────
     $display("\n════════════════════════════════════════════════════════════════");
     $display("  Results: %0d passed, %0d failed  (total %0d)",
              pass_cnt, fail_cnt, pass_cnt + fail_cnt);
@@ -372,7 +486,6 @@ module tb_qos;
       $display("  ALL TESTS PASSED");
     else
       $display("  FAILURES DETECTED — see [FAIL] lines above");
-    $display("\n  NOTE: ipv4_lpm table is RTL-stubbed (NoAction default).\n");
     $finish;
   end
 

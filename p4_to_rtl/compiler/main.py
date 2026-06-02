@@ -8,13 +8,15 @@ from ir import (
     Header, HeaderField, HeaderStack,
     HeaderInstance, MetadataField,
     Table, TableKey,
-    Action, Assignment, ExternCall,
+    Action, ActionParam, Assignment, ExternCall,
     IfStatement, TableApply, ControlBlock,
+    LocalVar, RegisterDecl,
     Deparser,
 )
 from emit_parser import emit_parser
 from emit_processing import emit_processing
 from emit_deparser import emit_deparser
+from emit_table import emit_tables
 
 
 # ============================================================
@@ -26,10 +28,13 @@ def _build_stmt(d):
     t = d.get('type')
     if t == 'table_apply':
         ta = TableApply(d['table'])
-        ta.result_var = d.get('result_var')   # e.g. 'hit'
+        ta.result_var = d.get('result_var')
         return ta
     if t == 'action_call':
-        return ExternCall(d['action'], [])
+        return ExternCall(d['action'], d.get('args', []))
+    if t == 'method_call':
+        label = f"{d['obj']}.{d['method']}"
+        return ExternCall(label, d.get('args', []))
     if t == 'assign':
         return Assignment(d['lhs'], d['rhs'])
     if t == 'method_call':
@@ -154,14 +159,31 @@ def build_ir(parsed):
         for act in ctrl_raw.get('actions', []):
             a = Action(act['name'])
             for p in act.get('params', []):
-                a.add_param(p)
+                if isinstance(p, dict):
+                    type_str = p.get('type', '')
+                    w = resolve_width(type_str, typedefs)
+                    a.add_param(ActionParam(p['name'], type_str, w))
+                else:
+                    a.add_param(ActionParam(str(p), '', None))
             for stmt in act.get('body', []):
-                if stmt['type'] == 'assign':
+                t = stmt.get('type')
+                if t == 'assign':
                     a.add_statement(Assignment(stmt['lhs'], stmt['rhs']))
-                elif stmt['type'] == 'call':
-                    a.add_statement(ExternCall(stmt['name'], []))
+                elif t == 'call':
+                    a.add_statement(ExternCall(stmt['name'], stmt.get('args', [])))
+                elif t == 'method_call':
+                    label = f"{stmt['obj']}.{stmt['method']}"
+                    a.add_statement(ExternCall(label, stmt.get('args', [])))
             block.add_action(a)
             ir.add_action(a)
+
+        # -- local variable declarations --
+        for lv in ctrl_raw.get('local_vars', []):
+            block.add_local_var(LocalVar(lv['name'], lv['type'], lv['width']))
+
+        # -- register extern declarations --
+        for rv in ctrl_raw.get('registers', []):
+            block.add_register(RegisterDecl(rv['name'], rv['data_width'], rv['size']))
 
         # -- apply block statements --
         for stmt_dict in ctrl_raw.get('apply', {}).get('stmts', []):
@@ -256,7 +278,9 @@ def debug_ir(ir):
     if ir.actions:
         print("\n[DEBUG] ── Actions ──────────────────────────────")
         for a in ir.actions:
-            print(f"  Action: {a.name}({', '.join(a.params)})")
+            param_strs = [f"{p.type_str} {p.name}" if isinstance(p, ActionParam) else str(p)
+                          for p in a.params]
+            print(f"  Action: {a.name}({', '.join(param_strs)})")
             for stmt in a.body:
                 if isinstance(stmt, Assignment):
                     print(f"    {stmt.lhs} = {stmt.rhs}")
@@ -306,6 +330,9 @@ def run_compiler(app_name):
     print(f"[SUCCESS] Parser RTL   -> {out_parser}")
 
     if ir.controls:
+        print("[INFO] Generating table RTL...")
+        emit_tables(ir, out_dir)
+
         print("[INFO] Generating processing RTL...")
         emit_processing(ir, out_processing)
         print(f"[SUCCESS] Processing RTL -> {out_processing}")
