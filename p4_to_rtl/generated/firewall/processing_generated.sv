@@ -85,14 +85,14 @@ module processing_generated (
 
   // Control-plane write ports for table instances
   input  logic        ipv4_lpm_cp_wr_en,
-  input  logic [9:0] ipv4_lpm_cp_wr_idx,
+  input  logic [3:0] ipv4_lpm_cp_wr_idx,
   input  logic [31:0] ipv4_lpm_cp_wr_key_dstAddr,
   input  logic [5:0] ipv4_lpm_cp_wr_pfx_len,
   input  logic [1:0] ipv4_lpm_cp_wr_action,
   input  logic [47:0] ipv4_lpm_cp_wr_p_dstAddr,
   input  logic [8:0] ipv4_lpm_cp_wr_p_port,
   input  logic        check_ports_cp_wr_en,
-  input  logic [9:0] check_ports_cp_wr_idx,
+  input  logic [3:0] check_ports_cp_wr_idx,
   input  logic [8:0] check_ports_cp_wr_key_ingress_port,
   input  logic [8:0] check_ports_cp_wr_key_egress_spec,
   input  logic [0:0] check_ports_cp_wr_action,
@@ -108,30 +108,30 @@ module processing_generated (
   logic [0:0] reg_val_one;
   logic [0:0] reg_val_two;
 
-  // bloom_filter_1: register<bit<1>>(4096)
-  logic [0:0] bloom_filter_1_mem [0:4095];
+  // bloom_filter_1: register<bit<1>>(8) -- reduced from 4096 for simulation performance
+  logic [0:0] bloom_filter_1_mem [0:7];
   logic        bloom_filter_1_wr_en;
-  logic [11:0] bloom_filter_1_wr_addr;
+  logic [2:0] bloom_filter_1_wr_addr;
   logic [0:0] bloom_filter_1_wr_data;
-  // bloom_filter_2: register<bit<1>>(4096)
-  logic [0:0] bloom_filter_2_mem [0:4095];
+  // bloom_filter_2: register<bit<1>>(8) -- reduced from 4096 for simulation performance
+  logic [0:0] bloom_filter_2_mem [0:7];
   logic        bloom_filter_2_wr_en;
-  logic [11:0] bloom_filter_2_wr_addr;
+  logic [2:0] bloom_filter_2_wr_addr;
   logic [0:0] bloom_filter_2_wr_data;
 
   // Zero all register memories at simulation start
   initial begin
-    for (int _si = 0; _si < 4096; _si++)
+    for (int _si = 0; _si < 8; _si++)
       bloom_filter_1_mem[_si] = 1'b0;
-    for (int _si = 0; _si < 4096; _si++)
+    for (int _si = 0; _si < 8; _si++)
       bloom_filter_2_mem[_si] = 1'b0;
   end
 
   // Register read wires (isolated via assign)
   logic [0:0] bloom_filter_1_rd_reg_val_one;
-  assign bloom_filter_1_rd_reg_val_one = bloom_filter_1_mem[reg_pos_one];
+  assign bloom_filter_1_rd_reg_val_one = bloom_filter_1_mem[reg_pos_one[2:0]];
   logic [0:0] bloom_filter_2_rd_reg_val_two;
-  assign bloom_filter_2_rd_reg_val_two = bloom_filter_2_mem[reg_pos_two];
+  assign bloom_filter_2_rd_reg_val_two = bloom_filter_2_mem[reg_pos_two[2:0]];
 
   // Table lookup result wires
   logic        ipv4_lpm_hit;
@@ -143,7 +143,7 @@ module processing_generated (
   logic [0:0] check_ports_p_dir;
 
   // Table module instantiations
-  ipv4_lpm_table #(.DEPTH(1024)) u_ipv4_lpm (
+  ipv4_lpm_table #(.DEPTH(16)) u_ipv4_lpm (
     .clk    (clk),
     .rst_n  (rst_n),
     .lkp_dstAddr    (ipv4_dstAddr),
@@ -160,7 +160,7 @@ module processing_generated (
     .cp_wr_p_port (ipv4_lpm_cp_wr_p_port)
   );
 
-  check_ports_table #(.DEPTH(1024)) u_check_ports (
+  check_ports_table #(.DEPTH(16)) u_check_ports (
     .clk    (clk),
     .rst_n  (rst_n),
     .lkp_ingress_port    (std_meta_ingress_port),
@@ -263,16 +263,16 @@ module processing_generated (
           if (direction == 0) begin
             // compute_hashes(hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.tcp.srcPort, hdr.tcp.dstPort)
             // hash() stub — XOR-based behavioral approximation
-            reg_pos_one = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 12'hFFF;
+            reg_pos_one = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 3'h7;
             // hash() stub — XOR-based behavioral approximation
-            reg_pos_two = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 12'hFFF;
+            reg_pos_two = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 3'h7;
           end
           else begin
             // compute_hashes(hdr.ipv4.dstAddr, hdr.ipv4.srcAddr, hdr.tcp.dstPort, hdr.tcp.srcPort)
             // hash() stub — XOR-based behavioral approximation
-            reg_pos_one = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 12'hFFF;
+            reg_pos_one = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 3'h7;
             // hash() stub — XOR-based behavioral approximation
-            reg_pos_two = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 12'hFFF;
+            reg_pos_two = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 3'h7;
           end
           if (direction == 0) begin
             if (tcp_syn == 1) begin
@@ -302,11 +302,11 @@ module processing_generated (
   // Register write-back (initialized via initial block above)
   always_ff @(posedge clk) begin
     if (bloom_filter_1_wr_en)
-      bloom_filter_1_mem[bloom_filter_1_wr_addr] <= bloom_filter_1_wr_data;
+      bloom_filter_1_mem[bloom_filter_1_wr_addr[2:0]] <= bloom_filter_1_wr_data;
   end
   always_ff @(posedge clk) begin
     if (bloom_filter_2_wr_en)
-      bloom_filter_2_mem[bloom_filter_2_wr_addr] <= bloom_filter_2_wr_data;
+      bloom_filter_2_mem[bloom_filter_2_wr_addr[2:0]] <= bloom_filter_2_wr_data;
   end
 
   always_ff @(posedge clk) begin

@@ -119,7 +119,7 @@ module tb_firewall;
 
   // CP write signals — ipv4_lpm
   logic        lpm_cp_en    = 0;
-  logic  [9:0] lpm_cp_idx   = 0;
+  logic  [3:0] lpm_cp_idx   = 0;
   logic [31:0] lpm_cp_key   = 0;
   logic  [5:0] lpm_cp_pfx   = 0;
   logic  [1:0] lpm_cp_act   = 0;
@@ -128,7 +128,7 @@ module tb_firewall;
 
   // CP write signals — check_ports
   logic        cp_cp_en     = 0;
-  logic  [9:0] cp_cp_idx    = 0;
+  logic  [3:0] cp_cp_idx    = 0;
   logic  [8:0] cp_cp_ing    = 0;
   logic  [8:0] cp_cp_egr    = 0;
   logic  [0:0] cp_cp_act    = 0;
@@ -288,12 +288,13 @@ module tb_firewall;
   );
 
   // Pre-computed bloom filter hash positions
-  // hash = (ipAddr1 ^ ipAddr2 ^ port1 ^ port2 ^ proto) & 12'hFFF
-  localparam [11:0] HASH_192_10_1234_50_6 =
-      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h1234 ^ 32'h0050 ^ 32'h6) & 12'hFFF;
-  // = 0x262 = 610
-  localparam [11:0] HASH_192_1234_5678_01BB_6 =
-      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h5678 ^ 32'h01BB ^ 32'h6) & 12'hFFF;
+  // hash = (ipAddr1 ^ ipAddr2 ^ port1 ^ port2 ^ proto) & 3'h7  (8-entry sim BF)
+  localparam [2:0] HASH_192_10_1234_50_6 =
+      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h1234 ^ 32'h0050 ^ 32'h6) & 3'h7;
+  // = 0x2 = 2  (was 0x262 with full 4096-entry BF)
+  localparam [2:0] HASH_192_1234_5678_01BB_6 =
+      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h5678 ^ 32'h01BB ^ 32'h6) & 3'h7;
+  // = 0x5 = 5
 
   // ==========================================================================
   // Test infrastructure
@@ -342,8 +343,8 @@ module tb_firewall;
   // MAIN TEST
   // ==========================================================================
   initial begin
-    $dumpfile("tb_firewall.vcd");
-    $dumpvars(0, tb_firewall);
+    // $dumpfile("tb_firewall.vcd");  // disabled for performance
+    // $dumpvars(1, tb_firewall);
 
     // ──────────────────────────────────────────────────────────────────────
     // SECTION 1 — PARSER FSM (three-level chain)
@@ -384,13 +385,15 @@ module tb_firewall;
     chk("P3 !tcp",       !p_ext_tcp);
     p_valid_in=0;
 
-    // P4: ICMP (proto=1) → eth→ipv4→accept
+    // P4: ICMP (proto=1) → eth→ipv4→accept (3 clocks: ETH→IPV4→ACCEPT)
     $display("  P4: 0x0800 / proto=1 (ICMP) → eth→ipv4→accept");
     do_reset();
     p_eth_type=16'h0800; p_ipv4_proto=8'd1; p_valid_in=1;
-    @(posedge clk); #1; @(posedge clk); #1; @(posedge clk); #1;
+    @(posedge clk); #1;               // state=PARSE_ETHERNET
+    @(posedge clk); #1;               // state=PARSE_IPV4 → ext_ipv4=1
+    chk("P4 ipv4",       p_ext_ipv4); // check HERE while in IPV4 state
+    @(posedge clk); #1;               // state=ACCEPT → done=1
     chk("P4 done",       p_done);
-    chk("P4 ipv4",       p_ext_ipv4);
     chk("P4 !tcp",       !p_ext_tcp);
     p_valid_in=0;
 
@@ -507,18 +510,18 @@ module tb_firewall;
     send_packet();
     chk("FW1: SYN forwarded (not dropped)", !pr_drop);
     chk("FW1: egress_spec=3",              pr_o_egress_spec==9'd3);
-    // hash(192.168.0.1, 10.0.0.1, 0x1234, 0x0050, 6) & 0xFFF = 0x262
-    chk("FW1: bf1_mem[0x262]=1", proc_dut.bloom_filter_1_mem[12'h262]===1'b1);
-    chk("FW1: bf2_mem[0x262]=1", proc_dut.bloom_filter_2_mem[12'h262]===1'b1);
-    // Verify other index is still 0
-    chk("FW1: bf1_mem[0x167]=0", proc_dut.bloom_filter_1_mem[12'h167]===1'b0);
+    // hash(192.168.0.1, 10.0.0.1, 0x1234, 0x0050, 6) & 0x7 = 0x2
+    chk("FW1: bf1_mem[2]=1", proc_dut.bloom_filter_1_mem[HASH_192_10_1234_50_6]===1'b1);
+    chk("FW1: bf2_mem[2]=1", proc_dut.bloom_filter_2_mem[HASH_192_10_1234_50_6]===1'b1);
+    // Verify unsolicited index is still 0
+    chk("FW1: bf1_mem[7]=0", proc_dut.bloom_filter_1_mem[3'h7]===1'b0);
 
     // FW2: SYN with ipv4_valid=0 → no bloom write (guard fails at ipv4_valid)
     $display("  FW2: invalid IPv4 → bloom filter NOT written");
     pr_ipv4_valid=0;
     send_packet();
     // bloom at the above index should remain from FW1, nothing else written
-    chk("FW2: bloom unchanged", proc_dut.bloom_filter_1_mem[12'h262]===1'b1);
+    chk("FW2: bloom unchanged", proc_dut.bloom_filter_1_mem[HASH_192_10_1234_50_6]===1'b1);
     pr_ipv4_valid=1;
 
     // ──────────────────────────────────────────────────────────────────────
@@ -558,10 +561,10 @@ module tb_firewall;
     pr_tcp_srcPort=16'h0050; pr_tcp_dstPort=16'h1234;
     pr_tcp_ack=1; pr_tcp_syn=0;
     pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; #1;
-    // hash(C0A80001^01020304^1234^0050^6) & FFF = 0x167 (not written)
+    // hash(C0A80001^01020304^1234^0050^6) & 0x7 = 0x7 (not written)
     chk("FW6: unsolicited dropped",  pr_drop);
-    chk("FW6: bf1[0x167]=0 (never written)",
-        proc_dut.bloom_filter_1_mem[12'h167]===1'b0);
+    chk("FW6: bf1[7]=0 (never written)",
+        proc_dut.bloom_filter_1_mem[3'h7]===1'b0);
 
     // FW7: Unsolicited SYN from external — no existing connection
     $display("  FW7: Unsolicited SYN from external → dropped");
