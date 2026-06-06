@@ -127,7 +127,8 @@ module processing_generated (
       bloom_filter_2_mem[_si] = 1'b0;
   end
 
-  // Register read wires (isolated via assign)
+
+  // Register read wires — assign keeps reg_pos_one out of always_comb sensitivity list
   logic [0:0] bloom_filter_1_rd_reg_val_one;
   assign bloom_filter_1_rd_reg_val_one = bloom_filter_1_mem[reg_pos_one[2:0]];
   logic [0:0] bloom_filter_2_rd_reg_val_two;

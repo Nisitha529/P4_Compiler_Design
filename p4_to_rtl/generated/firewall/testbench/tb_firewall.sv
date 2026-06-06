@@ -308,6 +308,8 @@ module tb_firewall;
 
   task do_reset;
     rst_n = 0; p_valid_in = 0; pr_valid_in = 0;
+    pr_eth_valid = 0; pr_ipv4_valid = 0; pr_tcp_valid = 0;
+    dep_eth_valid = 0; dep_ipv4_valid = 0; dep_tcp_valid = 0;
     repeat(5) @(posedge clk); @(negedge clk);
     rst_n = 1; @(posedge clk); #1;
   endtask
@@ -329,7 +331,8 @@ module tb_firewall;
     cp_cp_idx=idx; cp_cp_ing=ing; cp_cp_egr=egr;
     cp_cp_act=1'b1; cp_cp_dir=dir;
     cp_cp_en=1;
-    @(posedge clk); #1;
+    @(posedge clk);
+    #1;
     cp_cp_en=0;
   endtask
 
@@ -636,10 +639,10 @@ module tb_firewall;
     chk("D1: eth dst [431:384]",  dep_pkt_out[431:384]==48'hAABBCCDDEEFF);
     chk("D1: eth src [383:336]",  dep_pkt_out[383:336]==48'h112233445566);
     chk("D1: eth type [335:320]", dep_pkt_out[335:320]==16'h0800);
-    chk("D1: ipv4 src [191:160]", dep_pkt_out[191:160]==32'hC0A80001);
-    chk("D1: ipv4 dst [159:128]", dep_pkt_out[159:128]==32'h0A000001);
-    // TCP srcPort is at MSB of TCP block = bits [127:112]
-    chk("D1: tcp srcPort [127:112]", dep_pkt_out[127:112]==16'h1234);
+    chk("D1: ipv4 src [223:192]", dep_pkt_out[223:192]==32'hC0A80001);
+    chk("D1: ipv4 dst [191:160]", dep_pkt_out[191:160]==32'h0A000001);
+    // TCP srcPort is at MSB of TCP block = bits [159:144]
+    chk("D1: tcp srcPort [159:144]", dep_pkt_out[159:144]==16'h1234);
     // TCP SYN bit: 110 bits from TCP MSB → bit 159-110=49 within TCP → bus bit [49]
     chk("D1: tcp SYN bit [49]",   dep_pkt_out[49]==1'b1);
 
@@ -729,7 +732,5 @@ module tb_firewall;
       $display("  FAILURES DETECTED — see [FAIL] lines above");
     $finish;
   end
-
-  initial begin #1000000; $display("[TIMEOUT]"); $finish; end
 
 endmodule

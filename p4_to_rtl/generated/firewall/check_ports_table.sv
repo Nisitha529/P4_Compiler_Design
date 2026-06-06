@@ -45,14 +45,12 @@ module check_ports_table #(
     end
   end
 
-  // Combinational lookup
-  // LPM: first-match wins; CP software should insert longest-prefix-first.
-  always_comb begin
+  always @(*) begin
     hit       = 1'b0;
     action_id = 1'd0;
     p_dir = 1'b0;
     for (int _j = 0; _j < DEPTH; _j++) begin
-      if (!hit && mem_valid[_j]) begin
+      if (mem_valid[_j]) begin
         if (lkp_ingress_port == mem_key_ingress_port[_j] && lkp_egress_spec == mem_key_egress_spec[_j]) begin
           hit       = 1'b1;
           action_id = mem_action[_j];
