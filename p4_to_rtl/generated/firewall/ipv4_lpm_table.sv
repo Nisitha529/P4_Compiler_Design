@@ -48,14 +48,15 @@ module ipv4_lpm_table #(
     end
   end
 
-  // First-match wins (software inserts longest-prefix-first).
+  // Combinational lookup
+  // LPM: first-match wins; CP software should insert longest-prefix-first.
   always @(*) begin
     hit       = 1'b0;
     action_id = 2'd2;
     p_dstAddr = 48'b0;
     p_port = 9'b0;
     for (int _j = 0; _j < DEPTH; _j++) begin
-      if (mem_valid[_j]) begin
+      if (!hit && mem_valid[_j]) begin
         if (mem_pfx_len[_j] == 6'd0 ||
             (lkp_dstAddr >> (32 - mem_pfx_len[_j])) ==
             (mem_key_dstAddr[_j] >> (32 - mem_pfx_len[_j]))) begin

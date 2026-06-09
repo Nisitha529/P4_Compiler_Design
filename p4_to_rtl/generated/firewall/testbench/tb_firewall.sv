@@ -287,14 +287,14 @@ module tb_firewall;
     .valid_out        (dep_valid_out)
   );
 
-  // Pre-computed bloom filter hash positions
-  // hash = (ipAddr1 ^ ipAddr2 ^ port1 ^ port2 ^ proto) & 3'h7  (8-entry sim BF)
-  localparam [2:0] HASH_192_10_1234_50_6 =
-      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h1234 ^ 32'h0050 ^ 32'h6) & 3'h7;
-  // = 0x2 = 2  (was 0x262 with full 4096-entry BF)
-  localparam [2:0] HASH_192_1234_5678_01BB_6 =
-      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h5678 ^ 32'h01BB ^ 32'h6) & 3'h7;
-  // = 0x5 = 5
+  // Pre-computed bloom filter hash positions (12-bit XOR stub, 4096-entry BF)
+  // hash = (ipAddr1 ^ ipAddr2 ^ port1 ^ port2 ^ proto) & 12'hFFF
+  localparam [11:0] HASH_192_10_1234_50_6 =
+      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h1234 ^ 32'h0050 ^ 32'h6) & 12'hFFF;
+  // = 0x262
+  localparam [11:0] HASH_192_1234_5678_01BB_6 =
+      (32'hC0A80001 ^ 32'h0A000001 ^ 32'h5678 ^ 32'h01BB ^ 32'h6) & 12'hFFF;
+  // = 0x7C5
 
   // ==========================================================================
   // Test infrastructure

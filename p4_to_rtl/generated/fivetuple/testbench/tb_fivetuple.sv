@@ -169,7 +169,7 @@ module tb_fivetuple;
     .out_tcpopt_options(pr_o_tcpopt_data),
     .out_udp_src_port (pr_o_udp_sp),       .out_udp_dst_port   (pr_o_udp_dp),
     .out_udp_length   (pr_o_udp_len),      .out_udp_checksum   (pr_o_udp_csum),
-    .hit_out          (pr_hit_out),
+    .FiveTuple_hit_out (pr_hit_out),
     .valid_out        (pr_valid_out),      .drop               (pr_drop)
   );
 

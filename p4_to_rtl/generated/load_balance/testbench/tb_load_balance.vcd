@@ -1,5 +1,5 @@
 $date
-	Sat Jun  6 07:42:33 2026
+	Tue Jun  9 23:11:40 2026
 $end
 $version
 	Icarus Verilog
@@ -164,69 +164,137 @@ $var reg 3 J" state [2:0] $end
 $upscope $end
 $scope module proc_dut $end
 $var wire 1 E clk $end
+$var wire 2 K" ecmp_group_cp_wr_action [1:0] $end
+$var wire 1 L" ecmp_group_cp_wr_en $end
+$var wire 10 M" ecmp_group_cp_wr_idx [9:0] $end
+$var wire 32 N" ecmp_group_cp_wr_key_dstAddr [31:0] $end
+$var wire 16 O" ecmp_group_cp_wr_p_ecmp_base [15:0] $end
+$var wire 32 P" ecmp_group_cp_wr_p_ecmp_count [31:0] $end
+$var wire 6 Q" ecmp_group_cp_wr_pfx_len [5:0] $end
 $var wire 1 < ecmp_group_hit_out $end
-$var wire 48 K" ethernet_dstAddr [47:0] $end
-$var wire 16 L" ethernet_etherType [15:0] $end
-$var wire 48 M" ethernet_srcAddr [47:0] $end
+$var wire 2 R" ecmp_nhop_cp_wr_action [1:0] $end
+$var wire 1 S" ecmp_nhop_cp_wr_en $end
+$var wire 1 T" ecmp_nhop_cp_wr_idx $end
+$var wire 14 U" ecmp_nhop_cp_wr_key_ecmp_select [13:0] $end
+$var wire 48 V" ecmp_nhop_cp_wr_p_nhop_dmac [47:0] $end
+$var wire 32 W" ecmp_nhop_cp_wr_p_nhop_ipv4 [31:0] $end
+$var wire 9 X" ecmp_nhop_cp_wr_p_port [8:0] $end
+$var wire 1 Y" ecmp_nhop_hit_out $end
+$var wire 48 Z" ethernet_dstAddr [47:0] $end
+$var wire 16 [" ethernet_etherType [15:0] $end
+$var wire 48 \" ethernet_srcAddr [47:0] $end
 $var wire 1 j ethernet_valid $end
-$var wire 8 N" ipv4_diffserv [7:0] $end
-$var wire 32 O" ipv4_dstAddr [31:0] $end
-$var wire 3 P" ipv4_flags [2:0] $end
-$var wire 13 Q" ipv4_fragOffset [12:0] $end
-$var wire 16 R" ipv4_hdrChecksum [15:0] $end
-$var wire 16 S" ipv4_identification [15:0] $end
-$var wire 4 T" ipv4_ihl [3:0] $end
-$var wire 8 U" ipv4_protocol [7:0] $end
-$var wire 32 V" ipv4_srcAddr [31:0] $end
-$var wire 16 W" ipv4_totalLen [15:0] $end
-$var wire 8 X" ipv4_ttl [7:0] $end
+$var wire 8 ]" ipv4_diffserv [7:0] $end
+$var wire 32 ^" ipv4_dstAddr [31:0] $end
+$var wire 3 _" ipv4_flags [2:0] $end
+$var wire 13 `" ipv4_fragOffset [12:0] $end
+$var wire 16 a" ipv4_hdrChecksum [15:0] $end
+$var wire 16 b" ipv4_identification [15:0] $end
+$var wire 4 c" ipv4_ihl [3:0] $end
+$var wire 8 d" ipv4_protocol [7:0] $end
+$var wire 32 e" ipv4_srcAddr [31:0] $end
+$var wire 16 f" ipv4_totalLen [15:0] $end
+$var wire 8 g" ipv4_ttl [7:0] $end
 $var wire 1 v ipv4_valid $end
-$var wire 4 Y" ipv4_version [3:0] $end
-$var wire 14 Z" meta_ecmp_select [13:0] $end
+$var wire 4 h" ipv4_version [3:0] $end
+$var wire 14 i" meta_ecmp_select [13:0] $end
 $var wire 1 (" rst_n $end
-$var wire 32 [" tcp_ackNo [31:0] $end
-$var wire 16 \" tcp_checksum [15:0] $end
-$var wire 6 ]" tcp_ctrl [5:0] $end
-$var wire 4 ^" tcp_dataOffset [3:0] $end
-$var wire 16 _" tcp_dstPort [15:0] $end
-$var wire 3 `" tcp_ecn [2:0] $end
-$var wire 3 a" tcp_res [2:0] $end
-$var wire 32 b" tcp_seqNo [31:0] $end
-$var wire 16 c" tcp_srcPort [15:0] $end
-$var wire 16 d" tcp_urgentPtr [15:0] $end
+$var wire 32 j" tcp_ackNo [31:0] $end
+$var wire 16 k" tcp_checksum [15:0] $end
+$var wire 6 l" tcp_ctrl [5:0] $end
+$var wire 4 m" tcp_dataOffset [3:0] $end
+$var wire 16 n" tcp_dstPort [15:0] $end
+$var wire 3 o" tcp_ecn [2:0] $end
+$var wire 3 p" tcp_res [2:0] $end
+$var wire 32 q" tcp_seqNo [31:0] $end
+$var wire 16 r" tcp_srcPort [15:0] $end
+$var wire 16 s" tcp_urgentPtr [15:0] $end
 $var wire 1 %" tcp_valid $end
-$var wire 16 e" tcp_window [15:0] $end
+$var wire 16 t" tcp_window [15:0] $end
 $var wire 1 '" valid_in $end
+$var wire 9 u" ecmp_nhop_p_port [8:0] $end
+$var wire 32 v" ecmp_nhop_p_nhop_ipv4 [31:0] $end
+$var wire 48 w" ecmp_nhop_p_nhop_dmac [47:0] $end
+$var wire 1 x" ecmp_nhop_hit $end
+$var wire 2 y" ecmp_nhop_act_id [1:0] $end
+$var wire 32 z" ecmp_group_p_ecmp_count [31:0] $end
+$var wire 16 {" ecmp_group_p_ecmp_base [15:0] $end
+$var wire 1 |" ecmp_group_hit $end
+$var wire 2 }" ecmp_group_act_id [1:0] $end
 $var reg 1 = drop $end
-$var reg 1 f" ecmp_group_hit $end
-$var reg 48 g" out_ethernet_dstAddr [47:0] $end
-$var reg 16 h" out_ethernet_etherType [15:0] $end
-$var reg 48 i" out_ethernet_srcAddr [47:0] $end
-$var reg 8 j" out_ipv4_diffserv [7:0] $end
-$var reg 32 k" out_ipv4_dstAddr [31:0] $end
-$var reg 3 l" out_ipv4_flags [2:0] $end
-$var reg 13 m" out_ipv4_fragOffset [12:0] $end
-$var reg 16 n" out_ipv4_hdrChecksum [15:0] $end
-$var reg 16 o" out_ipv4_identification [15:0] $end
-$var reg 4 p" out_ipv4_ihl [3:0] $end
-$var reg 8 q" out_ipv4_protocol [7:0] $end
-$var reg 32 r" out_ipv4_srcAddr [31:0] $end
-$var reg 16 s" out_ipv4_totalLen [15:0] $end
-$var reg 8 t" out_ipv4_ttl [7:0] $end
-$var reg 4 u" out_ipv4_version [3:0] $end
-$var reg 32 v" out_tcp_ackNo [31:0] $end
-$var reg 16 w" out_tcp_checksum [15:0] $end
-$var reg 6 x" out_tcp_ctrl [5:0] $end
-$var reg 4 y" out_tcp_dataOffset [3:0] $end
-$var reg 16 z" out_tcp_dstPort [15:0] $end
-$var reg 3 {" out_tcp_ecn [2:0] $end
-$var reg 3 |" out_tcp_res [2:0] $end
-$var reg 32 }" out_tcp_seqNo [31:0] $end
-$var reg 16 ~" out_tcp_srcPort [15:0] $end
-$var reg 16 !# out_tcp_urgentPtr [15:0] $end
-$var reg 16 "# out_tcp_window [15:0] $end
-$var reg 32 ## standard_metadata_egress_spec [31:0] $end
+$var reg 14 ~" meta_ecmp_select_w [13:0] $end
+$var reg 48 !# out_ethernet_dstAddr [47:0] $end
+$var reg 16 "# out_ethernet_etherType [15:0] $end
+$var reg 48 ## out_ethernet_srcAddr [47:0] $end
+$var reg 1 $# out_ethernet_valid $end
+$var reg 8 %# out_ipv4_diffserv [7:0] $end
+$var reg 32 &# out_ipv4_dstAddr [31:0] $end
+$var reg 3 '# out_ipv4_flags [2:0] $end
+$var reg 13 (# out_ipv4_fragOffset [12:0] $end
+$var reg 16 )# out_ipv4_hdrChecksum [15:0] $end
+$var reg 16 *# out_ipv4_identification [15:0] $end
+$var reg 4 +# out_ipv4_ihl [3:0] $end
+$var reg 8 ,# out_ipv4_protocol [7:0] $end
+$var reg 32 -# out_ipv4_srcAddr [31:0] $end
+$var reg 16 .# out_ipv4_totalLen [15:0] $end
+$var reg 8 /# out_ipv4_ttl [7:0] $end
+$var reg 1 0# out_ipv4_valid $end
+$var reg 4 1# out_ipv4_version [3:0] $end
+$var reg 9 2# out_std_meta_egress_spec [8:0] $end
+$var reg 32 3# out_tcp_ackNo [31:0] $end
+$var reg 16 4# out_tcp_checksum [15:0] $end
+$var reg 6 5# out_tcp_ctrl [5:0] $end
+$var reg 4 6# out_tcp_dataOffset [3:0] $end
+$var reg 16 7# out_tcp_dstPort [15:0] $end
+$var reg 3 8# out_tcp_ecn [2:0] $end
+$var reg 3 9# out_tcp_res [2:0] $end
+$var reg 32 :# out_tcp_seqNo [31:0] $end
+$var reg 16 ;# out_tcp_srcPort [15:0] $end
+$var reg 16 <# out_tcp_urgentPtr [15:0] $end
+$var reg 1 =# out_tcp_valid $end
+$var reg 16 ># out_tcp_window [15:0] $end
 $var reg 1 ! valid_out $end
+$scope module u_ecmp_group $end
+$var wire 1 E clk $end
+$var wire 2 ?# cp_wr_action [1:0] $end
+$var wire 1 L" cp_wr_en $end
+$var wire 10 @# cp_wr_idx [9:0] $end
+$var wire 32 A# cp_wr_key_dstAddr [31:0] $end
+$var wire 16 B# cp_wr_p_ecmp_base [15:0] $end
+$var wire 32 C# cp_wr_p_ecmp_count [31:0] $end
+$var wire 6 D# cp_wr_pfx_len [5:0] $end
+$var wire 32 E# lkp_dstAddr [31:0] $end
+$var wire 1 (" rst_n $end
+$var reg 2 F# action_id [1:0] $end
+$var reg 1 |" hit $end
+$var reg 16 G# p_ecmp_base [15:0] $end
+$var reg 32 H# p_ecmp_count [31:0] $end
+$var integer 32 I# _i [31:0] $end
+$scope begin $ivl_for_loop0 $end
+$var integer 32 J# _j [31:0] $end
+$upscope $end
+$upscope $end
+$scope module u_ecmp_nhop $end
+$var wire 1 E clk $end
+$var wire 2 K# cp_wr_action [1:0] $end
+$var wire 1 S" cp_wr_en $end
+$var wire 1 T" cp_wr_idx $end
+$var wire 14 L# cp_wr_key_ecmp_select [13:0] $end
+$var wire 48 M# cp_wr_p_nhop_dmac [47:0] $end
+$var wire 32 N# cp_wr_p_nhop_ipv4 [31:0] $end
+$var wire 9 O# cp_wr_p_port [8:0] $end
+$var wire 14 P# lkp_ecmp_select [13:0] $end
+$var wire 1 (" rst_n $end
+$var reg 2 Q# action_id [1:0] $end
+$var reg 1 x" hit $end
+$var reg 48 R# p_nhop_dmac [47:0] $end
+$var reg 32 S# p_nhop_ipv4 [31:0] $end
+$var reg 9 T# p_port [8:0] $end
+$var integer 32 U# _i [31:0] $end
+$scope begin $ivl_for_loop1 $end
+$var integer 32 V# _j [31:0] $end
+$upscope $end
+$upscope $end
 $upscope $end
 $scope task chk $end
 $upscope $end
@@ -236,16 +304,67 @@ $upscope $end
 $enddefinitions $end
 #0
 $dumpvars
+b10 V#
+b10 U#
+b0 T#
+b0 S#
+b0 R#
+b0 Q#
+b0 P#
+bz O#
+bz N#
+bz M#
+bz L#
+bz K#
+b10000000000 J#
+b10000000000 I#
+b0 H#
+b0 G#
+b0 F#
+b0 E#
+bz D#
+bz C#
+bz B#
+bz A#
+bz @#
+bz ?#
+b0 >#
+0=#
+b0 <#
+b0 ;#
+b0 :#
+b0 9#
+b0 8#
+b0 7#
+b0 6#
+b0 5#
+b0 4#
+b0 3#
+b0 2#
+b0 1#
+00#
+b0 /#
+b0 .#
+b0 -#
+b0 ,#
+b0 +#
+b0 *#
+b0 )#
+b0 (#
+b0 '#
+b0 &#
+b0 %#
+0$#
 b0 ##
 b0 "#
 b0 !#
 b0 ~"
 b0 }"
-b0 |"
+0|"
 b0 {"
 b0 z"
 b0 y"
-b0 x"
+0x"
 b0 w"
 b0 v"
 b0 u"
@@ -263,7 +382,7 @@ b0 j"
 b0 i"
 b0 h"
 b0 g"
-0f"
+b0 f"
 b0 e"
 b0 d"
 b0 c"
@@ -276,21 +395,21 @@ b0 ]"
 b0 \"
 b0 ["
 b0 Z"
-b0 Y"
-b0 X"
-b0 W"
-b0 V"
-b0 U"
-b0 T"
-b0 S"
-b0 R"
-b0 Q"
-b0 P"
-b0 O"
-b0 N"
-b0 M"
-b0 L"
-b0 K"
+0Y"
+bz X"
+bz W"
+bz V"
+bz U"
+zT"
+zS"
+bz R"
+bz Q"
+bz P"
+bz O"
+bz N"
+bz M"
+zL"
+bz K"
 bx J"
 bx I"
 b0 H"
@@ -634,60 +753,64 @@ b0 I"
 b100 J"
 1E
 #266000
+b10000000000 J#
 b0 I"
 1A
 b1000000010000000100000001000 6
-b1000000010000000100000001000 k"
+b1000000010000000100000001000 &#
 b11000000101010000000000000000001 /
-b11000000101010000000000000000001 r"
+b11000000101010000000000000000001 -#
 b1011111011101111 8
-b1011111011101111 n"
+b1011111011101111 )#
 b110 0
-b110 q"
+b110 ,#
 b1000000 .
-b1000000 t"
+b1000000 /#
 b10 5
-b10 l"
+b10 '#
 b1 4
-b1 o"
+b1 *#
 b101000 2
-b101000 s"
+b101000 .#
 b101 3
-b101 p"
+b101 +#
 b100 -
-b100 u"
+b100 1#
 b100000000000 9
-b100000000000 h"
+b100000000000 "#
 b100010010001000110011010001000101010101100110 :
-b100010010001000110011010001000101010101100110 i"
+b100010010001000110011010001000101010101100110 ##
 b101010101011101111001100110111011110111011111111 ;
-b101010101011101111001100110111011110111011111111 g"
+b101010101011101111001100110111011110111011111111 !#
+10#
+1$#
 b1000000010000000100000001000 m
-b1000000010000000100000001000 O"
+b1000000010000000100000001000 ^"
+b1000000010000000100000001000 E#
 b11000000101010000000000000000001 t
-b11000000101010000000000000000001 V"
+b11000000101010000000000000000001 e"
 b1011111011101111 k
-b1011111011101111 R"
+b1011111011101111 a"
 b110 s
-b110 U"
+b110 d"
 b1000000 u
-b1000000 X"
+b1000000 g"
 b10 n
-b10 P"
+b10 _"
 b1 o
-b1 S"
+b1 b"
 b101000 q
-b101000 W"
+b101000 f"
 b101 p
-b101 T"
+b101 c"
 b100 w
-b100 Y"
+b100 h"
 b100000000000 i
-b100000000000 L"
+b100000000000 ["
 b100010010001000110011010001000101010101100110 h
-b100010010001000110011010001000101010101100110 M"
+b100010010001000110011010001000101010101100110 \"
 b101010101011101111001100110111011110111011111111 g
-b101010101011101111001100110111011110111011111111 K"
+b101010101011101111001100110111011110111011111111 Z"
 1v
 1j
 0f
@@ -698,22 +821,24 @@ b10001 *"
 b0 I"
 1A
 b0 .
-b0 t"
+b0 /#
 b0 u
-b0 X"
+b0 g"
 b10011 *"
 #269000
 b0 I"
 1A
 b1000000 .
-b1000000 t"
+b1000000 /#
+00#
 0v
 b1000000 u
-b1000000 X"
+b1000000 g"
 b10101 *"
 #270000
 b0 I"
 1A
+10#
 0("
 1v
 b10111 *"
@@ -832,75 +957,78 @@ b0 F"
 0I
 b101001 *"
 #330000
+b10000000000 J#
 b1 I"
 b1010101111001101 +
-b1010101111001101 w"
+b1010101111001101 4#
 b100000000000000 "
-b100000000000000 "#
+b100000000000000 >#
 b10 *
-b10 x"
+b10 5#
 b101 )
-b101 y"
+b101 6#
 b1011111011101111 ,
-b1011111011101111 v"
+b1011111011101111 3#
 b1101111010101101 %
-b1101111010101101 }"
+b1101111010101101 :#
 b101000000000000 (
-b101000000000000 z"
+b101000000000000 7#
 b1001000110100 $
-b1001000110100 ~"
+b1001000110100 ;#
 b1010000000000000000000000010 6
-b1010000000000000000000000010 k"
+b1010000000000000000000000010 &#
 b1010000000000000000000000001 /
-b1010000000000000000000000001 r"
+b1010000000000000000000000001 -#
 b1001000110100 8
-b1001000110100 n"
+b1001000110100 )#
 b10000000 .
-b10000000 t"
+b10000000 /#
 b0 5
-b0 l"
+b0 '#
 b111 4
-b111 o"
+b111 *#
 b111100 2
-b111100 s"
+b111100 .#
 b110010101111111010111110111011111101111010101101 :
-b110010101111111010111110111011111101111010101101 i"
+b110010101111111010111110111011111101111010101101 ##
 b110111101010110110111110111011111100101011111110 ;
-b110111101010110110111110111011111100101011111110 g"
+b110111101010110110111110111011111100101011111110 !#
+1=#
 b1010101111001101 z
-b1010101111001101 \"
+b1010101111001101 k"
 b100000000000000 &"
-b100000000000000 e"
+b100000000000000 t"
 b10 {
-b10 ]"
+b10 l"
 b101 |
-b101 ^"
+b101 m"
 b1011111011101111 y
-b1011111011101111 ["
+b1011111011101111 j"
 b1101111010101101 ""
-b1101111010101101 b"
+b1101111010101101 q"
 b101000000000000 }
-b101000000000000 _"
+b101000000000000 n"
 b1001000110100 #"
-b1001000110100 c"
+b1001000110100 r"
 b1010000000000000000000000010 m
-b1010000000000000000000000010 O"
+b1010000000000000000000000010 ^"
+b1010000000000000000000000010 E#
 b1010000000000000000000000001 t
-b1010000000000000000000000001 V"
+b1010000000000000000000000001 e"
 b1001000110100 k
-b1001000110100 R"
+b1001000110100 a"
 b10000000 u
-b10000000 X"
+b10000000 g"
 b0 n
-b0 P"
+b0 _"
 b111 o
-b111 S"
+b111 b"
 b111100 q
-b111100 W"
+b111100 f"
 b110010101111111010111110111011111101111010101101 h
-b110010101111111010111110111011111101111010101101 M"
+b110010101111111010111110111011111101111010101101 \"
 b110111101010110110111110111011111100101011111110 g
-b110111101010110110111110111011111100101011111110 K"
+b110111101010110110111110111011111100101011111110 Z"
 1%"
 b101011 *"
 0E

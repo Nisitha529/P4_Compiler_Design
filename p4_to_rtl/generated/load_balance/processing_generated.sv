@@ -36,8 +36,13 @@ module processing_generated (
   input  logic [15:0] tcp_checksum,
   input  logic [15:0] tcp_urgentPtr,
 
-  // Metadata
+  // Metadata inputs
   input  logic [13:0] meta_ecmp_select,
+
+  // Header valid flag outputs (may be modified by setValid/setInvalid)
+  output logic        out_ethernet_valid,
+  output logic        out_ipv4_valid,
+  output logic        out_tcp_valid,
 
   // Header field outputs (pass-through, optionally modified)
   output logic [47:0] out_ethernet_dstAddr,
@@ -66,21 +71,103 @@ module processing_generated (
   output logic [15:0] out_tcp_window,
   output logic [15:0] out_tcp_checksum,
   output logic [15:0] out_tcp_urgentPtr,
+
+  // Standard metadata outputs
+  output logic [8:0] out_std_meta_egress_spec,
+
+  // Control-plane write ports for table instances
+  input  logic        ecmp_group_cp_wr_en,
+  input  logic [9:0] ecmp_group_cp_wr_idx,
+  input  logic [31:0] ecmp_group_cp_wr_key_dstAddr,
+  input  logic [5:0] ecmp_group_cp_wr_pfx_len,
+  input  logic [1:0] ecmp_group_cp_wr_action,
+  input  logic [15:0] ecmp_group_cp_wr_p_ecmp_base,
+  input  logic [31:0] ecmp_group_cp_wr_p_ecmp_count,
+  input  logic        ecmp_nhop_cp_wr_en,
+  input  logic [0:0] ecmp_nhop_cp_wr_idx,
+  input  logic [13:0] ecmp_nhop_cp_wr_key_ecmp_select,
+  input  logic [1:0] ecmp_nhop_cp_wr_action,
+  input  logic [47:0] ecmp_nhop_cp_wr_p_nhop_dmac,
+  input  logic [31:0] ecmp_nhop_cp_wr_p_nhop_ipv4,
+  input  logic [8:0] ecmp_nhop_cp_wr_p_port,
+
+  // Table hit outputs
   output logic        ecmp_group_hit_out,
+  output logic        ecmp_nhop_hit_out,
 
   output logic        valid_out,
   output logic        drop
 );
 
-  logic [0:0] ecmp_group_hit;
-  logic [31:0] standard_metadata_egress_spec;
+  // Metadata shadow locals (writable copies of metadata inputs)
+  logic [13:0] meta_ecmp_select_w;
+
+  // Table lookup result wires
+  logic        ecmp_group_hit;
+  logic [1:0] ecmp_group_act_id;
+  logic [15:0] ecmp_group_p_ecmp_base;
+  logic [31:0] ecmp_group_p_ecmp_count;
+  logic        ecmp_nhop_hit;
+  logic [1:0] ecmp_nhop_act_id;
+  logic [47:0] ecmp_nhop_p_nhop_dmac;
+  logic [31:0] ecmp_nhop_p_nhop_ipv4;
+  logic [8:0] ecmp_nhop_p_port;
+
+  // Table module instantiations
+  ecmp_group_table #(.DEPTH(1024)) u_ecmp_group (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .lkp_dstAddr    (ipv4_dstAddr),
+    .hit       (ecmp_group_hit),
+    .action_id (ecmp_group_act_id),
+    .p_ecmp_base  (ecmp_group_p_ecmp_base),
+    .p_ecmp_count  (ecmp_group_p_ecmp_count),
+    .cp_wr_en  (ecmp_group_cp_wr_en),
+    .cp_wr_idx (ecmp_group_cp_wr_idx),
+    .cp_wr_key_dstAddr (ecmp_group_cp_wr_key_dstAddr),
+    .cp_wr_pfx_len (ecmp_group_cp_wr_pfx_len),
+    .cp_wr_action (ecmp_group_cp_wr_action),
+    .cp_wr_p_ecmp_base (ecmp_group_cp_wr_p_ecmp_base),
+    .cp_wr_p_ecmp_count (ecmp_group_cp_wr_p_ecmp_count)
+  );
+
+  ecmp_nhop_table #(.DEPTH(2)) u_ecmp_nhop (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .lkp_ecmp_select    (meta_ecmp_select_w),
+    .hit       (ecmp_nhop_hit),
+    .action_id (ecmp_nhop_act_id),
+    .p_nhop_dmac  (ecmp_nhop_p_nhop_dmac),
+    .p_nhop_ipv4  (ecmp_nhop_p_nhop_ipv4),
+    .p_port  (ecmp_nhop_p_port),
+    .cp_wr_en  (ecmp_nhop_cp_wr_en),
+    .cp_wr_idx (ecmp_nhop_cp_wr_idx),
+    .cp_wr_key_ecmp_select (ecmp_nhop_cp_wr_key_ecmp_select),
+    .cp_wr_action (ecmp_nhop_cp_wr_action),
+    .cp_wr_p_nhop_dmac (ecmp_nhop_cp_wr_p_nhop_dmac),
+    .cp_wr_p_nhop_ipv4 (ecmp_nhop_cp_wr_p_nhop_ipv4),
+    .cp_wr_p_port (ecmp_nhop_cp_wr_p_port)
+  );
+
+  // Table hit outputs
+  assign ecmp_group_hit_out = ecmp_group_hit;
+  assign ecmp_nhop_hit_out = ecmp_nhop_hit;
 
   always_comb begin
     drop = 0;
-    ecmp_group_hit = 1'b0;
-    standard_metadata_egress_spec = 32'b0;
 
-    // pass-through defaults
+    // Metadata shadow defaults (init from inputs)
+    meta_ecmp_select_w = meta_ecmp_select;
+
+    // Standard metadata defaults
+    out_std_meta_egress_spec = 9'b0;
+
+    // Header valid flag pass-through defaults
+    out_ethernet_valid = ethernet_valid;
+    out_ipv4_valid = ipv4_valid;
+    out_tcp_valid = tcp_valid;
+
+    // Header field pass-through defaults
     out_ethernet_dstAddr = ethernet_dstAddr;
     out_ethernet_srcAddr = ethernet_srcAddr;
     out_ethernet_etherType = ethernet_etherType;
@@ -110,19 +197,40 @@ module processing_generated (
 
     // apply block
     if (ipv4_valid && ipv4_ttl > 0) begin
-      // ecmp_group.apply()
-      //   key: ipv4_dstAddr [lpm]
-      //   default: None
-      // TODO: drive ecmp_group_hit from lookup module
       if (ecmp_group_hit) begin
+        // ecmp_group.apply()
+        if (ecmp_group_hit) begin
+          unique case (ecmp_group_act_id)
+            2'd0: ; // NoAction
+            2'd1: begin // drop
+              drop = 1;
+            end
+            2'd2: begin // set_ecmp_select
+              // hash() stub — XOR-based behavioral approximation
+              meta_ecmp_select_w = (ipv4_srcAddr ^ ipv4_dstAddr ^ ipv4_protocol ^ tcp_srcPort ^ tcp_dstPort) & 12'hFFF;
+            end
+            default: ; // default = NoAction
+          endcase
+        end
         // ecmp_nhop.apply()
-        //   key: meta_ecmp_select [exact]
-        //   default_action: None
+        if (ecmp_nhop_hit) begin
+          unique case (ecmp_nhop_act_id)
+            2'd0: ; // NoAction
+            2'd1: begin // drop
+              drop = 1;
+            end
+            2'd2: begin // set_nhop
+              out_ethernet_dstAddr = ecmp_nhop_p_nhop_dmac;
+              out_ipv4_dstAddr = ecmp_nhop_p_nhop_ipv4;
+              out_std_meta_egress_spec = ecmp_nhop_p_port;
+              out_ipv4_ttl = ipv4_ttl - 1;
+            end
+            default: ; // default = NoAction
+          endcase
+        end
       end
     end
   end
-
-  assign ecmp_group_hit_out = ecmp_group_hit;
 
   always_ff @(posedge clk) begin
     if (!rst_n) valid_out <= 0;

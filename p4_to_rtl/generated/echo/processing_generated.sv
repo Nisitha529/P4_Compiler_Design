@@ -31,8 +31,14 @@ module processing_generated (
   input  logic [15:0] udp_length,
   input  logic [15:0] udp_checksum,
 
-  // Metadata
+  // Metadata inputs
   input  logic [15:0] meta_echo_port,
+
+  // Header valid flag outputs (may be modified by setValid/setInvalid)
+  output logic        out_eth_valid,
+  output logic        out_ipv4_valid,
+  output logic        out_ipv4opt_valid,
+  output logic        out_udp_valid,
 
   // Header field outputs (pass-through, optionally modified)
   output logic [47:0] out_eth_dmac,
@@ -64,13 +70,25 @@ module processing_generated (
   logic [31:0] tmp_ip_addr;
   logic [15:0] tmp_udp_port;
 
+  // Metadata shadow locals (writable copies of metadata inputs)
+  logic [15:0] meta_echo_port_w;
+
   always_comb begin
     drop = 0;
     tmp_eth_addr = 48'b0;
     tmp_ip_addr = 32'b0;
     tmp_udp_port = 16'b0;
 
-    // pass-through defaults
+    // Metadata shadow defaults (init from inputs)
+    meta_echo_port_w = meta_echo_port;
+
+    // Header valid flag pass-through defaults
+    out_eth_valid = eth_valid;
+    out_ipv4_valid = ipv4_valid;
+    out_ipv4opt_valid = ipv4opt_valid;
+    out_udp_valid = udp_valid;
+
+    // Header field pass-through defaults
     out_eth_dmac = eth_dmac;
     out_eth_smac = eth_smac;
     out_eth_type = eth_type;
@@ -94,7 +112,7 @@ module processing_generated (
 
     // apply block
     if (udp_valid) begin
-      if (udp_dst_port == meta_echo_port) begin
+      if (udp_dst_port == meta_echo_port_w) begin
         // echo_packet()
         tmp_eth_addr = eth_dmac;
         out_eth_dmac = eth_smac;

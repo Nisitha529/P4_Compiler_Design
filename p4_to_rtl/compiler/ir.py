@@ -106,6 +106,7 @@ class Table:
         self.keys = []              # list[TableKey]
         self.actions = []           # list[str]
         self.default_action = None
+        self.size = None            # int or None (from P4 size = N;)
 
     def add_key(self, key):
         self.keys.append(key)
@@ -115,6 +116,9 @@ class Table:
 
     def set_default(self, action):
         self.default_action = action
+
+    def set_size(self, n):
+        self.size = n
 
 
 # ============================================================

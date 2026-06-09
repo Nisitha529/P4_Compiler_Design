@@ -39,14 +39,24 @@ def _build_field_width_map(ir):
             for fld in h.fields:
                 if fld.width:
                     fwmap[f'{h.name}_{fld.name}'] = fld.width
+    for mf in ir.metadata_fields:
+        fwmap[f'meta_{mf.name}'] = mf.width
+    # Control-local variables used as table keys (e.g. bit<16> table_key_sport)
+    for block in ir.controls.values():
+        for lv in block.local_vars:
+            if lv.name not in fwmap:
+                fwmap[lv.name] = lv.width
     return fwmap
 
 
 def _key_width(key_field, fwmap):
-    """Resolve a table key field width, handling standard_metadata.* correctly."""
+    """Resolve a table key field width, handling standard_metadata.* and meta.* correctly."""
     m = re.match(r'^standard_metadata\.(\w+)$', key_field.strip())
     if m:
         return _STD_META_WIDTHS.get(m.group(1), 9)
+    m = re.match(r'^meta\.(\w+)$', key_field.strip())
+    if m:
+        return fwmap.get(f'meta_{m.group(1)}', 32)
     return fwmap.get(_sig(key_field), 32)
 
 
@@ -115,7 +125,7 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
     is_lpm     = (match_type == 'lpm')
     is_ternary = (match_type == 'ternary')
 
-    depth = 1024  # fallback; real implementation would use table.size
+    depth = table.size if table.size else 1024
 
     with open(output_path, 'w') as f:
 
@@ -221,7 +231,7 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
 
         f.write('  // Combinational lookup\n')
         f.write('  // LPM: first-match wins; CP software should insert longest-prefix-first.\n')
-        f.write('  always_comb begin\n')
+        f.write('  always @(*) begin\n')
         f.write('    hit       = 1\'b0;\n')
         f.write(f'    action_id = {act_id_w}\'d{default_act_id};\n')
         for pname, pw in params:

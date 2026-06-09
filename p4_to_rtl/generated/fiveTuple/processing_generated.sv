@@ -54,6 +54,16 @@ module processing_generated (
   input  logic [15:0] udp_length,
   input  logic [15:0] udp_checksum,
 
+  // Header valid flag outputs (may be modified by setValid/setInvalid)
+  output logic        out_eth_valid,
+  output logic        out_new_vlan_valid,
+  output logic        out_vlan_valid,
+  output logic        out_ipv4_valid,
+  output logic        out_ipv4opt_valid,
+  output logic        out_tcp_valid,
+  output logic        out_tcpopt_valid,
+  output logic        out_udp_valid,
+
   // Header field outputs (pass-through, optionally modified)
   output logic [47:0] out_eth_dmac,
   output logic [47:0] out_eth_smac,
@@ -94,7 +104,23 @@ module processing_generated (
   output logic [15:0] out_udp_dst_port,
   output logic [15:0] out_udp_length,
   output logic [15:0] out_udp_checksum,
-  output logic        hit_out,
+
+  // Control-plane write ports for table instances
+  input  logic        FiveTuple_cp_wr_en,
+  input  logic [4:0] FiveTuple_cp_wr_idx,
+  input  logic [31:0] FiveTuple_cp_wr_key_src,
+  input  logic [31:0] FiveTuple_cp_wr_key_dst,
+  input  logic [7:0] FiveTuple_cp_wr_key_protocol,
+  input  logic [31:0] FiveTuple_cp_wr_key_table_key_sport,
+  input  logic [31:0] FiveTuple_cp_wr_key_table_key_dport,
+  input  logic [0:0] FiveTuple_cp_wr_action,
+  input  logic [12:0] FiveTuple_cp_wr_p_counter_index,
+  input  logic [2:0] FiveTuple_cp_wr_p_pcp,
+  input  logic [0:0] FiveTuple_cp_wr_p_cfi,
+  input  logic [11:0] FiveTuple_cp_wr_p_vid,
+
+  // Table hit outputs
+  output logic        FiveTuple_hit_out,
 
   output logic        valid_out,
   output logic        drop
@@ -104,13 +130,63 @@ module processing_generated (
   logic [15:0] table_key_dport;
   logic [15:0] table_key_sport;
 
+  // Table lookup result wires
+  logic        FiveTuple_hit;
+  logic [0:0] FiveTuple_act_id;
+  logic [12:0] FiveTuple_p_counter_index;
+  logic [2:0] FiveTuple_p_pcp;
+  logic [0:0] FiveTuple_p_cfi;
+  logic [11:0] FiveTuple_p_vid;
+
+  // Table module instantiations
+  FiveTuple_table #(.DEPTH(32)) u_FiveTuple (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .lkp_src    (ipv4_src),
+    .lkp_dst    (ipv4_dst),
+    .lkp_protocol    (ipv4_protocol),
+    .lkp_table_key_sport    (table_key_sport),
+    .lkp_table_key_dport    (table_key_dport),
+    .hit       (FiveTuple_hit),
+    .action_id (FiveTuple_act_id),
+    .p_counter_index  (FiveTuple_p_counter_index),
+    .p_pcp  (FiveTuple_p_pcp),
+    .p_cfi  (FiveTuple_p_cfi),
+    .p_vid  (FiveTuple_p_vid),
+    .cp_wr_en  (FiveTuple_cp_wr_en),
+    .cp_wr_idx (FiveTuple_cp_wr_idx),
+    .cp_wr_key_src (FiveTuple_cp_wr_key_src),
+    .cp_wr_key_dst (FiveTuple_cp_wr_key_dst),
+    .cp_wr_key_protocol (FiveTuple_cp_wr_key_protocol),
+    .cp_wr_key_table_key_sport (FiveTuple_cp_wr_key_table_key_sport),
+    .cp_wr_key_table_key_dport (FiveTuple_cp_wr_key_table_key_dport),
+    .cp_wr_action (FiveTuple_cp_wr_action),
+    .cp_wr_p_counter_index (FiveTuple_cp_wr_p_counter_index),
+    .cp_wr_p_pcp (FiveTuple_cp_wr_p_pcp),
+    .cp_wr_p_cfi (FiveTuple_cp_wr_p_cfi),
+    .cp_wr_p_vid (FiveTuple_cp_wr_p_vid)
+  );
+
+  // Table hit outputs
+  assign FiveTuple_hit_out = FiveTuple_hit;
+
   always_comb begin
     drop = 0;
     hit = 1'b0;
     table_key_dport = 16'b0;
     table_key_sport = 16'b0;
 
-    // pass-through defaults
+    // Header valid flag pass-through defaults
+    out_eth_valid = eth_valid;
+    out_new_vlan_valid = new_vlan_valid;
+    out_vlan_valid = vlan_valid;
+    out_ipv4_valid = ipv4_valid;
+    out_ipv4opt_valid = ipv4opt_valid;
+    out_tcp_valid = tcp_valid;
+    out_tcpopt_valid = tcpopt_valid;
+    out_udp_valid = udp_valid;
+
+    // Header field pass-through defaults
     out_eth_dmac = eth_dmac;
     out_eth_smac = eth_smac;
     out_eth_type = eth_type;
@@ -156,26 +232,42 @@ module processing_generated (
       table_key_sport = udp_src_port;
       table_key_dport = udp_dst_port;
       // FiveTuple.apply()
-      //   key: ipv4_src [exact]
-      //   key: ipv4_dst [exact]
-      //   key: ipv4_protocol [exact]
-      //   key: table_key_sport [exact]
-      //   key: table_key_dport [exact]
-      //   default_action: NoAction
-      // TODO: drive hit from CAM lookup module
+      if (FiveTuple_hit) begin
+        unique case (FiveTuple_act_id)
+          1'd0: ; // NoAction
+          1'd1: begin // InsertVLAN
+            out_new_vlan_pcp = FiveTuple_p_pcp;
+            out_new_vlan_cfi = FiveTuple_p_cfi;
+            out_new_vlan_vid = FiveTuple_p_vid;
+            out_new_vlan_tpid = eth_type;
+            out_new_vlan_valid = 1'b1;
+            /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
+            /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+          end
+          default: ; // default = NoAction
+        endcase
+      end
     end
     else begin
       if (tcp_valid) begin
         table_key_sport = tcp_src_port;
         table_key_dport = tcp_dst_port;
         // FiveTuple.apply()
-        //   key: ipv4_src [exact]
-        //   key: ipv4_dst [exact]
-        //   key: ipv4_protocol [exact]
-        //   key: table_key_sport [exact]
-        //   key: table_key_dport [exact]
-        //   default_action: NoAction
-        // TODO: drive hit from CAM lookup module
+        if (FiveTuple_hit) begin
+          unique case (FiveTuple_act_id)
+            1'd0: ; // NoAction
+            1'd1: begin // InsertVLAN
+              out_new_vlan_pcp = FiveTuple_p_pcp;
+              out_new_vlan_cfi = FiveTuple_p_cfi;
+              out_new_vlan_vid = FiveTuple_p_vid;
+              out_new_vlan_tpid = eth_type;
+              out_new_vlan_valid = 1'b1;
+              /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
+              /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+            end
+            default: ; // default = NoAction
+          endcase
+        end
       end
     end
     if (hit) begin
@@ -187,8 +279,6 @@ module processing_generated (
       end
     end
   end
-
-  assign hit_out = hit;
 
   always_ff @(posedge clk) begin
     if (!rst_n) valid_out <= 0;

@@ -53,6 +53,14 @@ def _build_field_width_map(ir):
             for fld in h.fields:
                 if fld.width:
                     fwmap[f'{h.name}_{fld.name}'] = fld.width
+    # Include metadata fields so table key widths resolve correctly
+    for mf in ir.metadata_fields:
+        fwmap[f'meta_{mf.name}'] = mf.width
+    # Include control-local variables used as table keys (e.g. bit<16> table_key_sport)
+    for block in ir.controls.values():
+        for lv in block.local_vars:
+            if lv.name not in fwmap:
+                fwmap[lv.name] = lv.width
     return fwmap
 
 
@@ -79,9 +87,17 @@ def _is_std_meta(expr):
     return expr.strip().startswith('standard_metadata.')
 
 
+def _is_meta(expr):
+    return re.match(r'^meta\.', expr.strip()) is not None
+
+
 def _std_meta_fname(expr):
-    """Return the field name part of standard_metadata.fname."""
     m = re.match(r'^standard_metadata\.(\w+)$', expr.strip())
+    return m.group(1) if m else None
+
+
+def _meta_fname(expr):
+    m = re.match(r'^meta\.(\w+)$', expr.strip())
     return m.group(1) if m else None
 
 
@@ -92,6 +108,9 @@ def _lhs_sig(lhs):
     fn = _std_meta_fname(lhs)
     if fn:
         return f'out_std_meta_{fn}'
+    mfn = _meta_fname(lhs)
+    if mfn:
+        return f'meta_{mfn}_w'        # writable shadow of the metadata input
     return re.sub(r'[.\[\]]', '_', lhs)
 
 
@@ -99,7 +118,7 @@ def _map_cond(cond, cmap=None):
     cond = re.sub(r'(\w+)\.apply\(\)\.(\w+)', r'\1_\2', cond)
     cond = re.sub(r'hdr\.(\w+)\.isValid\(\)', r'\1_valid', cond)
     cond = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', cond)
-    cond = re.sub(r'\bmeta\.(\w+)', r'meta_\1', cond)
+    cond = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', cond)  # reads use the shadow
     if cmap:
         for name, sv_lit in cmap.items():
             cond = re.sub(r'\b' + re.escape(name) + r'\b', sv_lit, cond)
@@ -108,7 +127,7 @@ def _map_cond(cond, cmap=None):
 
 def _map_expr(e, cmap=None):
     e = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', e)
-    e = re.sub(r'\bmeta\.(\w+)', r'meta_\1', e)
+    e = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', e)          # reads use the shadow
     e = re.sub(r'\bstandard_metadata\.(\w+)', r'std_meta_\1', e)
     if cmap:
         for name, sv_lit in cmap.items():
@@ -135,7 +154,6 @@ def _find_processing_ctrl(ir):
 # ============================================================
 
 def _collect_std_meta_outputs(ctrl):
-    """standard_metadata.* fields assigned in any action body → output ports."""
     fields = {}
     for action in ctrl.actions:
         for stmt in action.body:
@@ -147,7 +165,6 @@ def _collect_std_meta_outputs(ctrl):
 
 
 def _collect_std_meta_inputs(tables):
-    """standard_metadata.* fields used as table keys → input ports."""
     fields = {}
     for tbl in tables:
         for key in tbl.keys:
@@ -205,19 +222,21 @@ def _table_key_sig(key_field):
     fn = _std_meta_fname(key_field)
     if fn:
         return f'std_meta_{fn}'
+    mfn = _meta_fname(key_field)
+    if mfn:
+        return f'meta_{mfn}_w'        # use the writable shadow
     return _sig(key_field)
 
 
 # ============================================================
 # Local signal detection
-# (skips hdr, std_meta, and known table-wire names)
 # ============================================================
 
-def _collect_local_signals(ctrl, fwmap, table_wire_names=None):
+def _collect_local_signals(ctrl, fwmap, table_wire_names=None, meta_shadow_names=None):
     locals_ = {}
-    tbl_wires = table_wire_names or set()
+    tbl_wires    = table_wire_names  or set()
+    meta_shadows = meta_shadow_names or set()
 
-    # Param-width lookup for action body inference
     def _param_widths(action):
         pw = {}
         for p in action.params:
@@ -228,7 +247,7 @@ def _collect_local_signals(ctrl, fwmap, table_wire_names=None):
     def _scan_cond(cond):
         for m in re.finditer(r'(\w+)\.apply\(\)\.(\w+)', cond):
             sig = f'{m.group(1)}_{m.group(2)}'
-            if sig in tbl_wires:
+            if sig in tbl_wires or sig in meta_shadows:
                 continue
             if sig not in locals_:
                 locals_[sig] = 1
@@ -236,9 +255,9 @@ def _collect_local_signals(ctrl, fwmap, table_wire_names=None):
     def _scan_stmts(stmts):
         for s in stmts:
             if isinstance(s, Assignment):
-                if not _is_hdr(s.lhs) and not _is_std_meta(s.lhs):
+                if not _is_hdr(s.lhs) and not _is_std_meta(s.lhs) and not _is_meta(s.lhs):
                     n = _lhs_sig(s.lhs)
-                    if n not in locals_ and n not in tbl_wires:
+                    if n not in locals_ and n not in tbl_wires and n not in meta_shadows:
                         rhs_sig = _map_expr(s.rhs)
                         locals_[n] = fwmap.get(rhs_sig, 16)
             elif isinstance(s, IfStatement):
@@ -249,14 +268,13 @@ def _collect_local_signals(ctrl, fwmap, table_wire_names=None):
                 if s.result_var not in locals_ and s.result_var not in tbl_wires:
                     locals_[s.result_var] = 1
 
-    # Scan action bodies — use param widths for better inference
     for a in ctrl.actions:
         pw = _param_widths(a)
         for stmt in a.body:
             if isinstance(stmt, Assignment):
-                if not _is_hdr(stmt.lhs) and not _is_std_meta(stmt.lhs):
+                if not _is_hdr(stmt.lhs) and not _is_std_meta(stmt.lhs) and not _is_meta(stmt.lhs):
                     n = _lhs_sig(stmt.lhs)
-                    if n not in locals_ and n not in tbl_wires:
+                    if n not in locals_ and n not in tbl_wires and n not in meta_shadows:
                         rhs = stmt.rhs.strip()
                         if rhs in pw:
                             locals_[n] = pw[rhs]
@@ -264,9 +282,8 @@ def _collect_local_signals(ctrl, fwmap, table_wire_names=None):
                             rhs_sig = _map_expr(rhs)
                             locals_[n] = fwmap.get(rhs_sig, 32)
 
-    # Control-block local_vars override the inferred widths
     for lv in ctrl.local_vars:
-        if lv.name not in tbl_wires:
+        if lv.name not in tbl_wires and lv.name not in meta_shadows:
             locals_[lv.name] = lv.width
 
     _scan_stmts(ctrl.statements)
@@ -294,7 +311,6 @@ def _inline(action_name, amap, depth=0):
 
 
 def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
-    """Emit a (possibly param-substituted) action body."""
     for stmt in body_stmts:
         if isinstance(stmt, Assignment):
             lhs = _lhs_sig(stmt.lhs)
@@ -307,14 +323,12 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
 
 
 def _subst(text, pmap, cmap):
-    """Apply param substitution then P4→SV expression mapping."""
     for pname, psig in pmap.items():
         text = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, text)
     return _map_expr(text, cmap)
 
 
 def _collect_reg_reads(ctrl):
-    """Return list of (reg_name, raw_out_var, raw_addr_var) for all .read() calls."""
     reads = []
     def _scan(stmts):
         for s in stmts:
@@ -336,14 +350,13 @@ def _collect_reg_reads(ctrl):
 
 
 def _emit_extern_stub(f, stmt, ind, pmap, cmap):
-    """Emit RTL for extern calls: mark_to_drop, hash(), register.read/write."""
+    """Emit RTL for extern calls: setValid/setInvalid, mark_to_drop, hash, register.read/write."""
     name = stmt.name
 
     if name == 'mark_to_drop':
         f.write(f'{ind}drop = 1;\n')
         return
 
-    # hash(out_var, algorithm, base, {fields}, max) → XOR-based behavioral stub
     if name == 'hash':
         if len(stmt.args) >= 5:
             out_var   = _subst(stmt.args[0], pmap, cmap)
@@ -356,17 +369,29 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap):
                 bits    = max(1, math.ceil(math.log2(max_int)))
             except ValueError:
                 bits = 12
-            xor_expr = ' ^ '.join(fields) if fields else '32\'d0'
+            xor_expr = ' ^ '.join(fields) if fields else "32'd0"
             f.write(f'{ind}// hash() stub — XOR-based behavioral approximation\n')
             f.write(f'{ind}{out_var} = ({xor_expr}) & {bits}\'h{(2**bits - 1):X};\n')
         else:
-            f.write(f'{ind}// hash() [incomplete args — stub]\n')
+            f.write(f'{ind}/* UNIMPLEMENTED: hash() — insufficient args */\n')
         return
 
     if '.' in name:
+        parts = name.split('.')
+        # hdr.HEADER.setValid() / hdr.HEADER.setInvalid()
+        if len(parts) == 3 and parts[0] == 'hdr' and parts[2] in ('setValid', 'setInvalid'):
+            hdr_name = parts[1]
+            val = "1'b1" if parts[2] == 'setValid' else "1'b0"
+            f.write(f'{ind}out_{hdr_name}_valid = {val};\n')
+            return
+        # HEADER.setValid() / HEADER.setInvalid()  (from action-body parser: obj=header_name)
+        if len(parts) == 2 and parts[1] in ('setValid', 'setInvalid'):
+            hdr_name = parts[0]
+            val = "1'b1" if parts[1] == 'setValid' else "1'b0"
+            f.write(f'{ind}out_{hdr_name}_valid = {val};\n')
+            return
         obj, method = name.split('.', 1)
         if method == 'read' and len(stmt.args) >= 2:
-            # Use pre-generated assign wire to break always_comb→mem sensitivity
             raw_out = stmt.args[0].strip()
             out_var = _subst(raw_out, pmap, cmap)
             f.write(f'{ind}{out_var} = {obj}_rd_{raw_out};\n')
@@ -378,10 +403,10 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap):
             f.write(f'{ind}{obj}_wr_addr = {addr};\n')
             f.write(f'{ind}{obj}_wr_data = {data};\n')
             return
-        f.write(f'{ind}// {name}({", ".join(stmt.args)})  [extern stub]\n')
+        f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {name}({", ".join(stmt.args)}) */\n')
         return
 
-    f.write(f'{ind}// {name}({", ".join(stmt.args)})  [extern stub]\n')
+    f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {name}({", ".join(stmt.args)}) */\n')
 
 
 # ============================================================
@@ -421,7 +446,6 @@ def _emit_table_case(f, table, amap, ind, cmap):
     f.write(f'{ind}  endcase\n')
     f.write(f'{ind}end')
 
-    # Execute default action on miss (when default is not NoAction)
     if default_name not in ('NoAction',):
         action = amap.get(default_name)
         f.write(f' else begin // {default_name} on miss\n')
@@ -440,14 +464,10 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
     for stmt in stmts:
 
         if isinstance(stmt, IfStatement):
-            # Detect any table.apply().field patterns in the condition
             tbl_applies = list(re.finditer(r'(\w+)\.apply\(\)\.(\w+)', stmt.condition))
 
             f.write(f'{ind}if ({_map_cond(stmt.condition, cmap)}) begin\n')
 
-            # For each table referenced in the condition, emit its case statement
-            # immediately inside the if block (the table is already looked up
-            # combinatorially by the submodule; this only runs the action body)
             for tm in tbl_applies:
                 tname = tm.group(1)
                 tbl   = next((t for t in ctrl_tables if t.name == tname), None)
@@ -473,7 +493,6 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
             if stmt.name == 'mark_to_drop':
                 f.write(f'{ind}drop = 1;\n')
             elif action and stmt.args and action.params:
-                # Action call with arguments from apply block
                 pmap = {}
                 for i, p in enumerate(action.params):
                     pname = p.name if isinstance(p, ActionParam) else str(p)
@@ -487,7 +506,7 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
                     f.write(f'{ind}// {stmt.name}()\n')
                     _emit_inlined_body(f, inlined, {}, cmap, ind)
                 else:
-                    f.write(f'{ind}// {stmt.name}()  [extern stub]\n')
+                    f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {stmt.name}() */\n')
             else:
                 _emit_extern_stub(f, stmt, ind, {}, cmap)
 
@@ -536,6 +555,9 @@ def emit_processing(ir, output_path):
 
     meta_fields = ir.metadata_fields
 
+    # ── Metadata shadow names (writable copies of metadata input ports) ────
+    meta_shadow_names = {f'meta_{mf.name}_w' for mf in meta_fields}
+
     # ── Table wiring info ──────────────────────────────────────────────────
     table_wires = []
     for tbl in ctrl.tables:
@@ -549,13 +571,20 @@ def emit_processing(ir, output_path):
                      _STD_META_WIDTHS.get(_std_meta_fname(k.field) or '', None)
                      or fwmap.get(_sig(k.field), 32))
                     for k in tbl.keys]
+        # Fix meta.* key widths via fwmap (already includes meta_ entries)
+        fixed_key_sigs = []
+        for fname, ksig, kw in key_sigs:
+            mfn = _meta_fname(tbl.keys[len(fixed_key_sigs)].field)
+            if mfn and f'meta_{mfn}' in fwmap:
+                kw = fwmap[f'meta_{mfn}']
+            fixed_key_sigs.append((fname, ksig, kw))
         table_wires.append({
             'table': tbl, 'hit_sig': f'{tbl.name}_hit',
             'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
-            'params': params, 'key_sigs': key_sigs,
+            'params': params, 'key_sigs': fixed_key_sigs,
+            'depth': tbl.size if tbl.size else 1024,
         })
 
-    # Names of all table-result wires (to exclude from locals)
     tbl_wire_names = set()
     for tw in table_wires:
         tbl_wire_names.add(tw['hit_sig'])
@@ -563,9 +592,8 @@ def emit_processing(ir, output_path):
         for pname, _ in tw['params']:
             tbl_wire_names.add(f"{tw['table'].name}_p_{pname}")
 
-    locals_ = _collect_local_signals(ctrl, fwmap, tbl_wire_names)
+    locals_ = _collect_local_signals(ctrl, fwmap, tbl_wire_names, meta_shadow_names)
 
-    # Register names (for memory array generation)
     registers = ctrl.registers
 
     with open(output_path, 'w') as f:
@@ -585,7 +613,7 @@ def emit_processing(ir, output_path):
             f.write(f'  input  logic [{w-1}:0] {hname}_{fname},\n')
 
         if meta_fields:
-            f.write('\n  // Metadata\n')
+            f.write('\n  // Metadata inputs\n')
             for mf in meta_fields:
                 f.write(f'  input  logic [{mf.width-1}:0] meta_{mf.name},\n')
 
@@ -594,6 +622,10 @@ def emit_processing(ir, output_path):
             for fname in sorted(std_meta_ins):
                 fw = std_meta_ins[fname]
                 f.write(f'  input  logic [{fw-1}:0] std_meta_{fname},\n')
+
+        f.write('\n  // Header valid flag outputs (may be modified by setValid/setInvalid)\n')
+        for hname in hdr_valids:
+            f.write(f'  output logic        out_{hname}_valid,\n')
 
         f.write('\n  // Header field outputs (pass-through, optionally modified)\n')
         for hname, fname, w in hdr_ports:
@@ -611,7 +643,7 @@ def emit_processing(ir, output_path):
             for tw in table_wires:
                 tbl   = tw['table']
                 tname = tbl.name
-                depth = 1024
+                depth = tw['depth']
                 idx_w = max(1, math.ceil(math.log2(depth))) if depth > 1 else 1
                 mt    = tbl.keys[0].match_type if tbl.keys else 'exact'
                 is_lpm     = (mt == 'lpm')
@@ -631,6 +663,12 @@ def emit_processing(ir, output_path):
                 for pname, pw in tw['params']:
                     f.write(f'  input  logic [{pw-1}:0] {tname}_cp_wr_p_{pname},\n')
 
+        # Table hit outputs (for external observation / CAM integration)
+        if table_wires:
+            f.write('\n  // Table hit outputs\n')
+            for tw in table_wires:
+                f.write(f'  output logic        {tw["table"].name}_hit_out,\n')
+
         f.write('\n  output logic        valid_out,\n')
         f.write('  output logic        drop\n')
         f.write(');\n\n')
@@ -639,6 +677,13 @@ def emit_processing(ir, output_path):
         for lname, lw in sorted(locals_.items()):
             f.write(f'  logic [{lw-1}:0] {lname};\n')
         if locals_:
+            f.write('\n')
+
+        # ── Metadata shadow locals ─────────────────────────────────────
+        if meta_fields:
+            f.write('  // Metadata shadow locals (writable copies of metadata inputs)\n')
+            for mf in meta_fields:
+                f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w;\n')
             f.write('\n')
 
         # ── Register memory arrays + write-staging signals ─────────────
@@ -650,7 +695,6 @@ def emit_processing(ir, output_path):
             f.write(f'  logic [{addr_w-1}:0] {reg.name}_wr_addr;\n')
             f.write(f'  logic [{reg.data_width-1}:0] {reg.name}_wr_data;\n')
         if registers:
-            # Use initial blocks to zero memories — avoids NBA cascade during reset
             f.write('\n  // Zero all register memories at simulation start\n')
             f.write('  initial begin\n')
             for reg in registers:
@@ -658,13 +702,10 @@ def emit_processing(ir, output_path):
                 f.write(f'      {reg.name}_mem[_si] = {reg.data_width}\'b0;\n')
             f.write('  end\n\n')
 
-            # Assign wires for reads — break always_comb sensitivity to the mem array.
-            # Convergent loop: always_comb→addr→assign→val→always_comb settles in 2 steps.
             reg_reads = _collect_reg_reads(ctrl)
             if reg_reads:
                 f.write('  // Register read wires (isolated via assign)\n')
                 for reg_name, raw_out, raw_addr in reg_reads:
-                    # find data width for this register
                     reg_obj = next((r for r in registers if r.name == reg_name), None)
                     dw = reg_obj.data_width if reg_obj else 1
                     addr_expr = _map_expr(raw_addr)
@@ -689,7 +730,7 @@ def emit_processing(ir, output_path):
             for tw in table_wires:
                 tbl   = tw['table']
                 tname = tbl.name
-                depth = 1024
+                depth = tw['depth']
                 mt    = tbl.keys[0].match_type if tbl.keys else 'exact'
                 is_lpm     = (mt == 'lpm')
                 is_ternary = (mt == 'ternary')
@@ -703,7 +744,6 @@ def emit_processing(ir, output_path):
                 f.write(f'    .action_id ({tw["aid_sig"]}),\n')
                 for pname, _ in tw['params']:
                     f.write(f'    .p_{pname}  ({tname}_p_{pname}),\n')
-                # CP write port connections
                 f.write(f'    .cp_wr_en  ({tname}_cp_wr_en),\n')
                 f.write(f'    .cp_wr_idx ({tname}_cp_wr_idx),\n')
                 for fname, _, _ in tw['key_sigs']:
@@ -723,15 +763,26 @@ def emit_processing(ir, output_path):
                     f.write('\n')
                 f.write('  );\n\n')
 
+        # ── Table hit output assignments ───────────────────────────────
+        if table_wires:
+            f.write('  // Table hit outputs\n')
+            for tw in table_wires:
+                tname = tw['table'].name
+                f.write(f'  assign {tname}_hit_out = {tw["hit_sig"]};\n')
+            f.write('\n')
+
         # ── Combinational logic ────────────────────────────────────────
         f.write('  always_comb begin\n')
         f.write('    drop = 0;\n')
 
-        # Default local signals
         for lname, lw in sorted(locals_.items()):
             f.write(f'    {lname} = {lw}\'b0;\n')
 
-        # Default write-staging for registers
+        if meta_fields:
+            f.write('\n    // Metadata shadow defaults (init from inputs)\n')
+            for mf in meta_fields:
+                f.write(f'    meta_{mf.name}_w = meta_{mf.name};\n')
+
         for reg in registers:
             f.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
             f.write(f'    {reg.name}_wr_addr = \'0;\n')
@@ -743,7 +794,11 @@ def emit_processing(ir, output_path):
                 fw = std_meta_outs[fname]
                 f.write(f'    out_std_meta_{fname} = {fw}\'b0;\n')
 
-        f.write('\n    // pass-through defaults\n')
+        f.write('\n    // Header valid flag pass-through defaults\n')
+        for hname in hdr_valids:
+            f.write(f'    out_{hname}_valid = {hname}_valid;\n')
+
+        f.write('\n    // Header field pass-through defaults\n')
         for hname, fname, _ in hdr_ports:
             f.write(f'    out_{hname}_{fname} = {hname}_{fname};\n')
 
@@ -753,7 +808,7 @@ def emit_processing(ir, output_path):
 
         f.write('  end\n\n')
 
-        # ── Register write-back (synchronous, no rst_n clear — initial block handles init)
+        # ── Register write-back ────────────────────────────────────────
         if registers:
             f.write('  // Register write-back (initialized via initial block above)\n')
             for reg in registers:

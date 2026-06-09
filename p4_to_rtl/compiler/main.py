@@ -17,6 +17,7 @@ from emit_parser import emit_parser
 from emit_processing import emit_processing
 from emit_deparser import emit_deparser
 from emit_table import emit_tables
+from emit_pkg import emit_pkg
 
 
 # ============================================================
@@ -152,6 +153,8 @@ def build_ir(parsed):
                 t.add_action(a)
             if tbl.get('default_action'):
                 t.set_default(tbl['default_action'])
+            if tbl.get('size'):
+                t.set_size(tbl['size'])
             block.add_table(t)
             ir.add_table(t)
 
@@ -302,8 +305,17 @@ def debug_ir(ir):
 # ============================================================
 def run_compiler(app_name):
 
-    base_dir        = os.path.dirname(__file__)
-    p4_path         = os.path.join(base_dir, f"../p4src/apps/{app_name}.p4")
+    base_dir = os.path.dirname(__file__)
+
+    # Try exact name first, then case-insensitive match for convenience
+    p4_path = os.path.join(base_dir, f"../p4src/apps/{app_name}.p4")
+    if not os.path.exists(p4_path):
+        apps_dir = os.path.join(base_dir, "../p4src/apps")
+        for fname in os.listdir(apps_dir):
+            if fname.lower() == f"{app_name.lower()}.p4":
+                app_name = fname[:-3]   # use the real on-disk name
+                p4_path  = os.path.join(apps_dir, fname)
+                break
     out_dir         = os.path.join(base_dir, f"../generated/{app_name}")
     out_parser      = os.path.join(out_dir, "parser_generated.sv")
     out_processing  = os.path.join(out_dir, "processing_generated.sv")
@@ -324,6 +336,11 @@ def run_compiler(app_name):
     ir = build_ir(parsed)
 
     debug_ir(ir)
+
+    out_pkg = os.path.join(out_dir, f"{app_name}_pkg.sv")
+    print("[INFO] Generating SV package...")
+    emit_pkg(ir, app_name, out_pkg)
+    print(f"[SUCCESS] SV package     -> {out_pkg}")
 
     print("[INFO] Generating parser RTL...")
     emit_parser(ir, out_parser)

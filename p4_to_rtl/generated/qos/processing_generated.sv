@@ -25,6 +25,10 @@ module processing_generated (
   input  logic [31:0] ipv4_srcAddr,
   input  logic [31:0] ipv4_dstAddr,
 
+  // Header valid flag outputs (may be modified by setValid/setInvalid)
+  output logic        out_ethernet_valid,
+  output logic        out_ipv4_valid,
+
   // Header field outputs (pass-through, optionally modified)
   output logic [47:0] out_ethernet_dstAddr,
   output logic [47:0] out_ethernet_srcAddr,
@@ -55,6 +59,9 @@ module processing_generated (
   input  logic [47:0] ipv4_lpm_cp_wr_p_dstAddr,
   input  logic [8:0] ipv4_lpm_cp_wr_p_port,
 
+  // Table hit outputs
+  output logic        ipv4_lpm_hit_out,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -83,13 +90,20 @@ module processing_generated (
     .cp_wr_p_port (ipv4_lpm_cp_wr_p_port)
   );
 
+  // Table hit outputs
+  assign ipv4_lpm_hit_out = ipv4_lpm_hit;
+
   always_comb begin
     drop = 0;
 
     // Standard metadata defaults
     out_std_meta_egress_spec = 9'b0;
 
-    // pass-through defaults
+    // Header valid flag pass-through defaults
+    out_ethernet_valid = ethernet_valid;
+    out_ipv4_valid = ipv4_valid;
+
+    // Header field pass-through defaults
     out_ethernet_dstAddr = ethernet_dstAddr;
     out_ethernet_srcAddr = ethernet_srcAddr;
     out_ethernet_etherType = ethernet_etherType;
