@@ -1,231 +1,96 @@
 import os
 import argparse
+import shutil
+import subprocess
+import json
+import tempfile
 
-from parse_p4 import parse_p4_file, resolve_width
-from ir import (
-    IR,
-    ParserState, Extract, ParserSelect,
-    Header, HeaderField, HeaderStack,
-    HeaderInstance, MetadataField,
-    Table, TableKey,
-    Action, ActionParam, Assignment, ExternCall,
-    IfStatement, TableApply, ControlBlock,
-    LocalVar, RegisterDecl,
-    Deparser,
-)
+from ir import ActionParam, Assignment, ExternCall
 from emit_parser import emit_parser
 from emit_processing import emit_processing
 from emit_deparser import emit_deparser
 from emit_table import emit_tables
 from emit_pkg import emit_pkg
+from ingest_bmv2 import ingest_bmv2
 
 
 # ============================================================
-# Statement builder  (parsed dict -> IR node)
+# p4c invocation  (Stage 1 front-end)
 # ============================================================
-def _build_stmt(d):
-    if d is None:
-        return None
-    t = d.get('type')
-    if t == 'table_apply':
-        ta = TableApply(d['table'])
-        ta.result_var = d.get('result_var')
-        return ta
-    if t == 'action_call':
-        return ExternCall(d['action'], d.get('args', []))
-    if t == 'method_call':
-        label = f"{d['obj']}.{d['method']}"
-        return ExternCall(label, d.get('args', []))
-    if t == 'assign':
-        return Assignment(d['lhs'], d['rhs'])
-    if t == 'method_call':
-        label = f"{d['obj']}.{d['method']}"
-        return ExternCall(label, d.get('args', []))
-    if t == 'if':
-        s = IfStatement(d['condition'])
-        for sub in d.get('then', []):
-            n = _build_stmt(sub)
-            if n is not None:
-                s.add_then(n)
-        for sub in d.get('else', []):
-            n = _build_stmt(sub)
-            if n is not None:
-                s.add_else(n)
-        return s
-    return None
 
+def _run_p4c(p4_path, p4c_bin=None):
+    """Invoke p4c to compile a P4 source file to bmv2 JSON.
 
-# ============================================================
-# IR Builder
-# ============================================================
-def build_ir(parsed):
-    ir = IR()
+    Binary resolution order:
+      1. --p4c CLI argument  (p4c_bin parameter)
+      2. P4C environment variable
+      3. 'p4c'       on PATH
+      4. 'p4c-bm2-ss' on PATH
 
-    # ------------------------------------------------
-    # 1. Typedefs and constants
-    # ------------------------------------------------
-    ir.set_typedefs(parsed.get('typedefs', {}))
-    ir.set_consts(parsed.get('consts', {}))
+    Raises RuntimeError with setup instructions if p4c is not found,
+    or if compilation fails.  Returns the parsed bmv2 JSON dict.
+    """
+    binary = (p4c_bin
+              or os.environ.get('P4C')
+              or shutil.which('p4c')
+              or shutil.which('p4c-bm2-ss'))
 
-    typedefs = ir.typedefs
+    if not binary:
+        raise RuntimeError(
+            "\n[ERROR] p4c not found.\n"
+            "\nSetup options (choose one):\n"
+            "  1. Add p4c to your PATH after installing it\n"
+            "  2. Set the P4C environment variable:\n"
+            "       export P4C=/path/to/p4c\n"
+            "  3. Pass --p4c on the command line:\n"
+            "       python main.py firewall --p4c /path/to/p4c\n"
+            "\nInstallation: https://github.com/p4lang/p4c\n"
+        )
 
-    # ------------------------------------------------
-    # 2. Header type definitions
-    # ------------------------------------------------
-    for hdr in parsed.get('headers', []):
-        h = Header(hdr['name'])
-        for f in hdr['fields']:
-            h.add_field(HeaderField(f['name'], f['width']))
-        ir.add_header(h)   # also populates ir.header_type_map
+    tmp_dir  = tempfile.mkdtemp(prefix='p4rtl_')
+    tmp_json = os.path.join(tmp_dir, 'out.json')
 
-    # ------------------------------------------------
-    # 3. Header instances + metadata fields from structs
-    # ------------------------------------------------
-    for struct in parsed.get('structs', []):
+    try:
+        print(f"[INFO] p4c binary : {binary}")
+        print(f"[INFO] P4 source  : {p4_path}")
+        result = subprocess.run(
+            [binary,
+             '--target', 'bmv2',
+             '--arch',   'v1model',
+             '--std',    'p4-16',
+             p4_path,
+             '-o', tmp_json],
+            capture_output=True, text=True, timeout=60
+        )
 
-        if struct['name'] == 'headers':
-            for field in struct['fields']:
-                htype = ir.header_type_map.get(field['type'])
-                if htype:
-                    inst = HeaderInstance(
-                        inst_name  = field['name'],
-                        type_name  = field['type'],
-                        header_type= htype,
-                        is_stack   = field.get('array_size') is not None,
-                        stack_size = field.get('array_size') or 0,
-                    )
-                    ir.add_header_instance(inst)
-                    if inst.is_stack:
-                        ir.add_header_stack(HeaderStack(field['name'], inst.stack_size))
+        # p4c writes both warnings and errors to stderr
+        if result.stderr.strip():
+            tag = '[ERROR] p4c' if result.returncode != 0 else '[WARN]  p4c'
+            for line in result.stderr.strip().splitlines():
+                print(f"  {tag}: {line}")
 
-        elif struct['name'] == 'metadata':
-            for field in struct['fields']:
-                w = resolve_width(field['type'], typedefs)
-                if w:
-                    ir.add_metadata_field(MetadataField(field['name'], w))
+        if result.returncode != 0:
+            raise RuntimeError("p4c compilation failed — correct the P4 errors above")
 
-    # ------------------------------------------------
-    # 4. Parser states
-    # ------------------------------------------------
-    parser_info = parsed.get('parser', {})
-    states      = parser_info.get('states', [])
+        with open(tmp_json) as f:
+            return json.load(f)
 
-    if not states:
-        raise RuntimeError("No parser states found in P4 file")
-
-    for s in states:
-        state = ParserState(s['name'])
-
-        for ext in s.get('extracts', []):
-            state.add_extract(
-                Extract(ext['header'], dynamic=ext['dynamic'], length_expr=ext['length_expr'])
-            )
-
-        if s.get('transition'):
-            state.set_transition(s['transition'])
-
-        if s.get('select'):
-            sel_info = s['select']
-            sel      = ParserSelect(sel_info['expr'])
-            for val, dst in sel_info.get('cases', []):
-                sel.add_case(val, dst)
-            if sel_info.get('default'):
-                sel.set_default(sel_info['default'])
-            state.set_select(sel)
-
-        ir.add_parser_state(state)
-
-    ir.set_start_state(states[0]['name'])
-
-    # ------------------------------------------------
-    # 5. Control blocks  (tables, actions, apply)
-    # ------------------------------------------------
-    for ctrl_name, ctrl_raw in parsed.get('controls', {}).items():
-
-        block = ControlBlock(ctrl_name)
-
-        # -- local tables --
-        for tbl in ctrl_raw.get('tables', []):
-            t = Table(tbl['name'])
-            for k in tbl.get('keys', []):
-                t.add_key(TableKey(k['field'], k['match_type']))
-            for a in tbl.get('actions', []):
-                t.add_action(a)
-            if tbl.get('default_action'):
-                t.set_default(tbl['default_action'])
-            if tbl.get('size'):
-                t.set_size(tbl['size'])
-            block.add_table(t)
-            ir.add_table(t)
-
-        # -- local actions --
-        for act in ctrl_raw.get('actions', []):
-            a = Action(act['name'])
-            for p in act.get('params', []):
-                if isinstance(p, dict):
-                    type_str = p.get('type', '')
-                    w = resolve_width(type_str, typedefs)
-                    a.add_param(ActionParam(p['name'], type_str, w))
-                else:
-                    a.add_param(ActionParam(str(p), '', None))
-            for stmt in act.get('body', []):
-                t = stmt.get('type')
-                if t == 'assign':
-                    a.add_statement(Assignment(stmt['lhs'], stmt['rhs']))
-                elif t == 'call':
-                    a.add_statement(ExternCall(stmt['name'], stmt.get('args', [])))
-                elif t == 'method_call':
-                    label = f"{stmt['obj']}.{stmt['method']}"
-                    a.add_statement(ExternCall(label, stmt.get('args', [])))
-            block.add_action(a)
-            ir.add_action(a)
-
-        # -- local variable declarations --
-        for lv in ctrl_raw.get('local_vars', []):
-            block.add_local_var(LocalVar(lv['name'], lv['type'], lv['width']))
-
-        # -- register extern declarations --
-        for rv in ctrl_raw.get('registers', []):
-            block.add_register(RegisterDecl(rv['name'], rv['data_width'], rv['size']))
-
-        # -- apply block statements --
-        for stmt_dict in ctrl_raw.get('apply', {}).get('stmts', []):
-            node = _build_stmt(stmt_dict)
-            if node is not None:
-                block.add_statement(node)
-
-        # -- deparser emit list --
-        emits = ctrl_raw.get('apply', {}).get('emits', [])
-        if emits:
-            if ir.pipeline.deparser is None:
-                ir.pipeline.deparser = Deparser()
-            ir.pipeline.deparser.emit_list.extend(emits)
-
-        ir.add_control(block)
-
-    # ------------------------------------------------
-    # 6. Map pipeline stages from arch args
-    # ------------------------------------------------
-    pipeline_info = parsed.get('pipeline')
-    if pipeline_info:
-        arch = pipeline_info['arch']
-        args = [a.strip() for a in pipeline_info['args']]
-        if arch == 'V1Switch' and len(args) >= 6:
-            # V1Switch(parser, verify, ingress, egress, compute, deparser)
-            ir.set_pipeline_stage('ingress', ir.controls.get(args[2]))
-            ir.set_pipeline_stage('egress',  ir.controls.get(args[3]))
-        elif arch == 'XilinxPipeline' and len(args) >= 3:
-            # XilinxPipeline(parser, matchaction, deparser)
-            ir.set_pipeline_stage('ingress', ir.controls.get(args[1]))
-
-    return ir
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("p4c timed out after 60 s")
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"\n[ERROR] p4c binary not executable: {binary}\n"
+            "Check the path and re-run."
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ============================================================
-# Debug Printer
+# Debug printer
 # ============================================================
+
 def debug_ir(ir):
-
     print("\n[DEBUG] ── Headers ──────────────────────────────")
     for h in ir.headers:
         fields_str = ', '.join(
@@ -281,16 +146,16 @@ def debug_ir(ir):
     if ir.actions:
         print("\n[DEBUG] ── Actions ──────────────────────────────")
         for a in ir.actions:
-            param_strs = [f"{p.type_str} {p.name}" if isinstance(p, ActionParam) else str(p)
-                          for p in a.params]
+            param_strs = [
+                f"{p.type_str} {p.name}" if isinstance(p, ActionParam) else str(p)
+                for p in a.params
+            ]
             print(f"  Action: {a.name}({', '.join(param_strs)})")
             for stmt in a.body:
                 if isinstance(stmt, Assignment):
                     print(f"    {stmt.lhs} = {stmt.rhs}")
                 elif isinstance(stmt, ExternCall):
-                    print(f"    call {stmt.name}()")
-                else:
-                    print(f"    {stmt}")
+                    print(f"    call {stmt.name}({', '.join(stmt.args)})")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
         print("\n[DEBUG] ── Deparser Emits ───────────────────────")
@@ -301,50 +166,51 @@ def debug_ir(ir):
 
 
 # ============================================================
-# MAIN DRIVER
+# Main compiler driver
 # ============================================================
-def run_compiler(app_name):
 
-    base_dir = os.path.dirname(__file__)
+def run_compiler(app_name, p4c_bin=None):
 
-    # Try exact name first, then case-insensitive match for convenience
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Locate P4 source — case-insensitive match as fallback
     p4_path = os.path.join(base_dir, f"../p4src/apps/{app_name}.p4")
     if not os.path.exists(p4_path):
         apps_dir = os.path.join(base_dir, "../p4src/apps")
-        for fname in os.listdir(apps_dir):
-            if fname.lower() == f"{app_name.lower()}.p4":
-                app_name = fname[:-3]   # use the real on-disk name
-                p4_path  = os.path.join(apps_dir, fname)
-                break
-    out_dir         = os.path.join(base_dir, f"../generated/{app_name}")
-    out_parser      = os.path.join(out_dir, "parser_generated.sv")
-    out_processing  = os.path.join(out_dir, "processing_generated.sv")
-    out_deparser    = os.path.join(out_dir, "deparser_generated.sv")
+        if os.path.isdir(apps_dir):
+            for fname in os.listdir(apps_dir):
+                if fname.lower() == f"{app_name.lower()}.p4":
+                    app_name = fname[:-3]
+                    p4_path  = os.path.join(apps_dir, fname)
+                    break
 
     if not os.path.exists(p4_path):
-        raise FileNotFoundError(f"P4 file not found: {p4_path}")
+        raise FileNotFoundError(f"P4 source not found: {p4_path}")
+
+    out_dir        = os.path.join(base_dir, f"../generated/{app_name}")
+    out_parser     = os.path.join(out_dir, "parser_generated.sv")
+    out_processing = os.path.join(out_dir, "processing_generated.sv")
+    out_deparser   = os.path.join(out_dir, "deparser_generated.sv")
 
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"[INFO] Parsing P4: {p4_path}")
-    parsed = parse_p4_file(p4_path)
+    # ── Stage 1: p4c → bmv2 JSON → hardware IR ───────────────────────
+    bmv2_json = _run_p4c(p4_path, p4c_bin)
 
-    if 'parser' not in parsed:
-        raise RuntimeError("Parser block not found in P4")
-
-    print("[INFO] Building IR...")
-    ir = build_ir(parsed)
+    print("[INFO] Building hardware IR from bmv2 JSON...")
+    ir = ingest_bmv2(bmv2_json)
 
     debug_ir(ir)
 
+    # ── Stage 5: RTL code generation ─────────────────────────────────
     out_pkg = os.path.join(out_dir, f"{app_name}_pkg.sv")
     print("[INFO] Generating SV package...")
     emit_pkg(ir, app_name, out_pkg)
-    print(f"[SUCCESS] SV package     -> {out_pkg}")
+    print(f"[SUCCESS] SV package       -> {out_pkg}")
 
     print("[INFO] Generating parser RTL...")
     emit_parser(ir, out_parser)
-    print(f"[SUCCESS] Parser RTL   -> {out_parser}")
+    print(f"[SUCCESS] Parser RTL       -> {out_parser}")
 
     if ir.controls:
         print("[INFO] Generating table RTL...")
@@ -352,30 +218,47 @@ def run_compiler(app_name):
 
         print("[INFO] Generating processing RTL...")
         emit_processing(ir, out_processing)
-        print(f"[SUCCESS] Processing RTL -> {out_processing}")
+        print(f"[SUCCESS] Processing RTL   -> {out_processing}")
     else:
-        print("[SKIP] No control blocks found — skipping processing RTL")
+        print("[SKIP] No control blocks — skipping processing RTL")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
         print("[INFO] Generating deparser RTL...")
         emit_deparser(ir, out_deparser)
-        print(f"[SUCCESS] Deparser RTL   -> {out_deparser}")
+        print(f"[SUCCESS] Deparser RTL     -> {out_deparser}")
     else:
         print("[SKIP] No deparser emit list — skipping deparser RTL")
 
 
 # ============================================================
-# CLI ENTRY
+# CLI entry point
 # ============================================================
+
 def main():
-    parser = argparse.ArgumentParser(description="P4 to RTL Compiler")
-    parser.add_argument("app", type=str, help="P4 application name (without .p4)")
+    parser = argparse.ArgumentParser(
+        description="P4-to-RTL Compiler  (p4c bmv2 front-end)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "p4c setup (one of the following):\n"
+            "  Install   : https://github.com/p4lang/p4c\n"
+            "  By flag   : --p4c /usr/local/bin/p4c\n"
+            "  By env    : export P4C=/usr/local/bin/p4c\n"
+            "  By PATH   : ensure 'p4c' or 'p4c-bm2-ss' is in your PATH\n"
+        ),
+    )
+    parser.add_argument(
+        "app",
+        help="P4 application name, without the .p4 extension",
+    )
+    parser.add_argument(
+        "--p4c",
+        metavar="PATH",
+        default=None,
+        help="Explicit path to the p4c binary (overrides P4C env var and PATH)",
+    )
     args = parser.parse_args()
-    run_compiler(args.app)
+    run_compiler(args.app, p4c_bin=args.p4c)
 
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
 if __name__ == "__main__":
     main()
