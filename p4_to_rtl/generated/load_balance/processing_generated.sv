@@ -85,7 +85,7 @@ module processing_generated (
   input  logic [31:0] ecmp_group_cp_wr_p_ecmp_count,
   input  logic        ecmp_nhop_cp_wr_en,
   input  logic [0:0] ecmp_nhop_cp_wr_idx,
-  input  logic [13:0] ecmp_nhop_cp_wr_key_ecmp_select,
+  input  logic [31:0] ecmp_nhop_cp_wr_key_ecmp_select,
   input  logic [1:0] ecmp_nhop_cp_wr_action,
   input  logic [47:0] ecmp_nhop_cp_wr_p_nhop_dmac,
   input  logic [31:0] ecmp_nhop_cp_wr_p_nhop_ipv4,
@@ -98,6 +98,13 @@ module processing_generated (
   output logic        valid_out,
   output logic        drop
 );
+
+  logic [1:0] _padding_0;
+  logic [31:0] tmp;
+  logic [31:0] tmp_0;
+  logic [7:0] tmp_1;
+  logic [15:0] tmp_2;
+  logic [15:0] tmp_3;
 
   // Metadata shadow locals (writable copies of metadata inputs)
   logic [13:0] meta_ecmp_select_w;
@@ -134,7 +141,7 @@ module processing_generated (
   ecmp_nhop_table #(.DEPTH(2)) u_ecmp_nhop (
     .clk    (clk),
     .rst_n  (rst_n),
-    .lkp_ecmp_select    (meta_ecmp_select_w),
+    .lkp_ecmp_select    (metadata_ecmp_select),
     .hit       (ecmp_nhop_hit),
     .action_id (ecmp_nhop_act_id),
     .p_nhop_dmac  (ecmp_nhop_p_nhop_dmac),
@@ -155,6 +162,12 @@ module processing_generated (
 
   always_comb begin
     drop = 0;
+    _padding_0 = 2'b0;
+    tmp = 32'b0;
+    tmp_0 = 32'b0;
+    tmp_1 = 8'b0;
+    tmp_2 = 16'b0;
+    tmp_3 = 16'b0;
 
     // Metadata shadow defaults (init from inputs)
     meta_ecmp_select_w = meta_ecmp_select;
@@ -196,38 +209,41 @@ module processing_generated (
     out_tcp_urgentPtr = tcp_urgentPtr;
 
     // apply block
-    if (ipv4_valid && ipv4_ttl > 0) begin
+    if ((ipv4_valid && (ipv4_ttl > 'h00))) begin
+      // ecmp_group.apply()
       if (ecmp_group_hit) begin
-        // ecmp_group.apply()
-        if (ecmp_group_hit) begin
-          unique case (ecmp_group_act_id)
-            2'd0: ; // NoAction
-            2'd1: begin // drop
-              drop = 1;
-            end
-            2'd2: begin // set_ecmp_select
-              // hash() stub — XOR-based behavioral approximation
-              meta_ecmp_select_w = (ipv4_srcAddr ^ ipv4_dstAddr ^ ipv4_protocol ^ tcp_srcPort ^ tcp_dstPort) & 12'hFFF;
-            end
-            default: ; // default = NoAction
-          endcase
-        end
-        // ecmp_nhop.apply()
-        if (ecmp_nhop_hit) begin
-          unique case (ecmp_nhop_act_id)
-            2'd0: ; // NoAction
-            2'd1: begin // drop
-              drop = 1;
-            end
-            2'd2: begin // set_nhop
-              out_ethernet_dstAddr = ecmp_nhop_p_nhop_dmac;
-              out_ipv4_dstAddr = ecmp_nhop_p_nhop_ipv4;
-              out_std_meta_egress_spec = ecmp_nhop_p_port;
-              out_ipv4_ttl = ipv4_ttl - 1;
-            end
-            default: ; // default = NoAction
-          endcase
-        end
+        unique case (ecmp_group_act_id)
+          2'd0: ; // NoAction
+          2'd1: begin // drop
+            drop = 1;
+          end
+          2'd2: begin // set_ecmp_select
+            tmp = ipv4_srcAddr;
+            tmp_0 = ipv4_dstAddr;
+            tmp_1 = ipv4_protocol;
+            tmp_2 = tcp_srcPort;
+            tmp_3 = tcp_dstPort;
+            // hash() stub — XOR-based behavioral approximation
+            meta_ecmp_select_w = (tmp ^ tmp_0 ^ tmp_1 ^ tmp_2 ^ tmp_3) & 12'hFFF;
+          end
+          default: ; // default = NoAction
+        endcase
+      end
+      // ecmp_nhop.apply()
+      if (ecmp_nhop_hit) begin
+        unique case (ecmp_nhop_act_id)
+          2'd0: ; // NoAction
+          2'd1: begin // drop
+            drop = 1;
+          end
+          2'd2: begin // set_nhop
+            out_ethernet_dstAddr = ecmp_nhop_p_nhop_dmac;
+            out_ipv4_dstAddr = ecmp_nhop_p_nhop_ipv4;
+            out_std_meta_egress_spec = ecmp_nhop_p_port;
+            out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
+          end
+          default: ; // default = NoAction
+        endcase
       end
     end
   end

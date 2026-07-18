@@ -107,12 +107,12 @@ module processing_generated (
 
   // Control-plane write ports for table instances
   input  logic        FiveTuple_cp_wr_en,
-  input  logic [4:0] FiveTuple_cp_wr_idx,
+  input  logic [12:0] FiveTuple_cp_wr_idx,
   input  logic [31:0] FiveTuple_cp_wr_key_src,
   input  logic [31:0] FiveTuple_cp_wr_key_dst,
   input  logic [7:0] FiveTuple_cp_wr_key_protocol,
-  input  logic [31:0] FiveTuple_cp_wr_key_table_key_sport,
-  input  logic [31:0] FiveTuple_cp_wr_key_table_key_dport,
+  input  logic [15:0] FiveTuple_cp_wr_key_table_key_sport,
+  input  logic [15:0] FiveTuple_cp_wr_key_table_key_dport,
   input  logic [0:0] FiveTuple_cp_wr_action,
   input  logic [12:0] FiveTuple_cp_wr_p_counter_index,
   input  logic [2:0] FiveTuple_cp_wr_p_pcp,
@@ -139,7 +139,7 @@ module processing_generated (
   logic [11:0] FiveTuple_p_vid;
 
   // Table module instantiations
-  FiveTuple_table #(.DEPTH(32)) u_FiveTuple (
+  FiveTuple_table #(.DEPTH(8192)) u_FiveTuple (
     .clk    (clk),
     .rst_n  (rst_n),
     .lkp_src    (ipv4_src),
@@ -228,45 +228,58 @@ module processing_generated (
     out_udp_checksum = udp_checksum;
 
     // apply block
+    hit = 1'b0;
     if (udp_valid) begin
       table_key_sport = udp_src_port;
       table_key_dport = udp_dst_port;
-      // FiveTuple.apply()
       if (FiveTuple_hit) begin
-        unique case (FiveTuple_act_id)
-          1'd0: ; // NoAction
-          1'd1: begin // InsertVLAN
-            out_new_vlan_pcp = FiveTuple_p_pcp;
-            out_new_vlan_cfi = FiveTuple_p_cfi;
-            out_new_vlan_vid = FiveTuple_p_vid;
-            out_new_vlan_tpid = eth_type;
-            out_new_vlan_valid = 1'b1;
-            /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
-            /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
-          end
-          default: ; // default = NoAction
-        endcase
+        // FiveTuple.apply()
+        if (FiveTuple_hit) begin
+          unique case (FiveTuple_act_id)
+            1'd0: ; // NoAction
+            1'd1: begin // InsertVLAN
+              out_new_vlan_valid = 1'b1;
+              out_new_vlan_pcp = FiveTuple_p_pcp;
+              out_new_vlan_cfi = FiveTuple_p_cfi;
+              out_new_vlan_vid = FiveTuple_p_vid;
+              out_new_vlan_tpid = eth_type;
+              /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
+              /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+            end
+            default: ; // default = NoAction
+          endcase
+        end
+        hit = 1'b1;
+      end
+      else begin
+        hit = 1'b0;
       end
     end
     else begin
       if (tcp_valid) begin
         table_key_sport = tcp_src_port;
         table_key_dport = tcp_dst_port;
-        // FiveTuple.apply()
         if (FiveTuple_hit) begin
-          unique case (FiveTuple_act_id)
-            1'd0: ; // NoAction
-            1'd1: begin // InsertVLAN
-              out_new_vlan_pcp = FiveTuple_p_pcp;
-              out_new_vlan_cfi = FiveTuple_p_cfi;
-              out_new_vlan_vid = FiveTuple_p_vid;
-              out_new_vlan_tpid = eth_type;
-              out_new_vlan_valid = 1'b1;
-              /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
-              /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
-            end
-            default: ; // default = NoAction
-          endcase
+          // FiveTuple.apply()
+          if (FiveTuple_hit) begin
+            unique case (FiveTuple_act_id)
+              1'd0: ; // NoAction
+              1'd1: begin // InsertVLAN
+                out_new_vlan_valid = 1'b1;
+                out_new_vlan_pcp = FiveTuple_p_pcp;
+                out_new_vlan_cfi = FiveTuple_p_cfi;
+                out_new_vlan_vid = FiveTuple_p_vid;
+                out_new_vlan_tpid = eth_type;
+                /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
+                /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+              end
+              default: ; // default = NoAction
+            endcase
+          end
+          hit = 1'b1;
+        end
+        else begin
+          hit = 1'b0;
         end
       end
     end

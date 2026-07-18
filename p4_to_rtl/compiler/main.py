@@ -1,5 +1,6 @@
 import os
 import argparse
+import glob
 import shutil
 import subprocess
 import json
@@ -12,10 +13,135 @@ from emit_deparser import emit_deparser
 from emit_table import emit_tables
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
+from ingest_p4ir import ingest_p4ir
+from emit_top import emit_top
 
 
 # ============================================================
-# p4c invocation  (Stage 1 front-end)
+# Architecture detection from P4 source text
+# ============================================================
+
+def _detect_p4_arch(p4_path):
+    """Return 'xsa', 'v1model', or 'unknown' based on package instantiation."""
+    try:
+        with open(p4_path) as f:
+            src = f.read()
+    except OSError:
+        return 'unknown'
+    if 'XilinxPipeline' in src:
+        return 'xsa'
+    if 'V1Switch' in src:
+        return 'v1model'
+    return 'unknown'
+
+
+# ============================================================
+# p4test front-end  (p4fpga-style: front-end only, clean MidEnd IR)
+# ============================================================
+
+def _run_p4c_frontend(p4_path, p4test_bin=None):
+    """
+    Invoke p4test --dump to produce a clean MidEnd P4 IR file.
+
+    Binary resolution order:
+      1. p4test_bin parameter  (--p4test CLI flag)
+      2. P4TEST environment variable
+      3. ~/p4c/build/backends/p4test/p4test  (standard build location)
+      4. 'p4test' on PATH
+
+    Returns the MidEnd P4 IR as a string.
+    """
+    home = os.path.expanduser('~')
+    binary = (
+        p4test_bin
+        or os.environ.get('P4TEST')
+        or (lambda p: p if os.path.isfile(p) else None)(
+            os.path.join(home, 'p4c/build/backends/p4test/p4test'))
+        or shutil.which('p4test')
+    )
+
+    if not binary:
+        raise RuntimeError(
+            "\n[ERROR] p4test not found.\n"
+            "\nSetup options (choose one):\n"
+            "  1. Build p4c: cd ~/p4c/build && make p4test\n"
+            "  2. Set the P4TEST environment variable:\n"
+            "       export P4TEST=/path/to/p4test\n"
+            "  3. Pass --p4test on the command line:\n"
+            "       python main.py fiveTuple --p4test /path/to/p4test\n"
+        )
+
+    # p4c include directories — try common locations from the binary path upward
+    binary_dir = os.path.dirname(os.path.abspath(binary))
+    p4c_includes = None
+    for candidate in [
+        os.path.join(binary_dir, 'p4include'),              # backends/p4test/p4include
+        os.path.join(binary_dir, '../p4include'),           # build/p4include
+        os.path.join(binary_dir, '../../p4include'),        # two levels up
+        os.path.join(binary_dir, '../../../p4include'),
+    ]:
+        candidate = os.path.normpath(candidate)
+        if os.path.isdir(candidate) and os.path.isfile(os.path.join(candidate, 'core.p4')):
+            p4c_includes = candidate
+            break
+
+    arch_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../p4src/arch')
+    arch_dir = os.path.normpath(arch_dir)
+
+    dump_dir = tempfile.mkdtemp(prefix='p4ir_')
+
+    try:
+        cmd = [
+            binary,
+            '--std', 'p4-16',
+            '--dump', dump_dir,
+            '--top4', 'MidEndLast',
+        ]
+        if p4c_includes:
+            cmd += ['-I', p4c_includes]
+        if os.path.isdir(arch_dir):
+            cmd += ['-I', arch_dir]
+        cmd.append(p4_path)
+
+        print(f"[INFO] p4test binary  : {binary}")
+        print(f"[INFO] P4 source      : {p4_path}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.stderr.strip():
+            tag = '[ERROR] p4test' if result.returncode != 0 else '[WARN]  p4test'
+            for line in result.stderr.strip().splitlines():
+                print(f"  {tag}: {line}")
+
+        if result.returncode != 0:
+            raise RuntimeError("p4test compilation failed — correct the P4 errors above")
+
+        # Find the last MidEndLast dump file
+        pattern = os.path.join(dump_dir, '*MidEndLast*.p4')
+        candidates = sorted(glob.glob(pattern))
+        if not candidates:
+            # Fall back to any MidEnd file
+            candidates = sorted(glob.glob(os.path.join(dump_dir, '*MidEnd*.p4')))
+        if not candidates:
+            raise RuntimeError(
+                f"p4test ran successfully but no MidEnd dump found in {dump_dir}.\n"
+                "Try: p4test --dump /tmp/p4dump --top4 MidEndLast your.p4"
+            )
+
+        midend_path = candidates[-1]
+        print(f"[INFO] MidEnd IR file : {midend_path}")
+        with open(midend_path) as f:
+            return f.read()
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("p4test timed out after 60 s")
+    except FileNotFoundError:
+        raise RuntimeError(f"\n[ERROR] p4test binary not executable: {binary}\n")
+    finally:
+        shutil.rmtree(dump_dir, ignore_errors=True)
+
+
+# ============================================================
+# p4c bmv2 front-end  (legacy v1model path)
 # ============================================================
 
 def _run_p4c(p4_path, p4c_bin=None):
@@ -169,7 +295,10 @@ def debug_ir(ir):
 # Main compiler driver
 # ============================================================
 
-def run_compiler(app_name, p4c_bin=None):
+def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None):
+    """
+    frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
+    """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -191,14 +320,26 @@ def run_compiler(app_name, p4c_bin=None):
     out_parser     = os.path.join(out_dir, "parser_generated.sv")
     out_processing = os.path.join(out_dir, "processing_generated.sv")
     out_deparser   = os.path.join(out_dir, "deparser_generated.sv")
+    out_top        = os.path.join(out_dir, f"{app_name}_top.sv")
 
     os.makedirs(out_dir, exist_ok=True)
 
-    # ── Stage 1: p4c → bmv2 JSON → hardware IR ───────────────────────
-    bmv2_json = _run_p4c(p4_path, p4c_bin)
+    # ── Stage 1: choose front-end based on architecture ───────────────
+    if frontend is None:
+        arch = _detect_p4_arch(p4_path)
+        frontend = 'p4test' if arch == 'xsa' else 'bmv2'
+        print(f"[INFO] Detected architecture : {arch}  → using {frontend} frontend")
 
-    print("[INFO] Building hardware IR from bmv2 JSON...")
-    ir = ingest_bmv2(bmv2_json)
+    if frontend == 'p4test':
+        print("[INFO] Running p4test MidEnd front-end...")
+        midend_text = _run_p4c_frontend(p4_path, p4test_bin)
+        print("[INFO] Building hardware IR from MidEnd P4 IR...")
+        ir = ingest_p4ir(midend_text)
+    else:
+        print("[INFO] Running p4c-bm2-ss front-end...")
+        bmv2_json = _run_p4c(p4_path, p4c_bin)
+        print("[INFO] Building hardware IR from bmv2 JSON...")
+        ir = ingest_bmv2(bmv2_json)
 
     debug_ir(ir)
 
@@ -229,6 +370,11 @@ def run_compiler(app_name, p4c_bin=None):
     else:
         print("[SKIP] No deparser emit list — skipping deparser RTL")
 
+    if frontend == 'p4test':
+        print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
+        emit_top(ir, app_name, out_top)
+        print(f"[SUCCESS] Top-level RTL    -> {out_top}")
+
 
 # ============================================================
 # CLI entry point
@@ -236,14 +382,19 @@ def run_compiler(app_name, p4c_bin=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="P4-to-RTL Compiler  (p4c bmv2 front-end)",
+        description="P4-to-RTL Compiler  (p4fpga-style: p4test MidEnd front-end)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "p4c setup (one of the following):\n"
-            "  Install   : https://github.com/p4lang/p4c\n"
+            "Frontend selection:\n"
+            "  XSA apps   (XilinxPipeline) → p4test MidEnd IR  [auto]\n"
+            "  v1model apps (V1Switch)     → p4c-bm2-ss JSON   [auto]\n"
+            "\np4test setup (for XSA / p4test frontend):\n"
+            "  Build p4c : cd ~/p4c/build && make p4test\n"
+            "  By flag   : --p4test ~/p4c/build/backends/p4test/p4test\n"
+            "  By env    : export P4TEST=/path/to/p4test\n"
+            "\np4c setup (for v1model / bmv2 frontend):\n"
             "  By flag   : --p4c /usr/local/bin/p4c\n"
             "  By env    : export P4C=/usr/local/bin/p4c\n"
-            "  By PATH   : ensure 'p4c' or 'p4c-bm2-ss' is in your PATH\n"
         ),
     )
     parser.add_argument(
@@ -254,10 +405,22 @@ def main():
         "--p4c",
         metavar="PATH",
         default=None,
-        help="Explicit path to the p4c binary (overrides P4C env var and PATH)",
+        help="Path to p4c-bm2-ss binary (v1model frontend)",
+    )
+    parser.add_argument(
+        "--p4test",
+        metavar="PATH",
+        default=None,
+        help="Path to p4test binary (XSA / MidEnd frontend)",
+    )
+    parser.add_argument(
+        "--frontend",
+        choices=['p4test', 'bmv2'],
+        default=None,
+        help="Force a specific frontend (default: auto-detect from P4 source)",
     )
     args = parser.parse_args()
-    run_compiler(args.app, p4c_bin=args.p4c)
+    run_compiler(args.app, p4c_bin=args.p4c, p4test_bin=args.p4test, frontend=args.frontend)
 
 
 if __name__ == "__main__":

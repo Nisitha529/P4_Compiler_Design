@@ -329,23 +329,32 @@ def _subst(text, pmap, cmap):
 
 
 def _collect_reg_reads(ctrl):
+    seen  = set()
     reads = []
+
+    def _record(obj, dest, addr):
+        key = (obj, dest)
+        if key not in seen:
+            seen.add(key)
+            reads.append((obj, dest, addr))
+
     def _scan(stmts):
         for s in stmts:
             if isinstance(s, ExternCall) and '.' in s.name:
                 obj, method = s.name.split('.', 1)
                 if method == 'read' and len(s.args) >= 2:
-                    reads.append((obj, s.args[0].strip(), s.args[1].strip()))
+                    _record(obj, s.args[0].strip(), s.args[1].strip())
             elif isinstance(s, IfStatement):
                 _scan(s.then_body)
                 _scan(s.else_body)
+
     _scan(ctrl.statements)
     for a in ctrl.actions:
         for s in a.body:
             if isinstance(s, ExternCall) and '.' in s.name:
                 obj, method = s.name.split('.', 1)
                 if method == 'read' and len(s.args) >= 2:
-                    reads.append((obj, s.args[0].strip(), s.args[1].strip()))
+                    _record(obj, s.args[0].strip(), s.args[1].strip())
     return reads
 
 

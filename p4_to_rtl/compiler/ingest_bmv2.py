@@ -31,6 +31,35 @@ from ir import (
 
 
 # ============================================================
+# Name sanitization
+# ============================================================
+
+def _sanitize(name):
+    """Strip the control-block qualifier prefix from a p4c-qualified name.
+
+    p4c fully qualifies names with the enclosing control block:
+        'MyIngress.ipv4_lpm'    → 'ipv4_lpm'
+        'MyIngress.bloom_filter_1' → 'bloom_filter_1'
+        'NoAction'              → 'NoAction'   (no dot — unchanged)
+
+    Dots are illegal in SystemVerilog identifiers, so stripping the prefix
+    is required before any name is used as a signal, module, or file name.
+    """
+    return name.rsplit('.', 1)[-1]
+
+
+def _is_synthetic(tbl_json):
+    """Return True if this is a p4c-generated 'action wrapper' table.
+
+    p4c lifts inline action calls and code blocks into keyless tables named
+    tbl_<something>.  They have no user-visible match keys and a single
+    mandatory action.  They should be inlined rather than emitted as modules.
+    """
+    name = _sanitize(tbl_json.get('name', ''))
+    return not tbl_json.get('key') and name.startswith('tbl_')
+
+
+# ============================================================
 # Expression translation  (bmv2 expression tree → string)
 # ============================================================
 
@@ -52,9 +81,15 @@ def _expr(node, runtime_data=None):
 
     if t == 'field':
         hdr_name, fld_name = v[0], v[1]
+        if fld_name == '$valid$':           # bmv2 header-validity pseudo-field
+            return f'hdr.{hdr_name}.isValid()'
         if hdr_name == 'standard_metadata':
             return f'standard_metadata.{fld_name}'
-        if hdr_name.startswith('scalars'):   # control-local variable
+        if hdr_name.startswith('scalars'):
+            # Dotted: user struct field (e.g. 'metadata.ecmp_select') → 'meta.ecmp_select'
+            # Plain:  compiler temporary (e.g. 'tmp_0')               → 'tmp_0'
+            if '.' in fld_name:
+                return 'meta.' + fld_name.rsplit('.', 1)[-1]
             return fld_name
         return f'hdr.{hdr_name}.{fld_name}'
 
@@ -62,7 +97,11 @@ def _expr(node, runtime_data=None):
         return rd[v]['name'] if v < len(rd) else f'param_{v}'
 
     if t == 'hexstr':
-        return v
+        # bmv2 uses '0x...' C-style hex; convert to unsized SV hex 'h...
+        if isinstance(v, str) and v.lower().startswith('0x'):
+            hex_digits = v[2:]
+            return f"'h{hex_digits.upper()}"
+        return str(v)
 
     if t == 'bool':
         return '1' if v else '0'
@@ -125,12 +164,12 @@ def _prim(primitive, runtime_data, calcs):
 
     if op == 'register_read':
         # register_read(dest, reg_name, index)
-        reg = params[1].get('value', '')
+        reg = _sanitize(params[1].get('value', ''))
         return ExternCall(f'{reg}.read', [p(0), p(2)])
 
     if op == 'register_write':
         # register_write(reg_name, index, value)
-        reg = params[0].get('value', '')
+        reg = _sanitize(params[0].get('value', ''))
         return ExternCall(f'{reg}.write', [p(1), p(2)])
 
     if op == 'modify_field_with_hash_based_offset':
@@ -165,18 +204,17 @@ def _prim(primitive, runtime_data, calcs):
 # Control-flow DAG reconstruction
 # ============================================================
 
-def _reconstruct_flow(node_name, tables_map, conds_map, visited=None):
+def _reconstruct_flow(node_name, tables_map, conds_map, actions_by_name=None,
+                      visited=None):
     """Walk the bmv2 pipeline DAG (tables + conditionals) and return a list of
-    IfStatement / TableApply IR nodes in execution order.
+    IfStatement / TableApply / Assignment / ExternCall IR nodes in execution order.
 
     The DAG is defined by:
       conditionals[i].true_next / false_next  → next node name
       tables[i].next_tables[action_name]      → next node name
 
-    Limitation: branches that diverge and later reconverge (join points)
-    are approximated — the common successor is handled when both branches
-    independently reach it.  Full post-dominator analysis would be needed
-    for the general case; for v1model sequential pipelines this is sufficient.
+    Synthetic (keyless tbl_*) tables are inlined: their single mandatory action's
+    body is inserted directly rather than emitting a TableApply.
     """
     if visited is None:
         visited = set()
@@ -185,6 +223,7 @@ def _reconstruct_flow(node_name, tables_map, conds_map, visited=None):
 
     visited = visited | {node_name}   # immutable copy per branch
     stmts   = []
+    amap    = actions_by_name or {}
 
     if node_name in conds_map:
         cond     = conds_map[node_name]
@@ -193,16 +232,27 @@ def _reconstruct_flow(node_name, tables_map, conds_map, visited=None):
         true_n   = cond.get('true_next')
         false_n  = cond.get('false_next')
 
-        for s in _reconstruct_flow(true_n,  tables_map, conds_map, visited):
+        for s in _reconstruct_flow(true_n,  tables_map, conds_map, amap, visited):
             if_stmt.add_then(s)
-        for s in _reconstruct_flow(false_n, tables_map, conds_map, visited):
+        for s in _reconstruct_flow(false_n, tables_map, conds_map, amap, visited):
             if_stmt.add_else(s)
         stmts.append(if_stmt)
 
     elif node_name in tables_map:
-        tbl = tables_map[node_name]
-        ta  = TableApply(tbl['name'])
-        stmts.append(ta)
+        tbl       = tables_map[node_name]
+        san_name  = _sanitize(tbl['name'])
+        synthetic = _is_synthetic(tbl)
+
+        if not synthetic:
+            ta = TableApply(san_name)
+            stmts.append(ta)
+        else:
+            # Inline synthetic table's mandatory single action body
+            raw_actions = tbl.get('actions', [])
+            if raw_actions:
+                act = amap.get(_sanitize(raw_actions[0]))
+                if act:
+                    stmts.extend(act.body)
 
         next_nodes = tbl.get('next_tables', {})
         successors = {v for v in next_nodes.values() if v is not None}
@@ -210,20 +260,28 @@ def _reconstruct_flow(node_name, tables_map, conds_map, visited=None):
         if len(successors) == 1:
             # All actions converge to the same next node — emit sequentially
             stmts.extend(
-                _reconstruct_flow(successors.pop(), tables_map, conds_map, visited)
+                _reconstruct_flow(successors.pop(), tables_map, conds_map, amap, visited)
             )
         elif len(successors) > 1:
             # Per-action divergence — use __HIT__ / __MISS__ as the split point
             hit_next  = next_nodes.get('__HIT__')
             miss_next = next_nodes.get('__MISS__')
             if hit_next or miss_next:
-                ta.result_var = f'{tbl["name"]}_result'
-                branch = IfStatement(f'{tbl["name"]}_result')
-                for s in _reconstruct_flow(hit_next,  tables_map, conds_map, visited):
-                    branch.add_then(s)
-                for s in _reconstruct_flow(miss_next, tables_map, conds_map, visited):
-                    branch.add_else(s)
-                stmts.append(branch)
+                if not synthetic:
+                    ta.result_var = f'{san_name}_result'
+                    branch = IfStatement(f'{san_name}_result')
+                    for s in _reconstruct_flow(hit_next,  tables_map, conds_map, amap, visited):
+                        branch.add_then(s)
+                    for s in _reconstruct_flow(miss_next, tables_map, conds_map, amap, visited):
+                        branch.add_else(s)
+                    stmts.append(branch)
+                else:
+                    # synthetic table with divergent actions — follow successors
+                    for succ in [hit_next, miss_next]:
+                        if succ:
+                            stmts.extend(
+                                _reconstruct_flow(succ, tables_map, conds_map, amap, visited)
+                            )
 
     return stmts
 
@@ -259,13 +317,23 @@ def ingest_bmv2(bm):
         ir.add_header(h)
         htype_map[ht['name']] = h
 
-    # Collect scalars fields as a lookup for control-local variable widths
-    scalar_widths = {}   # field_name → width
+    # Collect scalars fields as a lookup for control-local variable widths.
+    # p4c represents:
+    #   - Compiler temporaries (tmp_0, _padding_0) as plain names → LocalVar
+    #   - User metadata struct fields (metadata.ecmp_select) as dotted names
+    #     → MetadataField (exposed as input port with writable shadow)
+    scalar_widths = {}   # plain field_name → width
     for ht in bm.get('header_types', []):
         if ht['name'].startswith('scalars'):
             for fspec in ht.get('fields', []):
                 fname, fwidth = fspec[0], fspec[1]
-                if isinstance(fwidth, int) and fwidth > 0:
+                if not (isinstance(fwidth, int) and fwidth > 0):
+                    continue
+                if '.' in fname:
+                    # user struct field (e.g., 'metadata.ecmp_select')
+                    field_name = fname.rsplit('.', 1)[-1]
+                    ir.add_metadata_field(MetadataField(field_name, fwidth))
+                else:
                     scalar_widths[fname] = fwidth
 
     # ── 2. Headers → instances, metadata fields, header stacks ───────
@@ -351,15 +419,17 @@ def ingest_bmv2(bm):
 
     # ── 4. Register arrays and hash calculations ──────────────────────
     calcs   = {c['name']: c for c in bm.get('calculations', [])}
-    reg_map = {}   # name → RegisterDecl
+    reg_map = {}   # sanitized name → RegisterDecl
     for reg in bm.get('register_arrays', []):
-        rd = RegisterDecl(reg['name'], reg['bitwidth'], reg['size'])
-        reg_map[reg['name']] = rd
+        san = _sanitize(reg['name'])
+        rd = RegisterDecl(san, reg['bitwidth'], reg['size'])
+        reg_map[san] = rd
 
     # ── 5. Actions ────────────────────────────────────────────────────
-    actions_by_name = {}   # action name → Action
+    actions_by_name = {}   # sanitized action name → Action
     for act in bm.get('actions', []):
-        a          = Action(act['name'])
+        san_name   = _sanitize(act['name'])
+        a          = Action(san_name)
         rd_list    = act.get('runtime_data', [])
 
         for rd in rd_list:
@@ -374,7 +444,7 @@ def ingest_bmv2(bm):
             if stmt is not None:
                 a.add_statement(stmt)
 
-        actions_by_name[act['name']] = a
+        actions_by_name[san_name] = a
         ir.add_action(a)
 
     # ── 6. Pipelines → ControlBlock ──────────────────────────────────
@@ -394,7 +464,14 @@ def ingest_bmv2(bm):
         action_added = set()
 
         for tbl in pipe.get('tables', []):
-            t = Table(tbl['name'])
+            # Keep raw name in tables_map so DAG edges (also raw) can be resolved
+            tables_map[tbl['name']] = tbl
+
+            # Synthetic keyless wrapper tables are inlined by _reconstruct_flow
+            if _is_synthetic(tbl):
+                continue
+
+            t = Table(_sanitize(tbl['name']))
 
             for k in tbl.get('key', []):
                 target = k.get('target', [])   # [header_name, field_name]
@@ -410,34 +487,34 @@ def ingest_bmv2(bm):
                 t.add_key(TableKey(field_str, k['match_type']))
 
             for aname in tbl.get('actions', []):
-                t.add_action(aname)
-                a = actions_by_name.get(aname)
-                if a and aname not in action_added:
+                san_aname = _sanitize(aname)
+                t.add_action(san_aname)
+                a = actions_by_name.get(san_aname)
+                if a and san_aname not in action_added:
                     block.add_action(a)
-                    action_added.add(aname)
+                    action_added.add(san_aname)
 
             # Default action from static entry (if present in JSON)
             de = tbl.get('default_entry', {})
             if de:
-                da_id   = de.get('action_id')
-                actions = tbl.get('actions', [])
+                da_id      = de.get('action_id')
+                actions    = tbl.get('actions', [])
                 action_ids = tbl.get('action_ids', [])
                 if da_id is not None and da_id in action_ids:
                     idx = action_ids.index(da_id)
                     if idx < len(actions):
-                        t.set_default(actions[idx])
+                        t.set_default(_sanitize(actions[idx]))
 
             t.set_size(tbl.get('max_size', 1024))
             block.add_table(t)
             ir.add_table(t)
-            tables_map[tbl['name']] = tbl
 
         # Conditionals index
         conds_map = {c['name']: c for c in pipe.get('conditionals', [])}
 
         # Reconstruct the sequential apply-block flow from the DAG
         init_node = pipe.get('init_table')
-        for stmt in _reconstruct_flow(init_node, tables_map, conds_map):
+        for stmt in _reconstruct_flow(init_node, tables_map, conds_map, actions_by_name):
             block.add_statement(stmt)
 
         ir.add_control(block)

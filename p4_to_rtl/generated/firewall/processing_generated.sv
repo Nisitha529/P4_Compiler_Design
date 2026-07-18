@@ -111,11 +111,32 @@ module processing_generated (
   output logic        drop
 );
 
-  logic [0:0] direction;
-  logic [31:0] reg_pos_one;
-  logic [31:0] reg_pos_two;
-  logic [0:0] reg_val_one;
-  logic [0:0] reg_val_two;
+  logic [4:0] _padding_0;
+  logic [0:0] direction_0;
+  logic [31:0] reg_pos_one_0;
+  logic [31:0] reg_pos_two_0;
+  logic [0:0] reg_val_one_0;
+  logic [0:0] reg_val_two_0;
+  logic [31:0] tmp;
+  logic [31:0] tmp_0;
+  logic [15:0] tmp_1;
+  logic [31:0] tmp_10;
+  logic [15:0] tmp_11;
+  logic [15:0] tmp_12;
+  logic [7:0] tmp_13;
+  logic [31:0] tmp_14;
+  logic [31:0] tmp_15;
+  logic [15:0] tmp_16;
+  logic [15:0] tmp_17;
+  logic [7:0] tmp_18;
+  logic [15:0] tmp_2;
+  logic [7:0] tmp_3;
+  logic [31:0] tmp_4;
+  logic [31:0] tmp_5;
+  logic [15:0] tmp_6;
+  logic [15:0] tmp_7;
+  logic [7:0] tmp_8;
+  logic [31:0] tmp_9;
 
   // bloom_filter_1: register<bit<1>>(4096)
   logic [0:0] bloom_filter_1_mem [0:4095];
@@ -137,10 +158,10 @@ module processing_generated (
   end
 
   // Register read wires (isolated via assign)
-  logic [0:0] bloom_filter_1_rd_reg_val_one;
-  assign bloom_filter_1_rd_reg_val_one = bloom_filter_1_mem[reg_pos_one];
-  logic [0:0] bloom_filter_2_rd_reg_val_two;
-  assign bloom_filter_2_rd_reg_val_two = bloom_filter_2_mem[reg_pos_two];
+  logic [0:0] bloom_filter_1_rd_reg_val_one_0;
+  assign bloom_filter_1_rd_reg_val_one_0 = bloom_filter_1_mem[reg_pos_one_0];
+  logic [0:0] bloom_filter_2_rd_reg_val_two_0;
+  assign bloom_filter_2_rd_reg_val_two_0 = bloom_filter_2_mem[reg_pos_two_0];
 
   // Table lookup result wires
   logic        ipv4_lpm_hit;
@@ -191,11 +212,32 @@ module processing_generated (
 
   always_comb begin
     drop = 0;
-    direction = 1'b0;
-    reg_pos_one = 32'b0;
-    reg_pos_two = 32'b0;
-    reg_val_one = 1'b0;
-    reg_val_two = 1'b0;
+    _padding_0 = 5'b0;
+    direction_0 = 1'b0;
+    reg_pos_one_0 = 32'b0;
+    reg_pos_two_0 = 32'b0;
+    reg_val_one_0 = 1'b0;
+    reg_val_two_0 = 1'b0;
+    tmp = 32'b0;
+    tmp_0 = 32'b0;
+    tmp_1 = 16'b0;
+    tmp_10 = 32'b0;
+    tmp_11 = 16'b0;
+    tmp_12 = 16'b0;
+    tmp_13 = 8'b0;
+    tmp_14 = 32'b0;
+    tmp_15 = 32'b0;
+    tmp_16 = 16'b0;
+    tmp_17 = 16'b0;
+    tmp_18 = 8'b0;
+    tmp_2 = 16'b0;
+    tmp_3 = 8'b0;
+    tmp_4 = 32'b0;
+    tmp_5 = 32'b0;
+    tmp_6 = 16'b0;
+    tmp_7 = 16'b0;
+    tmp_8 = 8'b0;
+    tmp_9 = 32'b0;
     bloom_filter_1_wr_en   = 1'b0;
     bloom_filter_1_wr_addr = '0;
     bloom_filter_1_wr_data = '0;
@@ -255,7 +297,7 @@ module processing_generated (
             out_std_meta_egress_spec = ipv4_lpm_p_port;
             out_ethernet_srcAddr = ethernet_dstAddr;
             out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
-            out_ipv4_ttl = ipv4_ttl - 1;
+            out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
           end
           2'd2: begin // drop
             drop = 1;
@@ -266,48 +308,82 @@ module processing_generated (
         drop = 1;
       end
       if (tcp_valid) begin
-        direction = 0;
+        direction_0 = 'h00;
+        // check_ports.apply()
         if (check_ports_hit) begin
-          // check_ports.apply()
-          if (check_ports_hit) begin
-            unique case (check_ports_act_id)
-              1'd0: ; // NoAction
-              1'd1: begin // set_direction
-                direction = check_ports_p_dir;
-              end
-              default: ; // default = NoAction
-            endcase
-          end
-          if (direction == 0) begin
-            // compute_hashes(hdr.ipv4.srcAddr, hdr.ipv4.dstAddr, hdr.tcp.srcPort, hdr.tcp.dstPort)
-            // hash() stub — XOR-based behavioral approximation
-            reg_pos_one = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 12'hFFF;
-            // hash() stub — XOR-based behavioral approximation
-            reg_pos_two = (ipv4_srcAddr ^ ipv4_dstAddr ^ tcp_srcPort ^ tcp_dstPort ^ ipv4_protocol) & 12'hFFF;
-          end
-          else begin
-            // compute_hashes(hdr.ipv4.dstAddr, hdr.ipv4.srcAddr, hdr.tcp.dstPort, hdr.tcp.srcPort)
-            // hash() stub — XOR-based behavioral approximation
-            reg_pos_one = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 12'hFFF;
-            // hash() stub — XOR-based behavioral approximation
-            reg_pos_two = (ipv4_dstAddr ^ ipv4_srcAddr ^ tcp_dstPort ^ tcp_srcPort ^ ipv4_protocol) & 12'hFFF;
-          end
-          if (direction == 0) begin
-            if (tcp_syn == 1) begin
+          unique case (check_ports_act_id)
+            1'd0: ; // NoAction
+            1'd1: begin // set_direction
+              direction_0 = check_ports_p_dir;
+            end
+            default: ; // default = NoAction
+          endcase
+        end
+        if ((direction_0 == 'h00)) begin
+          tmp_9 = ipv4_dstAddr;
+          tmp_10 = ipv4_srcAddr;
+          tmp_11 = tcp_dstPort;
+          tmp_12 = tcp_srcPort;
+          tmp_13 = ipv4_protocol;
+          // hash() stub — XOR-based behavioral approximation
+          reg_pos_one_0 = (tmp_9 ^ tmp_10 ^ tmp_11 ^ tmp_12 ^ tmp_13) & 12'hFFF;
+          tmp_14 = ipv4_dstAddr;
+          tmp_15 = ipv4_srcAddr;
+          tmp_16 = tcp_dstPort;
+          tmp_17 = tcp_srcPort;
+          tmp_18 = ipv4_protocol;
+          // hash() stub — XOR-based behavioral approximation
+          reg_pos_two_0 = (tmp_14 ^ tmp_15 ^ tmp_16 ^ tmp_17 ^ tmp_18) & 12'hFFF;
+          if ((direction_0 == 'h00)) begin
+            if ((tcp_syn == 'h01)) begin
               bloom_filter_1_wr_en   = 1'b1;
-              bloom_filter_1_wr_addr = reg_pos_one;
-              bloom_filter_1_wr_data = 1;
+              bloom_filter_1_wr_addr = reg_pos_one_0;
+              bloom_filter_1_wr_data = 'h01;
               bloom_filter_2_wr_en   = 1'b1;
-              bloom_filter_2_wr_addr = reg_pos_two;
-              bloom_filter_2_wr_data = 1;
+              bloom_filter_2_wr_addr = reg_pos_two_0;
+              bloom_filter_2_wr_data = 'h01;
             end
           end
           else begin
-            if (direction == 1) begin
-              reg_val_one = bloom_filter_1_rd_reg_val_one;
-              reg_val_two = bloom_filter_2_rd_reg_val_two;
-              if (reg_val_one != 1 || reg_val_two != 1) begin
-                // drop()
+            if ((direction_0 == 'h01)) begin
+              reg_val_one_0 = bloom_filter_1_rd_reg_val_one_0;
+              reg_val_two_0 = bloom_filter_2_rd_reg_val_two_0;
+              if (((reg_val_one_0 != 'h01) || (reg_val_two_0 != 'h01))) begin
+                drop = 1;
+              end
+            end
+          end
+        end
+        else begin
+          tmp_9 = ipv4_dstAddr;
+          tmp_10 = ipv4_srcAddr;
+          tmp_11 = tcp_dstPort;
+          tmp_12 = tcp_srcPort;
+          tmp_13 = ipv4_protocol;
+          // hash() stub — XOR-based behavioral approximation
+          reg_pos_one_0 = (tmp_9 ^ tmp_10 ^ tmp_11 ^ tmp_12 ^ tmp_13) & 12'hFFF;
+          tmp_14 = ipv4_dstAddr;
+          tmp_15 = ipv4_srcAddr;
+          tmp_16 = tcp_dstPort;
+          tmp_17 = tcp_srcPort;
+          tmp_18 = ipv4_protocol;
+          // hash() stub — XOR-based behavioral approximation
+          reg_pos_two_0 = (tmp_14 ^ tmp_15 ^ tmp_16 ^ tmp_17 ^ tmp_18) & 12'hFFF;
+          if ((direction_0 == 'h00)) begin
+            if ((tcp_syn == 'h01)) begin
+              bloom_filter_1_wr_en   = 1'b1;
+              bloom_filter_1_wr_addr = reg_pos_one_0;
+              bloom_filter_1_wr_data = 'h01;
+              bloom_filter_2_wr_en   = 1'b1;
+              bloom_filter_2_wr_addr = reg_pos_two_0;
+              bloom_filter_2_wr_data = 'h01;
+            end
+          end
+          else begin
+            if ((direction_0 == 'h01)) begin
+              reg_val_one_0 = bloom_filter_1_rd_reg_val_one_0;
+              reg_val_two_0 = bloom_filter_2_rd_reg_val_two_0;
+              if (((reg_val_one_0 != 'h01) || (reg_val_two_0 != 'h01))) begin
                 drop = 1;
               end
             end

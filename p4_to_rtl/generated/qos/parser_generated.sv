@@ -10,7 +10,6 @@ module parser_generated(
 
   typedef enum logic [1:0] {
     START,
-    PARSE_ETHERNET,
     PARSE_IPV4,
     ACCEPT
   } state_t;
@@ -26,10 +25,6 @@ module parser_generated(
     case (state)
 
       START: begin
-        next_state = PARSE_ETHERNET;
-      end
-
-      PARSE_ETHERNET: begin
         extract_ethernet = 1;
         case (ethernet_etherType)
           16'h0800: next_state = PARSE_IPV4;
@@ -52,7 +47,7 @@ module parser_generated(
 
   always_ff @(posedge clk) begin
     if (!rst_n)
-      state <= START;
+      state <= ACCEPT;
     else if (valid_in)
       state <= next_state;
   end

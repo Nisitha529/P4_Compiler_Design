@@ -17,7 +17,6 @@ module parser_generated(
 
   typedef enum logic [2:0] {
     START,
-    PARSE_ETH,
     PARSE_VLAN,
     PARSE_IPV4,
     PARSE_TCP,
@@ -28,23 +27,19 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
-    extract_udp = 0;
-    extract_vlan = 0;
-    extract_tcp = 0;
     extract_tcpopt = 0;
+    extract_udp = 0;
+    extract_ipv4 = 0;
+    extract_tcp = 0;
     extract_eth = 0;
     extract_ipv4opt = 0;
-    extract_ipv4 = 0;
+    extract_vlan = 0;
     done = 0;
     next_state = state;
 
     case (state)
 
       START: begin
-        next_state = PARSE_ETH;
-      end
-
-      PARSE_ETH: begin
         extract_eth = 1;
         case (eth_type)
           16'h8100: next_state = PARSE_VLAN;
@@ -92,7 +87,7 @@ module parser_generated(
 
   always_ff @(posedge clk) begin
     if (!rst_n)
-      state <= START;
+      state <= ACCEPT;
     else if (valid_in)
       state <= next_state;
   end

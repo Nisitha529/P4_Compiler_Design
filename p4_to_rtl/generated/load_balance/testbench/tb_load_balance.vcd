@@ -1,5 +1,5 @@
 $date
-	Tue Jun  9 23:11:40 2026
+	Sat Jul 18 15:23:01 2026
 $end
 $version
 	Icarus Verilog
@@ -159,8 +159,8 @@ $var reg 1 A done $end
 $var reg 1 @ extract_ethernet $end
 $var reg 1 ? extract_ipv4 $end
 $var reg 1 > extract_tcp $end
-$var reg 3 I" next_state [2:0] $end
-$var reg 3 J" state [2:0] $end
+$var reg 2 I" next_state [1:0] $end
+$var reg 2 J" state [1:0] $end
 $upscope $end
 $scope module proc_dut $end
 $var wire 1 E clk $end
@@ -175,7 +175,7 @@ $var wire 1 < ecmp_group_hit_out $end
 $var wire 2 R" ecmp_nhop_cp_wr_action [1:0] $end
 $var wire 1 S" ecmp_nhop_cp_wr_en $end
 $var wire 1 T" ecmp_nhop_cp_wr_idx $end
-$var wire 14 U" ecmp_nhop_cp_wr_key_ecmp_select [13:0] $end
+$var wire 32 U" ecmp_nhop_cp_wr_key_ecmp_select [31:0] $end
 $var wire 48 V" ecmp_nhop_cp_wr_p_nhop_dmac [47:0] $end
 $var wire 32 W" ecmp_nhop_cp_wr_p_nhop_ipv4 [31:0] $end
 $var wire 9 X" ecmp_nhop_cp_wr_p_port [8:0] $end
@@ -221,78 +221,84 @@ $var wire 32 z" ecmp_group_p_ecmp_count [31:0] $end
 $var wire 16 {" ecmp_group_p_ecmp_base [15:0] $end
 $var wire 1 |" ecmp_group_hit $end
 $var wire 2 }" ecmp_group_act_id [1:0] $end
+$var reg 2 ~" _padding_0 [1:0] $end
 $var reg 1 = drop $end
-$var reg 14 ~" meta_ecmp_select_w [13:0] $end
-$var reg 48 !# out_ethernet_dstAddr [47:0] $end
-$var reg 16 "# out_ethernet_etherType [15:0] $end
-$var reg 48 ## out_ethernet_srcAddr [47:0] $end
-$var reg 1 $# out_ethernet_valid $end
-$var reg 8 %# out_ipv4_diffserv [7:0] $end
-$var reg 32 &# out_ipv4_dstAddr [31:0] $end
-$var reg 3 '# out_ipv4_flags [2:0] $end
-$var reg 13 (# out_ipv4_fragOffset [12:0] $end
-$var reg 16 )# out_ipv4_hdrChecksum [15:0] $end
-$var reg 16 *# out_ipv4_identification [15:0] $end
-$var reg 4 +# out_ipv4_ihl [3:0] $end
-$var reg 8 ,# out_ipv4_protocol [7:0] $end
-$var reg 32 -# out_ipv4_srcAddr [31:0] $end
-$var reg 16 .# out_ipv4_totalLen [15:0] $end
-$var reg 8 /# out_ipv4_ttl [7:0] $end
-$var reg 1 0# out_ipv4_valid $end
-$var reg 4 1# out_ipv4_version [3:0] $end
-$var reg 9 2# out_std_meta_egress_spec [8:0] $end
-$var reg 32 3# out_tcp_ackNo [31:0] $end
-$var reg 16 4# out_tcp_checksum [15:0] $end
-$var reg 6 5# out_tcp_ctrl [5:0] $end
-$var reg 4 6# out_tcp_dataOffset [3:0] $end
-$var reg 16 7# out_tcp_dstPort [15:0] $end
-$var reg 3 8# out_tcp_ecn [2:0] $end
-$var reg 3 9# out_tcp_res [2:0] $end
-$var reg 32 :# out_tcp_seqNo [31:0] $end
-$var reg 16 ;# out_tcp_srcPort [15:0] $end
-$var reg 16 <# out_tcp_urgentPtr [15:0] $end
-$var reg 1 =# out_tcp_valid $end
-$var reg 16 ># out_tcp_window [15:0] $end
+$var reg 14 !# meta_ecmp_select_w [13:0] $end
+$var reg 48 "# out_ethernet_dstAddr [47:0] $end
+$var reg 16 ## out_ethernet_etherType [15:0] $end
+$var reg 48 $# out_ethernet_srcAddr [47:0] $end
+$var reg 1 %# out_ethernet_valid $end
+$var reg 8 &# out_ipv4_diffserv [7:0] $end
+$var reg 32 '# out_ipv4_dstAddr [31:0] $end
+$var reg 3 (# out_ipv4_flags [2:0] $end
+$var reg 13 )# out_ipv4_fragOffset [12:0] $end
+$var reg 16 *# out_ipv4_hdrChecksum [15:0] $end
+$var reg 16 +# out_ipv4_identification [15:0] $end
+$var reg 4 ,# out_ipv4_ihl [3:0] $end
+$var reg 8 -# out_ipv4_protocol [7:0] $end
+$var reg 32 .# out_ipv4_srcAddr [31:0] $end
+$var reg 16 /# out_ipv4_totalLen [15:0] $end
+$var reg 8 0# out_ipv4_ttl [7:0] $end
+$var reg 1 1# out_ipv4_valid $end
+$var reg 4 2# out_ipv4_version [3:0] $end
+$var reg 9 3# out_std_meta_egress_spec [8:0] $end
+$var reg 32 4# out_tcp_ackNo [31:0] $end
+$var reg 16 5# out_tcp_checksum [15:0] $end
+$var reg 6 6# out_tcp_ctrl [5:0] $end
+$var reg 4 7# out_tcp_dataOffset [3:0] $end
+$var reg 16 8# out_tcp_dstPort [15:0] $end
+$var reg 3 9# out_tcp_ecn [2:0] $end
+$var reg 3 :# out_tcp_res [2:0] $end
+$var reg 32 ;# out_tcp_seqNo [31:0] $end
+$var reg 16 <# out_tcp_srcPort [15:0] $end
+$var reg 16 =# out_tcp_urgentPtr [15:0] $end
+$var reg 1 ># out_tcp_valid $end
+$var reg 16 ?# out_tcp_window [15:0] $end
+$var reg 32 @# tmp [31:0] $end
+$var reg 32 A# tmp_0 [31:0] $end
+$var reg 8 B# tmp_1 [7:0] $end
+$var reg 16 C# tmp_2 [15:0] $end
+$var reg 16 D# tmp_3 [15:0] $end
 $var reg 1 ! valid_out $end
 $scope module u_ecmp_group $end
 $var wire 1 E clk $end
-$var wire 2 ?# cp_wr_action [1:0] $end
+$var wire 2 E# cp_wr_action [1:0] $end
 $var wire 1 L" cp_wr_en $end
-$var wire 10 @# cp_wr_idx [9:0] $end
-$var wire 32 A# cp_wr_key_dstAddr [31:0] $end
-$var wire 16 B# cp_wr_p_ecmp_base [15:0] $end
-$var wire 32 C# cp_wr_p_ecmp_count [31:0] $end
-$var wire 6 D# cp_wr_pfx_len [5:0] $end
-$var wire 32 E# lkp_dstAddr [31:0] $end
+$var wire 10 F# cp_wr_idx [9:0] $end
+$var wire 32 G# cp_wr_key_dstAddr [31:0] $end
+$var wire 16 H# cp_wr_p_ecmp_base [15:0] $end
+$var wire 32 I# cp_wr_p_ecmp_count [31:0] $end
+$var wire 6 J# cp_wr_pfx_len [5:0] $end
+$var wire 32 K# lkp_dstAddr [31:0] $end
 $var wire 1 (" rst_n $end
-$var reg 2 F# action_id [1:0] $end
+$var reg 2 L# action_id [1:0] $end
 $var reg 1 |" hit $end
-$var reg 16 G# p_ecmp_base [15:0] $end
-$var reg 32 H# p_ecmp_count [31:0] $end
-$var integer 32 I# _i [31:0] $end
+$var reg 16 M# p_ecmp_base [15:0] $end
+$var reg 32 N# p_ecmp_count [31:0] $end
+$var integer 32 O# _i [31:0] $end
 $scope begin $ivl_for_loop0 $end
-$var integer 32 J# _j [31:0] $end
+$var integer 32 P# _j [31:0] $end
 $upscope $end
 $upscope $end
 $scope module u_ecmp_nhop $end
 $var wire 1 E clk $end
-$var wire 2 K# cp_wr_action [1:0] $end
+$var wire 2 Q# cp_wr_action [1:0] $end
 $var wire 1 S" cp_wr_en $end
 $var wire 1 T" cp_wr_idx $end
-$var wire 14 L# cp_wr_key_ecmp_select [13:0] $end
-$var wire 48 M# cp_wr_p_nhop_dmac [47:0] $end
-$var wire 32 N# cp_wr_p_nhop_ipv4 [31:0] $end
-$var wire 9 O# cp_wr_p_port [8:0] $end
-$var wire 14 P# lkp_ecmp_select [13:0] $end
+$var wire 32 R# cp_wr_key_ecmp_select [31:0] $end
+$var wire 48 S# cp_wr_p_nhop_dmac [47:0] $end
+$var wire 32 T# cp_wr_p_nhop_ipv4 [31:0] $end
+$var wire 9 U# cp_wr_p_port [8:0] $end
+$var wire 32 V# lkp_ecmp_select [31:0] $end
 $var wire 1 (" rst_n $end
-$var reg 2 Q# action_id [1:0] $end
+$var reg 2 W# action_id [1:0] $end
 $var reg 1 x" hit $end
-$var reg 48 R# p_nhop_dmac [47:0] $end
-$var reg 32 S# p_nhop_ipv4 [31:0] $end
-$var reg 9 T# p_port [8:0] $end
-$var integer 32 U# _i [31:0] $end
+$var reg 48 X# p_nhop_dmac [47:0] $end
+$var reg 32 Y# p_nhop_ipv4 [31:0] $end
+$var reg 9 Z# p_port [8:0] $end
+$var integer 32 [# _i [31:0] $end
 $scope begin $ivl_for_loop1 $end
-$var integer 32 V# _j [31:0] $end
+$var integer 32 \# _j [31:0] $end
 $upscope $end
 $upscope $end
 $upscope $end
@@ -304,32 +310,38 @@ $upscope $end
 $enddefinitions $end
 #0
 $dumpvars
-b10 V#
-b10 U#
-b0 T#
-b0 S#
-b0 R#
-b0 Q#
-b0 P#
-bz O#
-bz N#
-bz M#
-bz L#
-bz K#
-b10000000000 J#
-b10000000000 I#
-b0 H#
-b0 G#
-b0 F#
-b0 E#
-bz D#
-bz C#
-bz B#
-bz A#
-bz @#
-bz ?#
-b0 >#
-0=#
+b10 \#
+b10 [#
+b0 Z#
+b0 Y#
+b0 X#
+b0 W#
+b0z V#
+bz U#
+bz T#
+bz S#
+bz R#
+bz Q#
+b10000000000 P#
+b10000000000 O#
+b0 N#
+b0 M#
+b0 L#
+b0 K#
+bz J#
+bz I#
+bz H#
+bz G#
+bz F#
+bz E#
+b0 D#
+b0 C#
+b0 B#
+b0 A#
+b0 @#
+b0 ?#
+0>#
+b0 =#
 b0 <#
 b0 ;#
 b0 :#
@@ -341,8 +353,8 @@ b0 5#
 b0 4#
 b0 3#
 b0 2#
-b0 1#
-00#
+01#
+b0 0#
 b0 /#
 b0 .#
 b0 -#
@@ -353,8 +365,8 @@ b0 )#
 b0 (#
 b0 '#
 b0 &#
-b0 %#
-0$#
+0%#
+b0 $#
 b0 ##
 b0 "#
 b0 !#
@@ -548,8 +560,9 @@ b0 "
 x!
 $end
 #5000
-b1 I"
-b0 J"
+1A
+b0 I"
+b11 J"
 0!
 0B
 1E
@@ -567,7 +580,8 @@ b0 J"
 #35000
 1E
 #36000
-b1 I"
+b0 I"
+1A
 1f
 b110 e
 b110 H"
@@ -578,29 +592,30 @@ b1 *"
 #40000
 0E
 #45000
-b10 I"
+b1 I"
 1@
-b1 J"
+0A
+b0 J"
 1E
 #46000
 b10 *"
 #50000
 0E
 #55000
-b11 I"
+b10 I"
 1?
 0@
-b10 J"
+b1 J"
 1E
 #56000
 b100 *"
 #60000
 0E
 #65000
-b100 I"
+b11 I"
 1>
 0?
-b11 J"
+b10 J"
 1E
 #66000
 b101 *"
@@ -610,7 +625,7 @@ b101 *"
 b0 I"
 1A
 0>
-b100 J"
+b11 J"
 1E
 #76000
 0("
@@ -619,9 +634,6 @@ b110 *"
 #80000
 0E
 #85000
-b1 I"
-0A
-b0 J"
 1E
 #90000
 0E
@@ -637,24 +649,26 @@ b0 J"
 #115000
 1E
 #116000
-b1 I"
+b0 I"
+1A
 1f
 b10001 e
 b10001 H"
 #120000
 0E
 #125000
-b10 I"
+b1 I"
 1@
-b1 J"
+0A
+b0 J"
 1E
 #130000
 0E
 #135000
-b100 I"
+b11 I"
 1?
 0@
-b10 J"
+b1 J"
 1E
 #140000
 0E
@@ -662,7 +676,7 @@ b10 J"
 b0 I"
 1A
 0?
-b100 J"
+b11 J"
 1E
 #146000
 0("
@@ -671,9 +685,6 @@ b1000 *"
 #150000
 0E
 #155000
-b1 I"
-0A
-b0 J"
 1E
 #160000
 0E
@@ -689,16 +700,18 @@ b0 J"
 #185000
 1E
 #186000
-b1 I"
+b0 I"
+1A
 1f
 b100000000110 d
 b100000000110 G"
 #190000
 0E
 #195000
-b100 I"
+b11 I"
 1@
-b1 J"
+0A
+b0 J"
 1E
 #200000
 0E
@@ -706,7 +719,7 @@ b1 J"
 b0 I"
 1A
 0@
-b100 J"
+b11 J"
 1E
 #206000
 0("
@@ -715,9 +728,6 @@ b1010 *"
 #210000
 0E
 #215000
-b1 I"
-0A
-b0 J"
 1E
 #220000
 0E
@@ -733,16 +743,18 @@ b0 J"
 #245000
 1E
 #246000
-b1 I"
+b0 I"
+1A
 1f
 b1000011011011101 d
 b1000011011011101 G"
 #250000
 0E
 #255000
-b100 I"
+b11 I"
 1@
-b1 J"
+0A
+b0 J"
 1E
 #260000
 0E
@@ -750,43 +762,43 @@ b1 J"
 b0 I"
 1A
 0@
-b100 J"
+b11 J"
 1E
 #266000
-b10000000000 J#
+b10000000000 P#
 b0 I"
 1A
 b1000000010000000100000001000 6
-b1000000010000000100000001000 &#
+b1000000010000000100000001000 '#
 b11000000101010000000000000000001 /
-b11000000101010000000000000000001 -#
+b11000000101010000000000000000001 .#
 b1011111011101111 8
-b1011111011101111 )#
+b1011111011101111 *#
 b110 0
-b110 ,#
+b110 -#
 b1000000 .
-b1000000 /#
+b1000000 0#
 b10 5
-b10 '#
+b10 (#
 b1 4
-b1 *#
+b1 +#
 b101000 2
-b101000 .#
+b101000 /#
 b101 3
-b101 +#
+b101 ,#
 b100 -
-b100 1#
+b100 2#
 b100000000000 9
-b100000000000 "#
+b100000000000 ##
 b100010010001000110011010001000101010101100110 :
-b100010010001000110011010001000101010101100110 ##
+b100010010001000110011010001000101010101100110 $#
 b101010101011101111001100110111011110111011111111 ;
-b101010101011101111001100110111011110111011111111 !#
-10#
-1$#
+b101010101011101111001100110111011110111011111111 "#
+11#
+1%#
 b1000000010000000100000001000 m
 b1000000010000000100000001000 ^"
-b1000000010000000100000001000 E#
+b1000000010000000100000001000 K#
 b11000000101010000000000000000001 t
 b11000000101010000000000000000001 e"
 b1011111011101111 k
@@ -821,7 +833,7 @@ b10001 *"
 b0 I"
 1A
 b0 .
-b0 /#
+b0 0#
 b0 u
 b0 g"
 b10011 *"
@@ -829,8 +841,8 @@ b10011 *"
 b0 I"
 1A
 b1000000 .
-b1000000 /#
-00#
+b1000000 0#
+01#
 0v
 b1000000 u
 b1000000 g"
@@ -838,15 +850,12 @@ b10101 *"
 #270000
 b0 I"
 1A
-10#
+11#
 0("
 1v
 b10111 *"
 0E
 #275000
-b1 I"
-0A
-b0 J"
 1E
 #280000
 0E
@@ -879,7 +888,8 @@ b11001 *"
 0!
 1E
 #326000
-b1 I"
+b0 I"
+1A
 b110110000 D
 b110110000 E"
 b101010101011101111001100110111011110111011111111000100010010001000110011010001000101010101100110000010000000000001000101000000000000000000101000000000000000000101000000000000000100000000000110101111101110111111000000101010000000000000000001000010000000100000001000000010001010101010101010101110111011101100010010001101000101011001111000100110101011110011011110111100000101000000000010111111111111111111001010111111100000000000000000 C
@@ -931,7 +941,8 @@ b101010101011101111001100110111011110111011111111 F
 b101010101011101111001100110111011110111011111111 +"
 b11010 *"
 #327000
-b1 I"
+b0 I"
+1A
 b1110000 D
 b1110000 E"
 b101010101011101111001100110111011110111011111111000100010010001000110011010001000101010101100110000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 C
@@ -940,7 +951,8 @@ b1010101010111011110011001101110111101110111111110001000100100010001100110100010
 0U
 b100011 *"
 #328000
-b1 I"
+b0 I"
+1A
 b100010000 D
 b100010000 E"
 b101010101011101111001100110111011110111011111111000100010010001000110011010001000101010101100110000010000000000001000101000000000000000000101000000000000000000101000000000000000100000000000110101111101110111111000000101010000000000000000001000010000000100000001000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 C
@@ -948,7 +960,8 @@ b1010101010111011110011001101110111101110111111110001000100100010001100110100010
 1U
 b100111 *"
 #329000
-b1 I"
+b0 I"
+1A
 b0 D
 b0 E"
 b0 C
@@ -957,43 +970,44 @@ b0 F"
 0I
 b101001 *"
 #330000
-b10000000000 J#
-b1 I"
+b10000000000 P#
+b0 I"
+1A
 b1010101111001101 +
-b1010101111001101 4#
+b1010101111001101 5#
 b100000000000000 "
-b100000000000000 >#
+b100000000000000 ?#
 b10 *
-b10 5#
+b10 6#
 b101 )
-b101 6#
+b101 7#
 b1011111011101111 ,
-b1011111011101111 3#
+b1011111011101111 4#
 b1101111010101101 %
-b1101111010101101 :#
+b1101111010101101 ;#
 b101000000000000 (
-b101000000000000 7#
+b101000000000000 8#
 b1001000110100 $
-b1001000110100 ;#
+b1001000110100 <#
 b1010000000000000000000000010 6
-b1010000000000000000000000010 &#
+b1010000000000000000000000010 '#
 b1010000000000000000000000001 /
-b1010000000000000000000000001 -#
+b1010000000000000000000000001 .#
 b1001000110100 8
-b1001000110100 )#
+b1001000110100 *#
 b10000000 .
-b10000000 /#
+b10000000 0#
 b0 5
-b0 '#
+b0 (#
 b111 4
-b111 *#
+b111 +#
 b111100 2
-b111100 .#
+b111100 /#
 b110010101111111010111110111011111101111010101101 :
-b110010101111111010111110111011111101111010101101 ##
+b110010101111111010111110111011111101111010101101 $#
 b110111101010110110111110111011111100101011111110 ;
-b110111101010110110111110111011111100101011111110 !#
-1=#
+b110111101010110110111110111011111100101011111110 "#
+1>#
 b1010101111001101 z
 b1010101111001101 k"
 b100000000000000 &"
@@ -1012,7 +1026,7 @@ b1001000110100 #"
 b1001000110100 r"
 b1010000000000000000000000010 m
 b1010000000000000000000000010 ^"
-b1010000000000000000000000010 E#
+b1010000000000000000000000010 K#
 b1010000000000000000000000001 t
 b1010000000000000000000000001 e"
 b1001000110100 k
@@ -1033,7 +1047,8 @@ b110111101010110110111110111011111100101011111110 Z"
 b101011 *"
 0E
 #331000
-b1 I"
+b0 I"
+1A
 b110110000 D
 b110110000 E"
 b110111101010110110111110111011111100101011111110110010101111111010111110111011111101111010101101000010000000000001000101000000000000000000111100000000000000011100000000000000001000000000000110000100100011010000001010000000000000000000000001000010100000000000000000000000100001001000110100010100000000000000000000000000001101111010101101000000000000000010111110111011110101000000000010010000000000000010101011110011010000000000000000 C
@@ -1090,7 +1105,8 @@ b101111 *"
 #365000
 1E
 #366000
-b1 I"
+b0 I"
+1A
 b1110000 D
 b1110000 E"
 b110111101010110110111110111011111100101011111110110010101111111010111110111011111101111010101101000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 C

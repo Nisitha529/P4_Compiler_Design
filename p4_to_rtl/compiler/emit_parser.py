@@ -194,7 +194,7 @@ def emit_parser(ir, output_path):
         # STATE REGISTER
         f.write("  always_ff @(posedge clk) begin\n")
         f.write("    if (!rst_n)\n")
-        f.write(f"      state <= {states_upper[0]};\n")
+        f.write("      state <= ACCEPT;\n")   # ACCEPT = idle sentinel; next clock starts parsing
         f.write("    else if (valid_in)\n")
         f.write("      state <= next_state;\n")
         f.write("  end\n\n")

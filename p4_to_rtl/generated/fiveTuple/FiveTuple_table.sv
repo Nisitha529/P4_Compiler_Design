@@ -1,5 +1,5 @@
 module FiveTuple_table #(
-  parameter int DEPTH = 32
+  parameter int DEPTH = 8192
 ) (
   input  logic clk,
   input  logic rst_n,
@@ -8,8 +8,8 @@ module FiveTuple_table #(
   input  logic [31:0] lkp_src,
   input  logic [31:0] lkp_dst,
   input  logic [7:0] lkp_protocol,
-  input  logic [31:0] lkp_table_key_sport,
-  input  logic [31:0] lkp_table_key_dport,
+  input  logic [15:0] lkp_table_key_sport,
+  input  logic [15:0] lkp_table_key_dport,
 
   // Lookup result
   output logic        hit,
@@ -21,12 +21,12 @@ module FiveTuple_table #(
 
   // Control-plane write port (synchronous)
   input  logic        cp_wr_en,
-  input  logic [4:0] cp_wr_idx,
+  input  logic [12:0] cp_wr_idx,
   input  logic [31:0] cp_wr_key_src,
   input  logic [31:0] cp_wr_key_dst,
   input  logic [7:0] cp_wr_key_protocol,
-  input  logic [31:0] cp_wr_key_table_key_sport,
-  input  logic [31:0] cp_wr_key_table_key_dport,
+  input  logic [15:0] cp_wr_key_table_key_sport,
+  input  logic [15:0] cp_wr_key_table_key_dport,
   input  logic [0:0] cp_wr_action,
   input  logic [12:0] cp_wr_p_counter_index,
   input  logic [2:0] cp_wr_p_pcp,
@@ -39,8 +39,8 @@ module FiveTuple_table #(
   logic [31:0] mem_key_src[0:DEPTH-1];
   logic [31:0] mem_key_dst[0:DEPTH-1];
   logic [7:0] mem_key_protocol[0:DEPTH-1];
-  logic [31:0] mem_key_table_key_sport[0:DEPTH-1];
-  logic [31:0] mem_key_table_key_dport[0:DEPTH-1];
+  logic [15:0] mem_key_table_key_sport[0:DEPTH-1];
+  logic [15:0] mem_key_table_key_dport[0:DEPTH-1];
   logic [0:0] mem_action[0:DEPTH-1];
   logic [12:0] mem_p_counter_index[0:DEPTH-1];
   logic [2:0] mem_p_pcp[0:DEPTH-1];
