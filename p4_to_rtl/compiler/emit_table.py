@@ -127,6 +127,10 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
 
     depth = table.size if table.size else 1024
 
+    if not is_lpm and not is_ternary:
+        _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path)
+        return
+
     with open(output_path, 'w') as f:
 
         # ── Module declaration ────────────────────────────────────────
@@ -270,6 +274,165 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
         f.write('  end\n\n')
 
         # ── Action encoding comment ───────────────────────────────────
+        f.write('  // Action ID encoding:\n')
+        for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):
+            f.write(f'  //   {aid} = {aname}\n')
+        f.write('\n')
+
+        f.write('endmodule\n')
+
+
+# ============================================================
+# Exact-match table: hash-indexed BRAM lookup, fixed 1-cycle latency
+# ============================================================
+#
+# The old exact-match implementation was a fully-unrolled combinational
+# scan over all DEPTH entries (see git history) — DEPTH parallel wide
+# comparators resolved in zero clock cycles. That is not synthesizable
+# at any real frequency once DEPTH grows past a handful of entries.
+#
+# This version XOR-folds the concatenated key down to an IDX_W-bit
+# address, uses it directly as a BRAM index (synthesis tools infer
+# block RAM from the mem_* arrays), and verifies the read with a tag
+# compare against the stored key to detect hash collisions. Lookup
+# latency is a constant 1 cycle regardless of DEPTH.
+#
+# Known limitation: this is a direct-mapped hash table (no chaining /
+# no multi-way associativity). A control-plane write whose key hashes
+# to an already-occupied slot silently overwrites that slot. Choose
+# DEPTH with enough headroom over the expected live-entry count to
+# keep collision probability low; a d-way associative version is the
+# natural follow-up if collisions become a problem in practice.
+
+def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path):
+    idx_w = max(1, math.ceil(math.log2(depth))) if depth > 1 else 1
+
+    key_fields = [(_field_basename(k.field), _key_width(k.field, fwmap)) for k in table.keys]
+    key_w      = sum(w for _, w in key_fields)
+    n_chunks   = max(1, math.ceil(key_w / idx_w))
+    padded_w   = n_chunks * idx_w
+
+    default_act_name = (table.default_action or 'NoAction').rstrip('()')
+    default_act_id   = act_ids.get(default_act_name, 0)
+
+    def _concat(prefix):
+        # table.keys order, MSB-first concat — must match between write-side and read-side calls
+        return ', '.join(f'{prefix}{fname}' for fname, _ in reversed(key_fields))
+
+    with open(output_path, 'w') as f:
+        f.write(f'module {table.name}_table #(\n')
+        f.write(f'  parameter int DEPTH = {depth}\n')
+        f.write(') (\n')
+        f.write('  input  logic clk,\n')
+        f.write('  input  logic rst_n,\n')
+
+        f.write('\n  // Lookup key (combinational)\n')
+        for fname, w in key_fields:
+            f.write(f'  input  logic [{w-1}:0] lkp_{fname},\n')
+
+        f.write('\n  // Lookup result (registered — 1 cycle after lkp_* is presented)\n')
+        f.write('  output logic        hit,\n')
+        f.write(f'  output logic [{act_id_w-1}:0] action_id,\n')
+        for pname, pw in params:
+            f.write(f'  output logic [{pw-1}:0] p_{pname},\n')
+
+        f.write('\n  // Control-plane write port (synchronous)\n')
+        f.write('  input  logic        cp_wr_en,\n')
+        f.write(f'  input  logic [{idx_w-1}:0] cp_wr_idx,  // unused: exact-match tables self-address via hash(key)\n')
+        for fname, w in key_fields:
+            f.write(f'  input  logic [{w-1}:0] cp_wr_key_{fname},\n')
+        f.write(f'  input  logic [{act_id_w-1}:0] cp_wr_action')
+        if params:
+            f.write(',\n')
+            for i, (pname, pw) in enumerate(params):
+                comma = ',' if i < len(params) - 1 else ''
+                f.write(f'  input  logic [{pw-1}:0] cp_wr_p_{pname}{comma}\n')
+        else:
+            f.write('\n')
+        f.write(');\n\n')
+
+        f.write('  // Entry storage (synthesizes to block RAM)\n')
+        f.write('  logic        mem_valid  [0:DEPTH-1];\n')
+        for fname, w in key_fields:
+            f.write(f'  logic [{w-1}:0] mem_key_{fname}[0:DEPTH-1];\n')
+        f.write(f'  logic [{act_id_w-1}:0] mem_action[0:DEPTH-1];\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] mem_p_{pname}[0:DEPTH-1];\n')
+        f.write('\n')
+
+        f.write('  integer _i;\n')
+        f.write('  initial begin\n')
+        f.write('    for (_i = 0; _i < DEPTH; _i = _i + 1)\n')
+        f.write('      mem_valid[_i] = 1\'b0;\n')
+        f.write('  end\n\n')
+
+        f.write(f'  // XOR-fold hash: {key_w}-bit key -> {idx_w}-bit BRAM address\n')
+        f.write(f'  function automatic logic [{idx_w-1}:0] hash_key(input logic [{padded_w-1}:0] k);\n')
+        f.write(f'    logic [{idx_w-1}:0] h;\n')
+        f.write('    integer c;\n')
+        f.write('    begin\n')
+        f.write("      h = '0;\n")
+        f.write(f'      for (c = 0; c < {n_chunks}; c = c + 1)\n')
+        f.write(f'        h = h ^ k[c*{idx_w} +: {idx_w}];\n')
+        f.write('      hash_key = h;\n')
+        f.write('    end\n')
+        f.write('  endfunction\n\n')
+
+        f.write(f'  logic [{padded_w-1}:0] wr_key_concat;\n')
+        f.write(f'  assign wr_key_concat = {{{padded_w - key_w}\'d0, {_concat("cp_wr_key_")}}};\n' if padded_w > key_w
+                else f'  assign wr_key_concat = {{{_concat("cp_wr_key_")}}};\n')
+        f.write(f'  logic [{idx_w-1}:0] wr_addr;\n')
+        f.write('  assign wr_addr = hash_key(wr_key_concat);\n\n')
+
+        f.write(f'  logic [{padded_w-1}:0] lkp_key_concat;\n')
+        f.write(f'  assign lkp_key_concat = {{{padded_w - key_w}\'d0, {_concat("lkp_")}}};\n' if padded_w > key_w
+                else f'  assign lkp_key_concat = {{{_concat("lkp_")}}};\n')
+        f.write(f'  logic [{idx_w-1}:0] lkp_addr;\n')
+        f.write('  assign lkp_addr = hash_key(lkp_key_concat);\n\n')
+
+        f.write('  // Synchronous write (control plane)\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (cp_wr_en) begin\n')
+        f.write('      mem_valid[wr_addr]  <= 1\'b1;\n')
+        for fname, _ in key_fields:
+            f.write(f'      mem_key_{fname}[wr_addr] <= cp_wr_key_{fname};\n')
+        f.write('      mem_action[wr_addr] <= cp_wr_action;\n')
+        for pname, _ in params:
+            f.write(f'      mem_p_{pname}[wr_addr] <= cp_wr_p_{pname};\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        f.write('  // Registered BRAM read + tag-compare stage (1-cycle lookup latency)\n')
+        f.write('  logic        valid_r;\n')
+        for fname, w in key_fields:
+            f.write(f'  logic [{w-1}:0] key_r_{fname};\n')
+            f.write(f'  logic [{w-1}:0] mem_key_r_{fname};\n')
+        f.write(f'  logic [{act_id_w-1}:0] action_id_r;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] p_r_{pname};\n')
+        f.write('\n')
+
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write('      valid_r <= 1\'b0;\n')
+        f.write('    end else begin\n')
+        f.write('      valid_r     <= mem_valid[lkp_addr];\n')
+        for fname, _ in key_fields:
+            f.write(f'      key_r_{fname}     <= lkp_{fname};\n')
+            f.write(f'      mem_key_r_{fname} <= mem_key_{fname}[lkp_addr];\n')
+        f.write('      action_id_r <= mem_action[lkp_addr];\n')
+        for pname, _ in params:
+            f.write(f'      p_r_{pname} <= mem_p_{pname}[lkp_addr];\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        tag_match = ' && '.join(f'(mem_key_r_{fname} == key_r_{fname})' for fname, _ in key_fields) or "1'b1"
+        f.write(f'  assign hit       = valid_r && {tag_match};\n')
+        f.write(f'  assign action_id = hit ? action_id_r : {act_id_w}\'d{default_act_id};\n')
+        for pname, pw in params:
+            f.write(f'  assign p_{pname} = hit ? p_r_{pname} : {pw}\'b0;\n')
+        f.write('\n')
+
         f.write('  // Action ID encoding:\n')
         for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):
             f.write(f'  //   {aid} = {aname}\n')

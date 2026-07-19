@@ -93,6 +93,7 @@ module processing_generated (
   // Table hit outputs
   assign ipv4_lpm_hit_out = ipv4_lpm_hit;
 
+  // ---- Pipeline stage 0 ----
   always_comb begin
     drop = 0;
 

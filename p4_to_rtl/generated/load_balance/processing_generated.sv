@@ -109,6 +109,150 @@ module processing_generated (
   // Metadata shadow locals (writable copies of metadata inputs)
   logic [13:0] meta_ecmp_select_w;
 
+  // Pipeline-stage forwarding registers (exact-match table boundary)
+  logic valid_s1;
+  logic out_ethernet_valid_s1;
+  logic ethernet_valid_s1;
+  logic out_ipv4_valid_s1;
+  logic ipv4_valid_s1;
+  logic out_tcp_valid_s1;
+  logic tcp_valid_s1;
+  logic [47:0] out_ethernet_dstAddr_s1;
+  logic [47:0] ethernet_dstAddr_s1;
+  logic [47:0] out_ethernet_srcAddr_s1;
+  logic [47:0] ethernet_srcAddr_s1;
+  logic [15:0] out_ethernet_etherType_s1;
+  logic [15:0] ethernet_etherType_s1;
+  logic [3:0] out_ipv4_version_s1;
+  logic [3:0] ipv4_version_s1;
+  logic [3:0] out_ipv4_ihl_s1;
+  logic [3:0] ipv4_ihl_s1;
+  logic [7:0] out_ipv4_diffserv_s1;
+  logic [7:0] ipv4_diffserv_s1;
+  logic [15:0] out_ipv4_totalLen_s1;
+  logic [15:0] ipv4_totalLen_s1;
+  logic [15:0] out_ipv4_identification_s1;
+  logic [15:0] ipv4_identification_s1;
+  logic [2:0] out_ipv4_flags_s1;
+  logic [2:0] ipv4_flags_s1;
+  logic [12:0] out_ipv4_fragOffset_s1;
+  logic [12:0] ipv4_fragOffset_s1;
+  logic [7:0] out_ipv4_ttl_s1;
+  logic [7:0] ipv4_ttl_s1;
+  logic [7:0] out_ipv4_protocol_s1;
+  logic [7:0] ipv4_protocol_s1;
+  logic [15:0] out_ipv4_hdrChecksum_s1;
+  logic [15:0] ipv4_hdrChecksum_s1;
+  logic [31:0] out_ipv4_srcAddr_s1;
+  logic [31:0] ipv4_srcAddr_s1;
+  logic [31:0] out_ipv4_dstAddr_s1;
+  logic [31:0] ipv4_dstAddr_s1;
+  logic [15:0] out_tcp_srcPort_s1;
+  logic [15:0] tcp_srcPort_s1;
+  logic [15:0] out_tcp_dstPort_s1;
+  logic [15:0] tcp_dstPort_s1;
+  logic [31:0] out_tcp_seqNo_s1;
+  logic [31:0] tcp_seqNo_s1;
+  logic [31:0] out_tcp_ackNo_s1;
+  logic [31:0] tcp_ackNo_s1;
+  logic [3:0] out_tcp_dataOffset_s1;
+  logic [3:0] tcp_dataOffset_s1;
+  logic [2:0] out_tcp_res_s1;
+  logic [2:0] tcp_res_s1;
+  logic [2:0] out_tcp_ecn_s1;
+  logic [2:0] tcp_ecn_s1;
+  logic [5:0] out_tcp_ctrl_s1;
+  logic [5:0] tcp_ctrl_s1;
+  logic [15:0] out_tcp_window_s1;
+  logic [15:0] tcp_window_s1;
+  logic [15:0] out_tcp_checksum_s1;
+  logic [15:0] tcp_checksum_s1;
+  logic [15:0] out_tcp_urgentPtr_s1;
+  logic [15:0] tcp_urgentPtr_s1;
+  logic [13:0] meta_ecmp_select_w_s1;
+  logic [1:0] _padding_0_s1;
+  logic [31:0] tmp_s1;
+  logic [31:0] tmp_0_s1;
+  logic [7:0] tmp_1_s1;
+  logic [15:0] tmp_2_s1;
+  logic [15:0] tmp_3_s1;
+  logic [8:0] out_std_meta_egress_spec_s1;
+  logic drop_s1;
+  logic __stage_cond_0_r;
+
+  // Stage-0 working copies (pool A: out_*/drop kept separate from
+  // the real output ports, which stage 1 alone drives)
+  logic out_ethernet_valid__st0;
+  logic out_ipv4_valid__st0;
+  logic out_tcp_valid__st0;
+  logic [47:0] out_ethernet_dstAddr__st0;
+  logic [47:0] out_ethernet_srcAddr__st0;
+  logic [15:0] out_ethernet_etherType__st0;
+  logic [3:0] out_ipv4_version__st0;
+  logic [3:0] out_ipv4_ihl__st0;
+  logic [7:0] out_ipv4_diffserv__st0;
+  logic [15:0] out_ipv4_totalLen__st0;
+  logic [15:0] out_ipv4_identification__st0;
+  logic [2:0] out_ipv4_flags__st0;
+  logic [12:0] out_ipv4_fragOffset__st0;
+  logic [7:0] out_ipv4_ttl__st0;
+  logic [7:0] out_ipv4_protocol__st0;
+  logic [15:0] out_ipv4_hdrChecksum__st0;
+  logic [31:0] out_ipv4_srcAddr__st0;
+  logic [31:0] out_ipv4_dstAddr__st0;
+  logic [15:0] out_tcp_srcPort__st0;
+  logic [15:0] out_tcp_dstPort__st0;
+  logic [31:0] out_tcp_seqNo__st0;
+  logic [31:0] out_tcp_ackNo__st0;
+  logic [3:0] out_tcp_dataOffset__st0;
+  logic [2:0] out_tcp_res__st0;
+  logic [2:0] out_tcp_ecn__st0;
+  logic [5:0] out_tcp_ctrl__st0;
+  logic [15:0] out_tcp_window__st0;
+  logic [15:0] out_tcp_checksum__st0;
+  logic [15:0] out_tcp_urgentPtr__st0;
+  logic [8:0] out_std_meta_egress_spec__st0;
+  logic drop__st0;
+
+  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr
+  // and std_meta reads, seeded from the stage-0 forwarding regs)
+  logic [1:0] _padding_0__st1;
+  logic [31:0] tmp__st1;
+  logic [31:0] tmp_0__st1;
+  logic [7:0] tmp_1__st1;
+  logic [15:0] tmp_2__st1;
+  logic [15:0] tmp_3__st1;
+  logic [13:0] meta_ecmp_select_w__st1;
+  logic ethernet_valid__st1;
+  logic ipv4_valid__st1;
+  logic tcp_valid__st1;
+  logic [47:0] ethernet_dstAddr__st1;
+  logic [47:0] ethernet_srcAddr__st1;
+  logic [15:0] ethernet_etherType__st1;
+  logic [3:0] ipv4_version__st1;
+  logic [3:0] ipv4_ihl__st1;
+  logic [7:0] ipv4_diffserv__st1;
+  logic [15:0] ipv4_totalLen__st1;
+  logic [15:0] ipv4_identification__st1;
+  logic [2:0] ipv4_flags__st1;
+  logic [12:0] ipv4_fragOffset__st1;
+  logic [7:0] ipv4_ttl__st1;
+  logic [7:0] ipv4_protocol__st1;
+  logic [15:0] ipv4_hdrChecksum__st1;
+  logic [31:0] ipv4_srcAddr__st1;
+  logic [31:0] ipv4_dstAddr__st1;
+  logic [15:0] tcp_srcPort__st1;
+  logic [15:0] tcp_dstPort__st1;
+  logic [31:0] tcp_seqNo__st1;
+  logic [31:0] tcp_ackNo__st1;
+  logic [3:0] tcp_dataOffset__st1;
+  logic [2:0] tcp_res__st1;
+  logic [2:0] tcp_ecn__st1;
+  logic [5:0] tcp_ctrl__st1;
+  logic [15:0] tcp_window__st1;
+  logic [15:0] tcp_checksum__st1;
+  logic [15:0] tcp_urgentPtr__st1;
+
   // Table lookup result wires
   logic        ecmp_group_hit;
   logic [1:0] ecmp_group_act_id;
@@ -160,8 +304,9 @@ module processing_generated (
   assign ecmp_group_hit_out = ecmp_group_hit;
   assign ecmp_nhop_hit_out = ecmp_nhop_hit;
 
+  // ---- Pipeline stage 0 (combinational, feeds the exact-match table) ----
   always_comb begin
-    drop = 0;
+    drop__st0 = 0;
     _padding_0 = 2'b0;
     tmp = 32'b0;
     tmp_0 = 32'b0;
@@ -173,49 +318,49 @@ module processing_generated (
     meta_ecmp_select_w = meta_ecmp_select;
 
     // Standard metadata defaults
-    out_std_meta_egress_spec = 9'b0;
+    out_std_meta_egress_spec__st0 = 9'b0;
 
     // Header valid flag pass-through defaults
-    out_ethernet_valid = ethernet_valid;
-    out_ipv4_valid = ipv4_valid;
-    out_tcp_valid = tcp_valid;
+    out_ethernet_valid__st0 = ethernet_valid;
+    out_ipv4_valid__st0 = ipv4_valid;
+    out_tcp_valid__st0 = tcp_valid;
 
     // Header field pass-through defaults
-    out_ethernet_dstAddr = ethernet_dstAddr;
-    out_ethernet_srcAddr = ethernet_srcAddr;
-    out_ethernet_etherType = ethernet_etherType;
-    out_ipv4_version = ipv4_version;
-    out_ipv4_ihl = ipv4_ihl;
-    out_ipv4_diffserv = ipv4_diffserv;
-    out_ipv4_totalLen = ipv4_totalLen;
-    out_ipv4_identification = ipv4_identification;
-    out_ipv4_flags = ipv4_flags;
-    out_ipv4_fragOffset = ipv4_fragOffset;
-    out_ipv4_ttl = ipv4_ttl;
-    out_ipv4_protocol = ipv4_protocol;
-    out_ipv4_hdrChecksum = ipv4_hdrChecksum;
-    out_ipv4_srcAddr = ipv4_srcAddr;
-    out_ipv4_dstAddr = ipv4_dstAddr;
-    out_tcp_srcPort = tcp_srcPort;
-    out_tcp_dstPort = tcp_dstPort;
-    out_tcp_seqNo = tcp_seqNo;
-    out_tcp_ackNo = tcp_ackNo;
-    out_tcp_dataOffset = tcp_dataOffset;
-    out_tcp_res = tcp_res;
-    out_tcp_ecn = tcp_ecn;
-    out_tcp_ctrl = tcp_ctrl;
-    out_tcp_window = tcp_window;
-    out_tcp_checksum = tcp_checksum;
-    out_tcp_urgentPtr = tcp_urgentPtr;
+    out_ethernet_dstAddr__st0 = ethernet_dstAddr;
+    out_ethernet_srcAddr__st0 = ethernet_srcAddr;
+    out_ethernet_etherType__st0 = ethernet_etherType;
+    out_ipv4_version__st0 = ipv4_version;
+    out_ipv4_ihl__st0 = ipv4_ihl;
+    out_ipv4_diffserv__st0 = ipv4_diffserv;
+    out_ipv4_totalLen__st0 = ipv4_totalLen;
+    out_ipv4_identification__st0 = ipv4_identification;
+    out_ipv4_flags__st0 = ipv4_flags;
+    out_ipv4_fragOffset__st0 = ipv4_fragOffset;
+    out_ipv4_ttl__st0 = ipv4_ttl;
+    out_ipv4_protocol__st0 = ipv4_protocol;
+    out_ipv4_hdrChecksum__st0 = ipv4_hdrChecksum;
+    out_ipv4_srcAddr__st0 = ipv4_srcAddr;
+    out_ipv4_dstAddr__st0 = ipv4_dstAddr;
+    out_tcp_srcPort__st0 = tcp_srcPort;
+    out_tcp_dstPort__st0 = tcp_dstPort;
+    out_tcp_seqNo__st0 = tcp_seqNo;
+    out_tcp_ackNo__st0 = tcp_ackNo;
+    out_tcp_dataOffset__st0 = tcp_dataOffset;
+    out_tcp_res__st0 = tcp_res;
+    out_tcp_ecn__st0 = tcp_ecn;
+    out_tcp_ctrl__st0 = tcp_ctrl;
+    out_tcp_window__st0 = tcp_window;
+    out_tcp_checksum__st0 = tcp_checksum;
+    out_tcp_urgentPtr__st0 = tcp_urgentPtr;
 
-    // apply block
+    // apply block (stage 0 — before the exact-match table split)
     if ((ipv4_valid && (ipv4_ttl > 'h00))) begin
       // ecmp_group.apply()
       if (ecmp_group_hit) begin
         unique case (ecmp_group_act_id)
           2'd0: ; // NoAction
-          2'd1: begin // drop
-            drop = 1;
+          2'd1: begin // drop__st0
+            drop__st0 = 1;
           end
           2'd2: begin // set_ecmp_select
             tmp = ipv4_srcAddr;
@@ -229,6 +374,159 @@ module processing_generated (
           default: ; // default = NoAction
         endcase
       end
+    end
+  end
+
+  // Forward stage-0 state into stage-1 registers (1-cycle boundary —
+  // matches the exact-match table's registered hit/action_id latency)
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      valid_s1 <= 1'b0;
+    end else begin
+      valid_s1 <= valid_in;
+      drop_s1 <= drop__st0;
+      _padding_0_s1 <= _padding_0;
+      tmp_s1 <= tmp;
+      tmp_0_s1 <= tmp_0;
+      tmp_1_s1 <= tmp_1;
+      tmp_2_s1 <= tmp_2;
+      tmp_3_s1 <= tmp_3;
+      meta_ecmp_select_w_s1 <= meta_ecmp_select_w;
+      out_ethernet_valid_s1 <= out_ethernet_valid__st0;
+      ethernet_valid_s1 <= ethernet_valid;
+      out_ipv4_valid_s1 <= out_ipv4_valid__st0;
+      ipv4_valid_s1 <= ipv4_valid;
+      out_tcp_valid_s1 <= out_tcp_valid__st0;
+      tcp_valid_s1 <= tcp_valid;
+      out_ethernet_dstAddr_s1 <= out_ethernet_dstAddr__st0;
+      ethernet_dstAddr_s1 <= ethernet_dstAddr;
+      out_ethernet_srcAddr_s1 <= out_ethernet_srcAddr__st0;
+      ethernet_srcAddr_s1 <= ethernet_srcAddr;
+      out_ethernet_etherType_s1 <= out_ethernet_etherType__st0;
+      ethernet_etherType_s1 <= ethernet_etherType;
+      out_ipv4_version_s1 <= out_ipv4_version__st0;
+      ipv4_version_s1 <= ipv4_version;
+      out_ipv4_ihl_s1 <= out_ipv4_ihl__st0;
+      ipv4_ihl_s1 <= ipv4_ihl;
+      out_ipv4_diffserv_s1 <= out_ipv4_diffserv__st0;
+      ipv4_diffserv_s1 <= ipv4_diffserv;
+      out_ipv4_totalLen_s1 <= out_ipv4_totalLen__st0;
+      ipv4_totalLen_s1 <= ipv4_totalLen;
+      out_ipv4_identification_s1 <= out_ipv4_identification__st0;
+      ipv4_identification_s1 <= ipv4_identification;
+      out_ipv4_flags_s1 <= out_ipv4_flags__st0;
+      ipv4_flags_s1 <= ipv4_flags;
+      out_ipv4_fragOffset_s1 <= out_ipv4_fragOffset__st0;
+      ipv4_fragOffset_s1 <= ipv4_fragOffset;
+      out_ipv4_ttl_s1 <= out_ipv4_ttl__st0;
+      ipv4_ttl_s1 <= ipv4_ttl;
+      out_ipv4_protocol_s1 <= out_ipv4_protocol__st0;
+      ipv4_protocol_s1 <= ipv4_protocol;
+      out_ipv4_hdrChecksum_s1 <= out_ipv4_hdrChecksum__st0;
+      ipv4_hdrChecksum_s1 <= ipv4_hdrChecksum;
+      out_ipv4_srcAddr_s1 <= out_ipv4_srcAddr__st0;
+      ipv4_srcAddr_s1 <= ipv4_srcAddr;
+      out_ipv4_dstAddr_s1 <= out_ipv4_dstAddr__st0;
+      ipv4_dstAddr_s1 <= ipv4_dstAddr;
+      out_tcp_srcPort_s1 <= out_tcp_srcPort__st0;
+      tcp_srcPort_s1 <= tcp_srcPort;
+      out_tcp_dstPort_s1 <= out_tcp_dstPort__st0;
+      tcp_dstPort_s1 <= tcp_dstPort;
+      out_tcp_seqNo_s1 <= out_tcp_seqNo__st0;
+      tcp_seqNo_s1 <= tcp_seqNo;
+      out_tcp_ackNo_s1 <= out_tcp_ackNo__st0;
+      tcp_ackNo_s1 <= tcp_ackNo;
+      out_tcp_dataOffset_s1 <= out_tcp_dataOffset__st0;
+      tcp_dataOffset_s1 <= tcp_dataOffset;
+      out_tcp_res_s1 <= out_tcp_res__st0;
+      tcp_res_s1 <= tcp_res;
+      out_tcp_ecn_s1 <= out_tcp_ecn__st0;
+      tcp_ecn_s1 <= tcp_ecn;
+      out_tcp_ctrl_s1 <= out_tcp_ctrl__st0;
+      tcp_ctrl_s1 <= tcp_ctrl;
+      out_tcp_window_s1 <= out_tcp_window__st0;
+      tcp_window_s1 <= tcp_window;
+      out_tcp_checksum_s1 <= out_tcp_checksum__st0;
+      tcp_checksum_s1 <= tcp_checksum;
+      out_tcp_urgentPtr_s1 <= out_tcp_urgentPtr__st0;
+      tcp_urgentPtr_s1 <= tcp_urgentPtr;
+      out_std_meta_egress_spec_s1 <= out_std_meta_egress_spec__st0;
+      __stage_cond_0_r <= ((ipv4_valid && (ipv4_ttl > 'h00)));
+    end
+  end
+
+  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----
+  always_comb begin
+    drop = drop_s1;
+    _padding_0__st1 = _padding_0_s1;
+    tmp__st1 = tmp_s1;
+    tmp_0__st1 = tmp_0_s1;
+    tmp_1__st1 = tmp_1_s1;
+    tmp_2__st1 = tmp_2_s1;
+    tmp_3__st1 = tmp_3_s1;
+    meta_ecmp_select_w__st1 = meta_ecmp_select_w_s1;
+    out_ethernet_valid = out_ethernet_valid_s1;
+    ethernet_valid__st1 = ethernet_valid_s1;
+    out_ipv4_valid = out_ipv4_valid_s1;
+    ipv4_valid__st1 = ipv4_valid_s1;
+    out_tcp_valid = out_tcp_valid_s1;
+    tcp_valid__st1 = tcp_valid_s1;
+    out_ethernet_dstAddr = out_ethernet_dstAddr_s1;
+    ethernet_dstAddr__st1 = ethernet_dstAddr_s1;
+    out_ethernet_srcAddr = out_ethernet_srcAddr_s1;
+    ethernet_srcAddr__st1 = ethernet_srcAddr_s1;
+    out_ethernet_etherType = out_ethernet_etherType_s1;
+    ethernet_etherType__st1 = ethernet_etherType_s1;
+    out_ipv4_version = out_ipv4_version_s1;
+    ipv4_version__st1 = ipv4_version_s1;
+    out_ipv4_ihl = out_ipv4_ihl_s1;
+    ipv4_ihl__st1 = ipv4_ihl_s1;
+    out_ipv4_diffserv = out_ipv4_diffserv_s1;
+    ipv4_diffserv__st1 = ipv4_diffserv_s1;
+    out_ipv4_totalLen = out_ipv4_totalLen_s1;
+    ipv4_totalLen__st1 = ipv4_totalLen_s1;
+    out_ipv4_identification = out_ipv4_identification_s1;
+    ipv4_identification__st1 = ipv4_identification_s1;
+    out_ipv4_flags = out_ipv4_flags_s1;
+    ipv4_flags__st1 = ipv4_flags_s1;
+    out_ipv4_fragOffset = out_ipv4_fragOffset_s1;
+    ipv4_fragOffset__st1 = ipv4_fragOffset_s1;
+    out_ipv4_ttl = out_ipv4_ttl_s1;
+    ipv4_ttl__st1 = ipv4_ttl_s1;
+    out_ipv4_protocol = out_ipv4_protocol_s1;
+    ipv4_protocol__st1 = ipv4_protocol_s1;
+    out_ipv4_hdrChecksum = out_ipv4_hdrChecksum_s1;
+    ipv4_hdrChecksum__st1 = ipv4_hdrChecksum_s1;
+    out_ipv4_srcAddr = out_ipv4_srcAddr_s1;
+    ipv4_srcAddr__st1 = ipv4_srcAddr_s1;
+    out_ipv4_dstAddr = out_ipv4_dstAddr_s1;
+    ipv4_dstAddr__st1 = ipv4_dstAddr_s1;
+    out_tcp_srcPort = out_tcp_srcPort_s1;
+    tcp_srcPort__st1 = tcp_srcPort_s1;
+    out_tcp_dstPort = out_tcp_dstPort_s1;
+    tcp_dstPort__st1 = tcp_dstPort_s1;
+    out_tcp_seqNo = out_tcp_seqNo_s1;
+    tcp_seqNo__st1 = tcp_seqNo_s1;
+    out_tcp_ackNo = out_tcp_ackNo_s1;
+    tcp_ackNo__st1 = tcp_ackNo_s1;
+    out_tcp_dataOffset = out_tcp_dataOffset_s1;
+    tcp_dataOffset__st1 = tcp_dataOffset_s1;
+    out_tcp_res = out_tcp_res_s1;
+    tcp_res__st1 = tcp_res_s1;
+    out_tcp_ecn = out_tcp_ecn_s1;
+    tcp_ecn__st1 = tcp_ecn_s1;
+    out_tcp_ctrl = out_tcp_ctrl_s1;
+    tcp_ctrl__st1 = tcp_ctrl_s1;
+    out_tcp_window = out_tcp_window_s1;
+    tcp_window__st1 = tcp_window_s1;
+    out_tcp_checksum = out_tcp_checksum_s1;
+    tcp_checksum__st1 = tcp_checksum_s1;
+    out_tcp_urgentPtr = out_tcp_urgentPtr_s1;
+    tcp_urgentPtr__st1 = tcp_urgentPtr_s1;
+    out_std_meta_egress_spec = out_std_meta_egress_spec_s1;
+
+    // apply block (stage 1 — after the exact-match table split)
+    if (__stage_cond_0_r) begin
       // ecmp_nhop.apply()
       if (ecmp_nhop_hit) begin
         unique case (ecmp_nhop_act_id)
@@ -240,7 +538,7 @@ module processing_generated (
             out_ethernet_dstAddr = ecmp_nhop_p_nhop_dmac;
             out_ipv4_dstAddr = ecmp_nhop_p_nhop_ipv4;
             out_std_meta_egress_spec = ecmp_nhop_p_port;
-            out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
+            out_ipv4_ttl = ((ipv4_ttl__st1 + 'hFF) & 'hFF);
           end
           default: ; // default = NoAction
         endcase
@@ -250,7 +548,7 @@ module processing_generated (
 
   always_ff @(posedge clk) begin
     if (!rst_n) valid_out <= 0;
-    else        valid_out <= valid_in;
+    else        valid_out <= valid_s1;
   end
 
 endmodule

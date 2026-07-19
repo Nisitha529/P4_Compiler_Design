@@ -130,6 +130,213 @@ module processing_generated (
   logic [15:0] table_key_dport;
   logic [15:0] table_key_sport;
 
+  // Pipeline-stage forwarding registers (exact-match table boundary)
+  logic valid_s1;
+  logic out_eth_valid_s1;
+  logic eth_valid_s1;
+  logic out_new_vlan_valid_s1;
+  logic new_vlan_valid_s1;
+  logic out_vlan_valid_s1;
+  logic vlan_valid_s1;
+  logic out_ipv4_valid_s1;
+  logic ipv4_valid_s1;
+  logic out_ipv4opt_valid_s1;
+  logic ipv4opt_valid_s1;
+  logic out_tcp_valid_s1;
+  logic tcp_valid_s1;
+  logic out_tcpopt_valid_s1;
+  logic tcpopt_valid_s1;
+  logic out_udp_valid_s1;
+  logic udp_valid_s1;
+  logic [47:0] out_eth_dmac_s1;
+  logic [47:0] eth_dmac_s1;
+  logic [47:0] out_eth_smac_s1;
+  logic [47:0] eth_smac_s1;
+  logic [15:0] out_eth_type_s1;
+  logic [15:0] eth_type_s1;
+  logic [2:0] out_new_vlan_pcp_s1;
+  logic [2:0] new_vlan_pcp_s1;
+  logic [0:0] out_new_vlan_cfi_s1;
+  logic [0:0] new_vlan_cfi_s1;
+  logic [11:0] out_new_vlan_vid_s1;
+  logic [11:0] new_vlan_vid_s1;
+  logic [15:0] out_new_vlan_tpid_s1;
+  logic [15:0] new_vlan_tpid_s1;
+  logic [2:0] out_vlan_pcp_s1;
+  logic [2:0] vlan_pcp_s1;
+  logic [0:0] out_vlan_cfi_s1;
+  logic [0:0] vlan_cfi_s1;
+  logic [11:0] out_vlan_vid_s1;
+  logic [11:0] vlan_vid_s1;
+  logic [15:0] out_vlan_tpid_s1;
+  logic [15:0] vlan_tpid_s1;
+  logic [3:0] out_ipv4_version_s1;
+  logic [3:0] ipv4_version_s1;
+  logic [3:0] out_ipv4_hdr_len_s1;
+  logic [3:0] ipv4_hdr_len_s1;
+  logic [7:0] out_ipv4_tos_s1;
+  logic [7:0] ipv4_tos_s1;
+  logic [15:0] out_ipv4_length_s1;
+  logic [15:0] ipv4_length_s1;
+  logic [15:0] out_ipv4_id_s1;
+  logic [15:0] ipv4_id_s1;
+  logic [2:0] out_ipv4_flags_s1;
+  logic [2:0] ipv4_flags_s1;
+  logic [12:0] out_ipv4_offset_s1;
+  logic [12:0] ipv4_offset_s1;
+  logic [7:0] out_ipv4_ttl_s1;
+  logic [7:0] ipv4_ttl_s1;
+  logic [7:0] out_ipv4_protocol_s1;
+  logic [7:0] ipv4_protocol_s1;
+  logic [15:0] out_ipv4_hdr_chk_s1;
+  logic [15:0] ipv4_hdr_chk_s1;
+  logic [31:0] out_ipv4_src_s1;
+  logic [31:0] ipv4_src_s1;
+  logic [31:0] out_ipv4_dst_s1;
+  logic [31:0] ipv4_dst_s1;
+  logic [319:0] out_ipv4opt_options_s1;
+  logic [319:0] ipv4opt_options_s1;
+  logic [15:0] out_tcp_src_port_s1;
+  logic [15:0] tcp_src_port_s1;
+  logic [15:0] out_tcp_dst_port_s1;
+  logic [15:0] tcp_dst_port_s1;
+  logic [31:0] out_tcp_seqNum_s1;
+  logic [31:0] tcp_seqNum_s1;
+  logic [31:0] out_tcp_ackNum_s1;
+  logic [31:0] tcp_ackNum_s1;
+  logic [3:0] out_tcp_dataOffset_s1;
+  logic [3:0] tcp_dataOffset_s1;
+  logic [5:0] out_tcp_resv_s1;
+  logic [5:0] tcp_resv_s1;
+  logic [5:0] out_tcp_flags_s1;
+  logic [5:0] tcp_flags_s1;
+  logic [15:0] out_tcp_window_s1;
+  logic [15:0] tcp_window_s1;
+  logic [15:0] out_tcp_checksum_s1;
+  logic [15:0] tcp_checksum_s1;
+  logic [15:0] out_tcp_urgPtr_s1;
+  logic [15:0] tcp_urgPtr_s1;
+  logic [319:0] out_tcpopt_options_s1;
+  logic [319:0] tcpopt_options_s1;
+  logic [15:0] out_udp_src_port_s1;
+  logic [15:0] udp_src_port_s1;
+  logic [15:0] out_udp_dst_port_s1;
+  logic [15:0] udp_dst_port_s1;
+  logic [15:0] out_udp_length_s1;
+  logic [15:0] udp_length_s1;
+  logic [15:0] out_udp_checksum_s1;
+  logic [15:0] udp_checksum_s1;
+  logic [0:0] hit_s1;
+  logic [15:0] table_key_dport_s1;
+  logic [15:0] table_key_sport_s1;
+  logic drop_s1;
+  logic __stage_cond_1_r;
+  logic __stage_cond_0_r;
+
+  // Stage-0 working copies (pool A: out_*/drop kept separate from
+  // the real output ports, which stage 1 alone drives)
+  logic out_eth_valid__st0;
+  logic out_new_vlan_valid__st0;
+  logic out_vlan_valid__st0;
+  logic out_ipv4_valid__st0;
+  logic out_ipv4opt_valid__st0;
+  logic out_tcp_valid__st0;
+  logic out_tcpopt_valid__st0;
+  logic out_udp_valid__st0;
+  logic [47:0] out_eth_dmac__st0;
+  logic [47:0] out_eth_smac__st0;
+  logic [15:0] out_eth_type__st0;
+  logic [2:0] out_new_vlan_pcp__st0;
+  logic [0:0] out_new_vlan_cfi__st0;
+  logic [11:0] out_new_vlan_vid__st0;
+  logic [15:0] out_new_vlan_tpid__st0;
+  logic [2:0] out_vlan_pcp__st0;
+  logic [0:0] out_vlan_cfi__st0;
+  logic [11:0] out_vlan_vid__st0;
+  logic [15:0] out_vlan_tpid__st0;
+  logic [3:0] out_ipv4_version__st0;
+  logic [3:0] out_ipv4_hdr_len__st0;
+  logic [7:0] out_ipv4_tos__st0;
+  logic [15:0] out_ipv4_length__st0;
+  logic [15:0] out_ipv4_id__st0;
+  logic [2:0] out_ipv4_flags__st0;
+  logic [12:0] out_ipv4_offset__st0;
+  logic [7:0] out_ipv4_ttl__st0;
+  logic [7:0] out_ipv4_protocol__st0;
+  logic [15:0] out_ipv4_hdr_chk__st0;
+  logic [31:0] out_ipv4_src__st0;
+  logic [31:0] out_ipv4_dst__st0;
+  logic [319:0] out_ipv4opt_options__st0;
+  logic [15:0] out_tcp_src_port__st0;
+  logic [15:0] out_tcp_dst_port__st0;
+  logic [31:0] out_tcp_seqNum__st0;
+  logic [31:0] out_tcp_ackNum__st0;
+  logic [3:0] out_tcp_dataOffset__st0;
+  logic [5:0] out_tcp_resv__st0;
+  logic [5:0] out_tcp_flags__st0;
+  logic [15:0] out_tcp_window__st0;
+  logic [15:0] out_tcp_checksum__st0;
+  logic [15:0] out_tcp_urgPtr__st0;
+  logic [319:0] out_tcpopt_options__st0;
+  logic [15:0] out_udp_src_port__st0;
+  logic [15:0] out_udp_dst_port__st0;
+  logic [15:0] out_udp_length__st0;
+  logic [15:0] out_udp_checksum__st0;
+  logic drop__st0;
+
+  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr
+  // and std_meta reads, seeded from the stage-0 forwarding regs)
+  logic [0:0] hit__st1;
+  logic [15:0] table_key_dport__st1;
+  logic [15:0] table_key_sport__st1;
+  logic eth_valid__st1;
+  logic new_vlan_valid__st1;
+  logic vlan_valid__st1;
+  logic ipv4_valid__st1;
+  logic ipv4opt_valid__st1;
+  logic tcp_valid__st1;
+  logic tcpopt_valid__st1;
+  logic udp_valid__st1;
+  logic [47:0] eth_dmac__st1;
+  logic [47:0] eth_smac__st1;
+  logic [15:0] eth_type__st1;
+  logic [2:0] new_vlan_pcp__st1;
+  logic [0:0] new_vlan_cfi__st1;
+  logic [11:0] new_vlan_vid__st1;
+  logic [15:0] new_vlan_tpid__st1;
+  logic [2:0] vlan_pcp__st1;
+  logic [0:0] vlan_cfi__st1;
+  logic [11:0] vlan_vid__st1;
+  logic [15:0] vlan_tpid__st1;
+  logic [3:0] ipv4_version__st1;
+  logic [3:0] ipv4_hdr_len__st1;
+  logic [7:0] ipv4_tos__st1;
+  logic [15:0] ipv4_length__st1;
+  logic [15:0] ipv4_id__st1;
+  logic [2:0] ipv4_flags__st1;
+  logic [12:0] ipv4_offset__st1;
+  logic [7:0] ipv4_ttl__st1;
+  logic [7:0] ipv4_protocol__st1;
+  logic [15:0] ipv4_hdr_chk__st1;
+  logic [31:0] ipv4_src__st1;
+  logic [31:0] ipv4_dst__st1;
+  logic [319:0] ipv4opt_options__st1;
+  logic [15:0] tcp_src_port__st1;
+  logic [15:0] tcp_dst_port__st1;
+  logic [31:0] tcp_seqNum__st1;
+  logic [31:0] tcp_ackNum__st1;
+  logic [3:0] tcp_dataOffset__st1;
+  logic [5:0] tcp_resv__st1;
+  logic [5:0] tcp_flags__st1;
+  logic [15:0] tcp_window__st1;
+  logic [15:0] tcp_checksum__st1;
+  logic [15:0] tcp_urgPtr__st1;
+  logic [319:0] tcpopt_options__st1;
+  logic [15:0] udp_src_port__st1;
+  logic [15:0] udp_dst_port__st1;
+  logic [15:0] udp_length__st1;
+  logic [15:0] udp_checksum__st1;
+
   // Table lookup result wires
   logic        FiveTuple_hit;
   logic [0:0] FiveTuple_act_id;
@@ -170,68 +377,291 @@ module processing_generated (
   // Table hit outputs
   assign FiveTuple_hit_out = FiveTuple_hit;
 
+  // ---- Pipeline stage 0 (combinational, feeds the exact-match table) ----
   always_comb begin
-    drop = 0;
+    drop__st0 = 0;
     hit = 1'b0;
     table_key_dport = 16'b0;
     table_key_sport = 16'b0;
 
     // Header valid flag pass-through defaults
-    out_eth_valid = eth_valid;
-    out_new_vlan_valid = new_vlan_valid;
-    out_vlan_valid = vlan_valid;
-    out_ipv4_valid = ipv4_valid;
-    out_ipv4opt_valid = ipv4opt_valid;
-    out_tcp_valid = tcp_valid;
-    out_tcpopt_valid = tcpopt_valid;
-    out_udp_valid = udp_valid;
+    out_eth_valid__st0 = eth_valid;
+    out_new_vlan_valid__st0 = new_vlan_valid;
+    out_vlan_valid__st0 = vlan_valid;
+    out_ipv4_valid__st0 = ipv4_valid;
+    out_ipv4opt_valid__st0 = ipv4opt_valid;
+    out_tcp_valid__st0 = tcp_valid;
+    out_tcpopt_valid__st0 = tcpopt_valid;
+    out_udp_valid__st0 = udp_valid;
 
     // Header field pass-through defaults
-    out_eth_dmac = eth_dmac;
-    out_eth_smac = eth_smac;
-    out_eth_type = eth_type;
-    out_new_vlan_pcp = new_vlan_pcp;
-    out_new_vlan_cfi = new_vlan_cfi;
-    out_new_vlan_vid = new_vlan_vid;
-    out_new_vlan_tpid = new_vlan_tpid;
-    out_vlan_pcp = vlan_pcp;
-    out_vlan_cfi = vlan_cfi;
-    out_vlan_vid = vlan_vid;
-    out_vlan_tpid = vlan_tpid;
-    out_ipv4_version = ipv4_version;
-    out_ipv4_hdr_len = ipv4_hdr_len;
-    out_ipv4_tos = ipv4_tos;
-    out_ipv4_length = ipv4_length;
-    out_ipv4_id = ipv4_id;
-    out_ipv4_flags = ipv4_flags;
-    out_ipv4_offset = ipv4_offset;
-    out_ipv4_ttl = ipv4_ttl;
-    out_ipv4_protocol = ipv4_protocol;
-    out_ipv4_hdr_chk = ipv4_hdr_chk;
-    out_ipv4_src = ipv4_src;
-    out_ipv4_dst = ipv4_dst;
-    out_ipv4opt_options = ipv4opt_options;
-    out_tcp_src_port = tcp_src_port;
-    out_tcp_dst_port = tcp_dst_port;
-    out_tcp_seqNum = tcp_seqNum;
-    out_tcp_ackNum = tcp_ackNum;
-    out_tcp_dataOffset = tcp_dataOffset;
-    out_tcp_resv = tcp_resv;
-    out_tcp_flags = tcp_flags;
-    out_tcp_window = tcp_window;
-    out_tcp_checksum = tcp_checksum;
-    out_tcp_urgPtr = tcp_urgPtr;
-    out_tcpopt_options = tcpopt_options;
-    out_udp_src_port = udp_src_port;
-    out_udp_dst_port = udp_dst_port;
-    out_udp_length = udp_length;
-    out_udp_checksum = udp_checksum;
+    out_eth_dmac__st0 = eth_dmac;
+    out_eth_smac__st0 = eth_smac;
+    out_eth_type__st0 = eth_type;
+    out_new_vlan_pcp__st0 = new_vlan_pcp;
+    out_new_vlan_cfi__st0 = new_vlan_cfi;
+    out_new_vlan_vid__st0 = new_vlan_vid;
+    out_new_vlan_tpid__st0 = new_vlan_tpid;
+    out_vlan_pcp__st0 = vlan_pcp;
+    out_vlan_cfi__st0 = vlan_cfi;
+    out_vlan_vid__st0 = vlan_vid;
+    out_vlan_tpid__st0 = vlan_tpid;
+    out_ipv4_version__st0 = ipv4_version;
+    out_ipv4_hdr_len__st0 = ipv4_hdr_len;
+    out_ipv4_tos__st0 = ipv4_tos;
+    out_ipv4_length__st0 = ipv4_length;
+    out_ipv4_id__st0 = ipv4_id;
+    out_ipv4_flags__st0 = ipv4_flags;
+    out_ipv4_offset__st0 = ipv4_offset;
+    out_ipv4_ttl__st0 = ipv4_ttl;
+    out_ipv4_protocol__st0 = ipv4_protocol;
+    out_ipv4_hdr_chk__st0 = ipv4_hdr_chk;
+    out_ipv4_src__st0 = ipv4_src;
+    out_ipv4_dst__st0 = ipv4_dst;
+    out_ipv4opt_options__st0 = ipv4opt_options;
+    out_tcp_src_port__st0 = tcp_src_port;
+    out_tcp_dst_port__st0 = tcp_dst_port;
+    out_tcp_seqNum__st0 = tcp_seqNum;
+    out_tcp_ackNum__st0 = tcp_ackNum;
+    out_tcp_dataOffset__st0 = tcp_dataOffset;
+    out_tcp_resv__st0 = tcp_resv;
+    out_tcp_flags__st0 = tcp_flags;
+    out_tcp_window__st0 = tcp_window;
+    out_tcp_checksum__st0 = tcp_checksum;
+    out_tcp_urgPtr__st0 = tcp_urgPtr;
+    out_tcpopt_options__st0 = tcpopt_options;
+    out_udp_src_port__st0 = udp_src_port;
+    out_udp_dst_port__st0 = udp_dst_port;
+    out_udp_length__st0 = udp_length;
+    out_udp_checksum__st0 = udp_checksum;
 
-    // apply block
+    // apply block (stage 0 — before the exact-match table split)
     hit = 1'b0;
     if (udp_valid) begin
       table_key_sport = udp_src_port;
       table_key_dport = udp_dst_port;
+    end
+    else begin
+      if (tcp_valid) begin
+        table_key_sport = tcp_src_port;
+        table_key_dport = tcp_dst_port;
+      end
+    end
+  end
+
+  // Forward stage-0 state into stage-1 registers (1-cycle boundary —
+  // matches the exact-match table's registered hit/action_id latency)
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      valid_s1 <= 1'b0;
+    end else begin
+      valid_s1 <= valid_in;
+      drop_s1 <= drop__st0;
+      hit_s1 <= hit;
+      table_key_dport_s1 <= table_key_dport;
+      table_key_sport_s1 <= table_key_sport;
+      out_eth_valid_s1 <= out_eth_valid__st0;
+      eth_valid_s1 <= eth_valid;
+      out_new_vlan_valid_s1 <= out_new_vlan_valid__st0;
+      new_vlan_valid_s1 <= new_vlan_valid;
+      out_vlan_valid_s1 <= out_vlan_valid__st0;
+      vlan_valid_s1 <= vlan_valid;
+      out_ipv4_valid_s1 <= out_ipv4_valid__st0;
+      ipv4_valid_s1 <= ipv4_valid;
+      out_ipv4opt_valid_s1 <= out_ipv4opt_valid__st0;
+      ipv4opt_valid_s1 <= ipv4opt_valid;
+      out_tcp_valid_s1 <= out_tcp_valid__st0;
+      tcp_valid_s1 <= tcp_valid;
+      out_tcpopt_valid_s1 <= out_tcpopt_valid__st0;
+      tcpopt_valid_s1 <= tcpopt_valid;
+      out_udp_valid_s1 <= out_udp_valid__st0;
+      udp_valid_s1 <= udp_valid;
+      out_eth_dmac_s1 <= out_eth_dmac__st0;
+      eth_dmac_s1 <= eth_dmac;
+      out_eth_smac_s1 <= out_eth_smac__st0;
+      eth_smac_s1 <= eth_smac;
+      out_eth_type_s1 <= out_eth_type__st0;
+      eth_type_s1 <= eth_type;
+      out_new_vlan_pcp_s1 <= out_new_vlan_pcp__st0;
+      new_vlan_pcp_s1 <= new_vlan_pcp;
+      out_new_vlan_cfi_s1 <= out_new_vlan_cfi__st0;
+      new_vlan_cfi_s1 <= new_vlan_cfi;
+      out_new_vlan_vid_s1 <= out_new_vlan_vid__st0;
+      new_vlan_vid_s1 <= new_vlan_vid;
+      out_new_vlan_tpid_s1 <= out_new_vlan_tpid__st0;
+      new_vlan_tpid_s1 <= new_vlan_tpid;
+      out_vlan_pcp_s1 <= out_vlan_pcp__st0;
+      vlan_pcp_s1 <= vlan_pcp;
+      out_vlan_cfi_s1 <= out_vlan_cfi__st0;
+      vlan_cfi_s1 <= vlan_cfi;
+      out_vlan_vid_s1 <= out_vlan_vid__st0;
+      vlan_vid_s1 <= vlan_vid;
+      out_vlan_tpid_s1 <= out_vlan_tpid__st0;
+      vlan_tpid_s1 <= vlan_tpid;
+      out_ipv4_version_s1 <= out_ipv4_version__st0;
+      ipv4_version_s1 <= ipv4_version;
+      out_ipv4_hdr_len_s1 <= out_ipv4_hdr_len__st0;
+      ipv4_hdr_len_s1 <= ipv4_hdr_len;
+      out_ipv4_tos_s1 <= out_ipv4_tos__st0;
+      ipv4_tos_s1 <= ipv4_tos;
+      out_ipv4_length_s1 <= out_ipv4_length__st0;
+      ipv4_length_s1 <= ipv4_length;
+      out_ipv4_id_s1 <= out_ipv4_id__st0;
+      ipv4_id_s1 <= ipv4_id;
+      out_ipv4_flags_s1 <= out_ipv4_flags__st0;
+      ipv4_flags_s1 <= ipv4_flags;
+      out_ipv4_offset_s1 <= out_ipv4_offset__st0;
+      ipv4_offset_s1 <= ipv4_offset;
+      out_ipv4_ttl_s1 <= out_ipv4_ttl__st0;
+      ipv4_ttl_s1 <= ipv4_ttl;
+      out_ipv4_protocol_s1 <= out_ipv4_protocol__st0;
+      ipv4_protocol_s1 <= ipv4_protocol;
+      out_ipv4_hdr_chk_s1 <= out_ipv4_hdr_chk__st0;
+      ipv4_hdr_chk_s1 <= ipv4_hdr_chk;
+      out_ipv4_src_s1 <= out_ipv4_src__st0;
+      ipv4_src_s1 <= ipv4_src;
+      out_ipv4_dst_s1 <= out_ipv4_dst__st0;
+      ipv4_dst_s1 <= ipv4_dst;
+      out_ipv4opt_options_s1 <= out_ipv4opt_options__st0;
+      ipv4opt_options_s1 <= ipv4opt_options;
+      out_tcp_src_port_s1 <= out_tcp_src_port__st0;
+      tcp_src_port_s1 <= tcp_src_port;
+      out_tcp_dst_port_s1 <= out_tcp_dst_port__st0;
+      tcp_dst_port_s1 <= tcp_dst_port;
+      out_tcp_seqNum_s1 <= out_tcp_seqNum__st0;
+      tcp_seqNum_s1 <= tcp_seqNum;
+      out_tcp_ackNum_s1 <= out_tcp_ackNum__st0;
+      tcp_ackNum_s1 <= tcp_ackNum;
+      out_tcp_dataOffset_s1 <= out_tcp_dataOffset__st0;
+      tcp_dataOffset_s1 <= tcp_dataOffset;
+      out_tcp_resv_s1 <= out_tcp_resv__st0;
+      tcp_resv_s1 <= tcp_resv;
+      out_tcp_flags_s1 <= out_tcp_flags__st0;
+      tcp_flags_s1 <= tcp_flags;
+      out_tcp_window_s1 <= out_tcp_window__st0;
+      tcp_window_s1 <= tcp_window;
+      out_tcp_checksum_s1 <= out_tcp_checksum__st0;
+      tcp_checksum_s1 <= tcp_checksum;
+      out_tcp_urgPtr_s1 <= out_tcp_urgPtr__st0;
+      tcp_urgPtr_s1 <= tcp_urgPtr;
+      out_tcpopt_options_s1 <= out_tcpopt_options__st0;
+      tcpopt_options_s1 <= tcpopt_options;
+      out_udp_src_port_s1 <= out_udp_src_port__st0;
+      udp_src_port_s1 <= udp_src_port;
+      out_udp_dst_port_s1 <= out_udp_dst_port__st0;
+      udp_dst_port_s1 <= udp_dst_port;
+      out_udp_length_s1 <= out_udp_length__st0;
+      udp_length_s1 <= udp_length;
+      out_udp_checksum_s1 <= out_udp_checksum__st0;
+      udp_checksum_s1 <= udp_checksum;
+      __stage_cond_1_r <= (udp_valid);
+      __stage_cond_0_r <= (tcp_valid);
+    end
+  end
+
+  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----
+  always_comb begin
+    drop = drop_s1;
+    hit__st1 = hit_s1;
+    table_key_dport__st1 = table_key_dport_s1;
+    table_key_sport__st1 = table_key_sport_s1;
+    out_eth_valid = out_eth_valid_s1;
+    eth_valid__st1 = eth_valid_s1;
+    out_new_vlan_valid = out_new_vlan_valid_s1;
+    new_vlan_valid__st1 = new_vlan_valid_s1;
+    out_vlan_valid = out_vlan_valid_s1;
+    vlan_valid__st1 = vlan_valid_s1;
+    out_ipv4_valid = out_ipv4_valid_s1;
+    ipv4_valid__st1 = ipv4_valid_s1;
+    out_ipv4opt_valid = out_ipv4opt_valid_s1;
+    ipv4opt_valid__st1 = ipv4opt_valid_s1;
+    out_tcp_valid = out_tcp_valid_s1;
+    tcp_valid__st1 = tcp_valid_s1;
+    out_tcpopt_valid = out_tcpopt_valid_s1;
+    tcpopt_valid__st1 = tcpopt_valid_s1;
+    out_udp_valid = out_udp_valid_s1;
+    udp_valid__st1 = udp_valid_s1;
+    out_eth_dmac = out_eth_dmac_s1;
+    eth_dmac__st1 = eth_dmac_s1;
+    out_eth_smac = out_eth_smac_s1;
+    eth_smac__st1 = eth_smac_s1;
+    out_eth_type = out_eth_type_s1;
+    eth_type__st1 = eth_type_s1;
+    out_new_vlan_pcp = out_new_vlan_pcp_s1;
+    new_vlan_pcp__st1 = new_vlan_pcp_s1;
+    out_new_vlan_cfi = out_new_vlan_cfi_s1;
+    new_vlan_cfi__st1 = new_vlan_cfi_s1;
+    out_new_vlan_vid = out_new_vlan_vid_s1;
+    new_vlan_vid__st1 = new_vlan_vid_s1;
+    out_new_vlan_tpid = out_new_vlan_tpid_s1;
+    new_vlan_tpid__st1 = new_vlan_tpid_s1;
+    out_vlan_pcp = out_vlan_pcp_s1;
+    vlan_pcp__st1 = vlan_pcp_s1;
+    out_vlan_cfi = out_vlan_cfi_s1;
+    vlan_cfi__st1 = vlan_cfi_s1;
+    out_vlan_vid = out_vlan_vid_s1;
+    vlan_vid__st1 = vlan_vid_s1;
+    out_vlan_tpid = out_vlan_tpid_s1;
+    vlan_tpid__st1 = vlan_tpid_s1;
+    out_ipv4_version = out_ipv4_version_s1;
+    ipv4_version__st1 = ipv4_version_s1;
+    out_ipv4_hdr_len = out_ipv4_hdr_len_s1;
+    ipv4_hdr_len__st1 = ipv4_hdr_len_s1;
+    out_ipv4_tos = out_ipv4_tos_s1;
+    ipv4_tos__st1 = ipv4_tos_s1;
+    out_ipv4_length = out_ipv4_length_s1;
+    ipv4_length__st1 = ipv4_length_s1;
+    out_ipv4_id = out_ipv4_id_s1;
+    ipv4_id__st1 = ipv4_id_s1;
+    out_ipv4_flags = out_ipv4_flags_s1;
+    ipv4_flags__st1 = ipv4_flags_s1;
+    out_ipv4_offset = out_ipv4_offset_s1;
+    ipv4_offset__st1 = ipv4_offset_s1;
+    out_ipv4_ttl = out_ipv4_ttl_s1;
+    ipv4_ttl__st1 = ipv4_ttl_s1;
+    out_ipv4_protocol = out_ipv4_protocol_s1;
+    ipv4_protocol__st1 = ipv4_protocol_s1;
+    out_ipv4_hdr_chk = out_ipv4_hdr_chk_s1;
+    ipv4_hdr_chk__st1 = ipv4_hdr_chk_s1;
+    out_ipv4_src = out_ipv4_src_s1;
+    ipv4_src__st1 = ipv4_src_s1;
+    out_ipv4_dst = out_ipv4_dst_s1;
+    ipv4_dst__st1 = ipv4_dst_s1;
+    out_ipv4opt_options = out_ipv4opt_options_s1;
+    ipv4opt_options__st1 = ipv4opt_options_s1;
+    out_tcp_src_port = out_tcp_src_port_s1;
+    tcp_src_port__st1 = tcp_src_port_s1;
+    out_tcp_dst_port = out_tcp_dst_port_s1;
+    tcp_dst_port__st1 = tcp_dst_port_s1;
+    out_tcp_seqNum = out_tcp_seqNum_s1;
+    tcp_seqNum__st1 = tcp_seqNum_s1;
+    out_tcp_ackNum = out_tcp_ackNum_s1;
+    tcp_ackNum__st1 = tcp_ackNum_s1;
+    out_tcp_dataOffset = out_tcp_dataOffset_s1;
+    tcp_dataOffset__st1 = tcp_dataOffset_s1;
+    out_tcp_resv = out_tcp_resv_s1;
+    tcp_resv__st1 = tcp_resv_s1;
+    out_tcp_flags = out_tcp_flags_s1;
+    tcp_flags__st1 = tcp_flags_s1;
+    out_tcp_window = out_tcp_window_s1;
+    tcp_window__st1 = tcp_window_s1;
+    out_tcp_checksum = out_tcp_checksum_s1;
+    tcp_checksum__st1 = tcp_checksum_s1;
+    out_tcp_urgPtr = out_tcp_urgPtr_s1;
+    tcp_urgPtr__st1 = tcp_urgPtr_s1;
+    out_tcpopt_options = out_tcpopt_options_s1;
+    tcpopt_options__st1 = tcpopt_options_s1;
+    out_udp_src_port = out_udp_src_port_s1;
+    udp_src_port__st1 = udp_src_port_s1;
+    out_udp_dst_port = out_udp_dst_port_s1;
+    udp_dst_port__st1 = udp_dst_port_s1;
+    out_udp_length = out_udp_length_s1;
+    udp_length__st1 = udp_length_s1;
+    out_udp_checksum = out_udp_checksum_s1;
+    udp_checksum__st1 = udp_checksum_s1;
+
+    // apply block (stage 1 — after the exact-match table split)
+    if (__stage_cond_1_r) begin
       if (FiveTuple_hit) begin
         // FiveTuple.apply()
         if (FiveTuple_hit) begin
@@ -242,23 +672,21 @@ module processing_generated (
               out_new_vlan_pcp = FiveTuple_p_pcp;
               out_new_vlan_cfi = FiveTuple_p_cfi;
               out_new_vlan_vid = FiveTuple_p_vid;
-              out_new_vlan_tpid = eth_type;
+              out_new_vlan_tpid = eth_type__st1;
               /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
               /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
             end
             default: ; // default = NoAction
           endcase
         end
-        hit = 1'b1;
+        hit__st1 = 1'b1;
       end
       else begin
-        hit = 1'b0;
+        hit__st1 = 1'b0;
       end
     end
     else begin
-      if (tcp_valid) begin
-        table_key_sport = tcp_src_port;
-        table_key_dport = tcp_dst_port;
+      if (__stage_cond_0_r) begin
         if (FiveTuple_hit) begin
           // FiveTuple.apply()
           if (FiveTuple_hit) begin
@@ -269,22 +697,22 @@ module processing_generated (
                 out_new_vlan_pcp = FiveTuple_p_pcp;
                 out_new_vlan_cfi = FiveTuple_p_cfi;
                 out_new_vlan_vid = FiveTuple_p_vid;
-                out_new_vlan_tpid = eth_type;
+                out_new_vlan_tpid = eth_type__st1;
                 /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
                 /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
               end
               default: ; // default = NoAction
             endcase
           end
-          hit = 1'b1;
+          hit__st1 = 1'b1;
         end
         else begin
-          hit = 1'b0;
+          hit__st1 = 1'b0;
         end
       end
     end
-    if (hit) begin
-      if (vlan_valid) begin
+    if (hit__st1) begin
+      if (vlan_valid__st1) begin
         out_eth_type = 16'h88A8;
       end
       else begin
@@ -295,7 +723,7 @@ module processing_generated (
 
   always_ff @(posedge clk) begin
     if (!rst_n) valid_out <= 0;
-    else        valid_out <= valid_in;
+    else        valid_out <= valid_s1;
   end
 
 endmodule

@@ -1,3 +1,4 @@
+import io
 import math
 import re
 
@@ -466,6 +467,125 @@ def _emit_table_case(f, table, amap, ind, cmap):
 
 
 # ============================================================
+# Pipeline-stage scheduler
+# ============================================================
+#
+# Exact-match tables now have 1-cycle lookup latency (hash + BRAM read,
+# see emit_table.py) instead of the old 0-cycle combinational scan. The
+# apply block has to be split at each exact-match table's apply point so
+# that everything depending on its hit/action_id executes one clock
+# later than everything that produces its key inputs.
+#
+# `_split_stage` walks a statement list and divides it into a `before`
+# half (runs this stage) and an `after` half (runs next stage, once the
+# split table's result is registered). Two cases:
+#   1. The split table is referenced directly (`tbl.apply()` statement,
+#      or as an `if (tbl.apply().hit)` condition) -> that statement (and
+#      everything textually after it) moves to `after` unchanged; its own
+#      condition already reads the table's correctly-timed registered
+#      output wire.
+#   2. The split table sits inside an unrelated enclosing `if` (e.g. a
+#      combinational LPM table's hit gating an exact-match table's
+#      apply) -> that condition is unrelated to the split table's timing,
+#      so it must be evaluated in this stage and its boolean result
+#      forwarded to next stage via a register (`__stage_cond_N_r`).
+
+def _tbl_refs_in_cond(cond):
+    return {m.group(1) for m in re.finditer(r'(\w+)\.apply\(\)\.(\w+)', cond)}
+
+
+def _split_stage(stmts, split_name, fwd_counter):
+    before, after = [], []
+    forwards = []
+    found = False
+
+    for s in stmts:
+        if found:
+            after.append(s)
+            continue
+
+        if isinstance(s, TableApply) and s.table_name == split_name:
+            found = True
+            after.append(s)
+            continue
+
+        if isinstance(s, IfStatement):
+            if split_name in _tbl_refs_in_cond(s.condition):
+                found = True
+                after.append(s)
+                continue
+
+            sb_then, sa_then, sf_then, f_then = _split_stage(s.then_body, split_name, fwd_counter)
+            sb_else, sa_else, sf_else, f_else = _split_stage(s.else_body, split_name, fwd_counter)
+
+            if f_then or f_else:
+                found = True
+                reg_name = f'__stage_cond_{fwd_counter[0]}_r'
+                fwd_counter[0] += 1
+                forwards.append((reg_name, s.condition))
+
+                before_if = IfStatement(s.condition)
+                before_if.then_body, before_if.else_body = sb_then, sb_else
+                before.append(before_if)
+
+                after_if = IfStatement(reg_name)
+                after_if.then_body, after_if.else_body = sa_then, sa_else
+                after.append(after_if)
+
+                forwards.extend(sf_then)
+                forwards.extend(sf_else)
+                continue
+            else:
+                before.append(s)
+                continue
+
+        before.append(s)
+
+    return before, after, forwards, found
+
+
+def _find_first_exact_table(stmts, exact_names):
+    for s in stmts:
+        if isinstance(s, TableApply) and s.table_name in exact_names:
+            return s.table_name
+        if isinstance(s, IfStatement):
+            refs = _tbl_refs_in_cond(s.condition) & exact_names
+            if refs:
+                return next(iter(refs))
+            r = _find_first_exact_table(s.then_body, exact_names)
+            if r:
+                return r
+            r = _find_first_exact_table(s.else_body, exact_names)
+            if r:
+                return r
+    return None
+
+
+def _schedule_stages(ctrl_statements, exact_names):
+    """Returns (stages, boundary_forwards): stages[0] runs this cycle,
+    stages[i] runs i cycles later. boundary_forwards[i] is the list of
+    (reg_name, raw_condition) pairs registered between stage i and i+1."""
+    remaining = ctrl_statements
+    names_left = set(exact_names)
+    stages = []
+    boundary_forwards = []
+    fwd_counter = [0]
+
+    while True:
+        target = _find_first_exact_table(remaining, names_left)
+        if target is None:
+            stages.append(remaining)
+            break
+        before, after, fwd, _ = _split_stage(remaining, target, fwd_counter)
+        stages.append(before)
+        boundary_forwards.append(fwd)
+        names_left.discard(target)
+        remaining = after
+
+    return stages, boundary_forwards
+
+
+# ============================================================
 # Apply-block statement emitter
 # ============================================================
 
@@ -587,11 +707,13 @@ def emit_processing(ir, output_path):
             if mfn and f'meta_{mfn}' in fwmap:
                 kw = fwmap[f'meta_{mfn}']
             fixed_key_sigs.append((fname, ksig, kw))
+        mt = tbl.keys[0].match_type if tbl.keys else 'exact'
         table_wires.append({
             'table': tbl, 'hit_sig': f'{tbl.name}_hit',
             'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
             'params': params, 'key_sigs': fixed_key_sigs,
             'depth': tbl.size if tbl.size else 1024,
+            'is_exact': mt not in ('lpm', 'ternary'),
         })
 
     tbl_wire_names = set()
@@ -682,6 +804,108 @@ def emit_processing(ir, output_path):
         f.write('  output logic        drop\n')
         f.write(');\n\n')
 
+        # ── Pipeline-stage scheduling ────────────────────────────────────
+        exact_names = {tw['table'].name for tw in table_wires if tw['is_exact']}
+        stages, boundary_forwards = _schedule_stages(ctrl.statements, exact_names)
+        n_bounds = len(boundary_forwards)
+        if n_bounds > 1:
+            raise NotImplementedError(
+                'emit_processing: this control block has more than one '
+                'exact-match table pipeline boundary in sequence; only a '
+                'single boundary (0 or 1 exact-match tables gating further '
+                'exact-match tables) is currently supported.'
+            )
+
+        def _stmts_contain_write(stmts, reg_name):
+            for s in stmts:
+                if isinstance(s, ExternCall) and s.name == f'{reg_name}.write':
+                    return True
+                if isinstance(s, IfStatement):
+                    if _stmts_contain_write(s.then_body, reg_name) or \
+                       _stmts_contain_write(s.else_body, reg_name):
+                        return True
+            return False
+
+        def _reg_write_stage(reg_name):
+            for i, stg in enumerate(stages):
+                if _stmts_contain_write(stg, reg_name):
+                    return i
+            return 0
+
+        reg_write_stage = {reg.name: _reg_write_stage(reg.name) for reg in registers}
+
+        def _stmts_contain_call(stmts, call_name):
+            for s in stmts:
+                if isinstance(s, ExternCall) and s.name == call_name:
+                    return True
+                if isinstance(s, IfStatement):
+                    if _stmts_contain_call(s.then_body, call_name) or \
+                       _stmts_contain_call(s.else_body, call_name):
+                        return True
+            return False
+
+        def _reg_read_stage(reg_name):
+            for i, stg in enumerate(stages):
+                if _stmts_contain_call(stg, f'{reg_name}.read'):
+                    return i
+            return 0
+
+        # ── Stage-local renaming ─────────────────────────────────────────
+        # Everything emitted by the existing (stage-unaware) statement
+        # emitter is generated once per stage as plain text, then passed
+        # through this rename so each stage gets its own working copy of
+        # every header/metadata/local signal instead of two always_comb
+        # blocks illegally driving the same variable.
+        #
+        # Two independent name pools, because they need opposite "which
+        # stage stays unsuffixed" rules:
+        #   Pool A (out_* pass-through copies, drop) must land on the
+        #     real module output ports unsuffixed in the LAST stage —
+        #     that's what's actually wired to the port list.
+        #   Pool B (locals, meta_*_w, and raw hdr/std_meta field READS —
+        #     `_map_expr`/`_map_cond` always map a `hdr.x.y` READ to the
+        #     bare top-level input port name, so that name must stay
+        #     unsuffixed only in stage 0, where it legitimately means
+        #     "this cycle's live input"; every later stage needs its own
+        #     forwarded copy, never the live input for a different packet)
+        #     must stay unsuffixed only in stage 0.
+        # With n_bounds in {0, 1} (enforced above) these two rules only
+        # ever disagree on stage 0 vs stage 1, which is exactly the split
+        # point, so there is no name collision between them.
+        _pool_a = {'drop'}
+        for hname, fname, _ in hdr_ports:
+            _pool_a.add(f'out_{hname}_{fname}')
+        for hname in hdr_valids:
+            _pool_a.add(f'out_{hname}_valid')
+        for fname in std_meta_outs:
+            _pool_a.add(f'out_std_meta_{fname}')
+
+        _pool_b = set(locals_.keys())
+        for mf in meta_fields:
+            _pool_b.add(f'meta_{mf.name}_w')
+        for hname, fname, _ in hdr_ports:
+            _pool_b.add(f'{hname}_{fname}')
+        for hname in hdr_valids:
+            _pool_b.add(f'{hname}_valid')
+        for fname in std_meta_ins:
+            _pool_b.add(f'std_meta_{fname}')
+
+        def _mk_re(pool):
+            names = sorted(pool, key=len, reverse=True)
+            return re.compile(r'\b(' + '|'.join(re.escape(n) for n in names) + r')\b') if names else None
+
+        _re_a, _re_b = _mk_re(_pool_a), _mk_re(_pool_b)
+
+        def _stage_text(raw_text, stage_idx):
+            text = raw_text
+            suf_a = '' if stage_idx == n_bounds else f'__st{stage_idx}'
+            if suf_a and _re_a is not None:
+                text = _re_a.sub(lambda m: m.group(1) + suf_a, text)
+            suf_b = '' if stage_idx == 0 else f'__st{stage_idx}'
+            if suf_b and _re_b is not None:
+                text = _re_b.sub(lambda m: m.group(1) + suf_b, text)
+            return text
+
         # ── Local signal declarations ──────────────────────────────────
         for lname, lw in sorted(locals_.items()):
             f.write(f'  logic [{lw-1}:0] {lname};\n')
@@ -693,6 +917,63 @@ def emit_processing(ir, output_path):
             f.write('  // Metadata shadow locals (writable copies of metadata inputs)\n')
             for mf in meta_fields:
                 f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w;\n')
+            f.write('\n')
+
+        # ── Pipeline-stage forwarding registers + per-stage working copies ──
+        # Exact-match tables now report hit/action_id 1 cycle after their
+        # lkp_* inputs, so header/metadata/local state has to be carried
+        # forward through an explicit register at the boundary, and each
+        # stage needs its own working copy of anything it writes (two
+        # always_comb blocks can't both drive the same bare signal name —
+        # see `_stage_text` above for which pool uses which stage).
+        if n_bounds:
+            f.write('  // Pipeline-stage forwarding registers (exact-match table boundary)\n')
+            f.write('  logic valid_s1;\n')
+            for hname in hdr_valids:
+                f.write(f'  logic out_{hname}_valid_s1;\n')
+                f.write(f'  logic {hname}_valid_s1;\n')
+            for hname, fname, w in hdr_ports:
+                f.write(f'  logic [{w-1}:0] out_{hname}_{fname}_s1;\n')
+                f.write(f'  logic [{w-1}:0] {hname}_{fname}_s1;\n')
+            for mf in meta_fields:
+                f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w_s1;\n')
+            for lname, lw in sorted(locals_.items()):
+                f.write(f'  logic [{lw-1}:0] {lname}_s1;\n')
+            for fname in sorted(std_meta_outs):
+                fw = std_meta_outs[fname]
+                f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}_s1;\n')
+            for fname in sorted(std_meta_ins):
+                fw = std_meta_ins[fname]
+                f.write(f'  logic [{fw-1}:0] std_meta_{fname}_s1;\n')
+            f.write('  logic drop_s1;\n')
+            for reg_name, _ in boundary_forwards[0]:
+                f.write(f'  logic {reg_name};\n')
+            f.write('\n')
+
+            f.write('  // Stage-0 working copies (pool A: out_*/drop kept separate from\n')
+            f.write('  // the real output ports, which stage 1 alone drives)\n')
+            for hname in hdr_valids:
+                f.write(f'  logic out_{hname}_valid__st0;\n')
+            for hname, fname, w in hdr_ports:
+                f.write(f'  logic [{w-1}:0] out_{hname}_{fname}__st0;\n')
+            for fname in sorted(std_meta_outs):
+                fw = std_meta_outs[fname]
+                f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}__st0;\n')
+            f.write('  logic drop__st0;\n\n')
+
+            f.write('  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr\n')
+            f.write('  // and std_meta reads, seeded from the stage-0 forwarding regs)\n')
+            for lname, lw in sorted(locals_.items()):
+                f.write(f'  logic [{lw-1}:0] {lname}__st1;\n')
+            for mf in meta_fields:
+                f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w__st1;\n')
+            for hname in hdr_valids:
+                f.write(f'  logic {hname}_valid__st1;\n')
+            for hname, fname, w in hdr_ports:
+                f.write(f'  logic [{w-1}:0] {hname}_{fname}__st1;\n')
+            for fname in sorted(std_meta_ins):
+                fw = std_meta_ins[fname]
+                f.write(f'  logic [{fw-1}:0] std_meta_{fname}__st1;\n')
             f.write('\n')
 
         # ── Register memory arrays + write-staging signals ─────────────
@@ -717,7 +998,8 @@ def emit_processing(ir, output_path):
                 for reg_name, raw_out, raw_addr in reg_reads:
                     reg_obj = next((r for r in registers if r.name == reg_name), None)
                     dw = reg_obj.data_width if reg_obj else 1
-                    addr_expr = _map_expr(raw_addr)
+                    read_stage = _reg_read_stage(reg_name)
+                    addr_expr = _stage_text(_map_expr(raw_addr), read_stage)
                     f.write(f'  logic [{dw-1}:0] {reg_name}_rd_{raw_out};\n')
                     f.write(f'  assign {reg_name}_rd_{raw_out} = {reg_name}_mem[{addr_expr}];\n')
                 f.write('\n')
@@ -780,42 +1062,116 @@ def emit_processing(ir, output_path):
                 f.write(f'  assign {tname}_hit_out = {tw["hit_sig"]};\n')
             f.write('\n')
 
-        # ── Combinational logic ────────────────────────────────────────
-        f.write('  always_comb begin\n')
-        f.write('    drop = 0;\n')
+        # ── Combinational logic (staged) ────────────────────────────────
+        # Stage 0 (n_bounds == 0: this is the *only* stage, and this
+        # whole section is byte-identical to the original single-block
+        # generator — apps with no exact-match table, e.g. qos, are
+        # completely unaffected by pipelining).
+        buf0 = io.StringIO()
+        buf0.write('  always_comb begin\n')
+        buf0.write('    drop = 0;\n')
 
         for lname, lw in sorted(locals_.items()):
-            f.write(f'    {lname} = {lw}\'b0;\n')
+            buf0.write(f'    {lname} = {lw}\'b0;\n')
 
         if meta_fields:
-            f.write('\n    // Metadata shadow defaults (init from inputs)\n')
+            buf0.write('\n    // Metadata shadow defaults (init from inputs)\n')
             for mf in meta_fields:
-                f.write(f'    meta_{mf.name}_w = meta_{mf.name};\n')
+                buf0.write(f'    meta_{mf.name}_w = meta_{mf.name};\n')
 
         for reg in registers:
-            f.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
-            f.write(f'    {reg.name}_wr_addr = \'0;\n')
-            f.write(f'    {reg.name}_wr_data = \'0;\n')
+            if reg_write_stage[reg.name] == 0:
+                buf0.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
+                buf0.write(f'    {reg.name}_wr_addr = \'0;\n')
+                buf0.write(f'    {reg.name}_wr_data = \'0;\n')
 
         if std_meta_outs:
-            f.write('\n    // Standard metadata defaults\n')
+            buf0.write('\n    // Standard metadata defaults\n')
             for fname in sorted(std_meta_outs):
                 fw = std_meta_outs[fname]
-                f.write(f'    out_std_meta_{fname} = {fw}\'b0;\n')
+                buf0.write(f'    out_std_meta_{fname} = {fw}\'b0;\n')
 
-        f.write('\n    // Header valid flag pass-through defaults\n')
+        buf0.write('\n    // Header valid flag pass-through defaults\n')
         for hname in hdr_valids:
-            f.write(f'    out_{hname}_valid = {hname}_valid;\n')
+            buf0.write(f'    out_{hname}_valid = {hname}_valid;\n')
 
-        f.write('\n    // Header field pass-through defaults\n')
+        buf0.write('\n    // Header field pass-through defaults\n')
         for hname, fname, _ in hdr_ports:
-            f.write(f'    out_{hname}_{fname} = {hname}_{fname};\n')
+            buf0.write(f'    out_{hname}_{fname} = {hname}_{fname};\n')
 
-        if ctrl.statements:
-            f.write('\n    // apply block\n')
-            _emit_stmts(f, ctrl.statements, amap, '    ', cmap, ctrl.tables)
+        if stages[0]:
+            buf0.write('\n    // apply block'
+                        + (' (stage 0 — before the exact-match table split)' if n_bounds else '')
+                        + '\n')
+            _emit_stmts(buf0, stages[0], amap, '    ', cmap, ctrl.tables)
 
-        f.write('  end\n\n')
+        buf0.write('  end\n')
+        f.write(f'  // ---- Pipeline stage 0{" (combinational, feeds the exact-match table)" if n_bounds else ""} ----\n')
+        f.write(_stage_text(buf0.getvalue(), 0))
+        f.write('\n')
+
+        if n_bounds:
+            # ── Stage-0 -> stage-1 forwarding register ──────────────────
+            f.write('  // Forward stage-0 state into stage-1 registers (1-cycle boundary —\n')
+            f.write('  // matches the exact-match table\'s registered hit/action_id latency)\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (!rst_n) begin\n')
+            f.write('      valid_s1 <= 1\'b0;\n')
+            f.write('    end else begin\n')
+            f.write('      valid_s1 <= valid_in;\n')
+            f.write('      drop_s1 <= drop__st0;\n')
+            for lname, _ in sorted(locals_.items()):
+                f.write(f'      {lname}_s1 <= {lname};\n')
+            for mf in meta_fields:
+                f.write(f'      meta_{mf.name}_w_s1 <= meta_{mf.name}_w;\n')
+            for hname in hdr_valids:
+                f.write(f'      out_{hname}_valid_s1 <= out_{hname}_valid__st0;\n')
+                f.write(f'      {hname}_valid_s1 <= {hname}_valid;\n')
+            for hname, fname, _ in hdr_ports:
+                f.write(f'      out_{hname}_{fname}_s1 <= out_{hname}_{fname}__st0;\n')
+                f.write(f'      {hname}_{fname}_s1 <= {hname}_{fname};\n')
+            for fname in sorted(std_meta_outs):
+                f.write(f'      out_std_meta_{fname}_s1 <= out_std_meta_{fname}__st0;\n')
+            for fname in sorted(std_meta_ins):
+                f.write(f'      std_meta_{fname}_s1 <= std_meta_{fname};\n')
+            for reg_name, raw_cond in boundary_forwards[0]:
+                f.write(f'      {reg_name} <= ({_map_cond(raw_cond, cmap)});\n')
+            f.write('    end\n')
+            f.write('  end\n\n')
+
+            # ── Stage 1 ──────────────────────────────────────────────────
+            buf1 = io.StringIO()
+            buf1.write('  always_comb begin\n')
+            buf1.write('    drop = drop_s1;\n')
+            for lname, _ in sorted(locals_.items()):
+                buf1.write(f'    {lname} = {lname}_s1;\n')
+            for mf in meta_fields:
+                buf1.write(f'    meta_{mf.name}_w = meta_{mf.name}_w_s1;\n')
+            for hname in hdr_valids:
+                buf1.write(f'    out_{hname}_valid = out_{hname}_valid_s1;\n')
+                buf1.write(f'    {hname}_valid = {hname}_valid_s1;\n')
+            for hname, fname, _ in hdr_ports:
+                buf1.write(f'    out_{hname}_{fname} = out_{hname}_{fname}_s1;\n')
+                buf1.write(f'    {hname}_{fname} = {hname}_{fname}_s1;\n')
+            for fname in sorted(std_meta_outs):
+                buf1.write(f'    out_std_meta_{fname} = out_std_meta_{fname}_s1;\n')
+            for fname in sorted(std_meta_ins):
+                buf1.write(f'    std_meta_{fname} = std_meta_{fname}_s1;\n')
+
+            for reg in registers:
+                if reg_write_stage[reg.name] == 1:
+                    buf1.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
+                    buf1.write(f'    {reg.name}_wr_addr = \'0;\n')
+                    buf1.write(f'    {reg.name}_wr_data = \'0;\n')
+
+            if stages[1]:
+                buf1.write('\n    // apply block (stage 1 — after the exact-match table split)\n')
+                _emit_stmts(buf1, stages[1], amap, '    ', cmap, ctrl.tables)
+
+            buf1.write('  end\n')
+            f.write('  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----\n')
+            f.write(_stage_text(buf1.getvalue(), 1))
+            f.write('\n')
 
         # ── Register write-back ────────────────────────────────────────
         if registers:
@@ -830,7 +1186,10 @@ def emit_processing(ir, output_path):
         # ── Pipeline register ──────────────────────────────────────────
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) valid_out <= 0;\n')
-        f.write('    else        valid_out <= valid_in;\n')
+        if n_bounds:
+            f.write('    else        valid_out <= valid_s1;\n')
+        else:
+            f.write('    else        valid_out <= valid_in;\n')
         f.write('  end\n\n')
 
         f.write('endmodule\n')

@@ -288,7 +288,7 @@ module tb_load_balance;
 
     // ── PR1: hit=0 stub, all fields pass-through ─────────────────────────────
     $display("  PR1: table stub hit=0 → all fields pass-through");
-    #1;
+    @(posedge clk); #1;
     chk("PR1: hit_out = 0",                !pr_hit_out);
     chk("PR1: eth_dst pass-through",       pr_o_eth_dst == 48'hAABBCCDDEEFF);
     chk("PR1: ipv4_src pass-through",      pr_o_ipv4_src == 32'hC0A80001);
@@ -297,32 +297,37 @@ module tb_load_balance;
 
     // ── PR2: ipv4_valid=1, ttl=64 > 0 → outer if passes, stub active ─────────
     $display("  PR2: ipv4_valid=1, ttl=64 → outer guard passes, stub hit=0");
-    pr_ipv4_ttl = 8'd64; pr_ipv4_valid = 1; #1;
+    pr_ipv4_ttl = 8'd64; pr_ipv4_valid = 1; @(posedge clk); #1;
     chk("PR2: hit=0 (ecmp stub)",          !pr_hit_out);
     chk("PR2: eth_dst unchanged",          pr_o_eth_dst == 48'hAABBCCDDEEFF);
 
     // ── PR3: ttl=0 → outer if (ttl>0) fails → nothing changes ────────────────
     $display("  PR3: ttl=0 → condition ipv4_ttl>0 fails → full pass-through");
-    pr_ipv4_ttl = 8'd0; #1;
+    pr_ipv4_ttl = 8'd0; @(posedge clk); #1;
     chk("PR3: hit=0 (condition failed)",   !pr_hit_out);
     chk("PR3: eth_dst unchanged",          pr_o_eth_dst == 48'hAABBCCDDEEFF);
     pr_ipv4_ttl = 8'd64;
 
     // ── PR4: ipv4_valid=0 → outer if fails entirely ───────────────────────────
     $display("  PR4: ipv4_valid=0 → apply block skipped");
-    pr_ipv4_valid = 0; #1;
+    pr_ipv4_valid = 0; @(posedge clk); #1;
     chk("PR4: hit=0",                      !pr_hit_out);
     chk("PR4: eth_dst unchanged",          pr_o_eth_dst == 48'hAABBCCDDEEFF);
     pr_ipv4_valid = 1;
 
     // ── PR5: valid_out pipeline register ──────────────────────────────────────
-    $display("  PR5: valid_out is one-cycle registered");
+    // load_balance has one exact-match table (ecmp_nhop) on its critical
+    // path, adding a registered pipeline stage -> valid_out is now
+    // 2 cycles behind valid_in (1 baseline + 1 exact-match boundary).
+    $display("  PR5: valid_out is two-cycle registered (1 baseline + 1 exact-match boundary)");
     do_reset();
     pr_valid_in = 1; #1;
     chk("PR5: valid_out=0 before posedge", !pr_valid_out);
     @(posedge clk); #1;
-    chk("PR5: valid_out=1 after posedge",  pr_valid_out);
+    chk("PR5: valid_out=0 after 1st posedge", !pr_valid_out);
     pr_valid_in = 0;
+    @(posedge clk); #1;
+    chk("PR5: valid_out=1 after 2nd posedge",  pr_valid_out);
     @(posedge clk); #1;
     chk("PR5: valid_out=0 after deassert", !pr_valid_out);
 
@@ -397,7 +402,7 @@ module tb_load_balance;
     pr_tcp_doff  = 4'h5; pr_tcp_res = 3'd0; pr_tcp_ecn = 3'd0;
     pr_tcp_ctrl  = 6'h02; pr_tcp_win = 16'h4000;
     pr_tcp_csum  = 16'hABCD; pr_tcp_urg = 16'd0;
-    pr_meta_ecmp = 14'd0; #1;
+    pr_meta_ecmp = 14'd0; @(posedge clk); #1;
 
     dep_eth_valid = 1; dep_ipv4_valid = 1; dep_tcp_valid = 1;
     dep_eth_dst   = pr_o_eth_dst; dep_eth_src  = pr_o_eth_src;
