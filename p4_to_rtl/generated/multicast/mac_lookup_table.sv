@@ -1,0 +1,96 @@
+module mac_lookup_table #(
+  parameter int DEPTH = 1024
+) (
+  input  logic clk,
+  input  logic rst_n,
+
+  // Lookup key (combinational)
+  input  logic [47:0] lkp_dstAddr,
+
+  // Lookup result (registered — 1 cycle after lkp_* is presented)
+  output logic        hit,
+  output logic [1:0] action_id,
+  output logic [8:0] p_port,
+
+  // Control-plane write port (synchronous)
+  input  logic        cp_wr_en,
+  input  logic [9:0] cp_wr_idx,  // unused: exact-match tables self-address via hash(key)
+  input  logic [47:0] cp_wr_key_dstAddr,
+  input  logic [1:0] cp_wr_action,
+  input  logic [8:0] cp_wr_p_port
+);
+
+  // Entry storage (synthesizes to block RAM)
+  logic        mem_valid  [0:DEPTH-1];
+  logic [47:0] mem_key_dstAddr[0:DEPTH-1];
+  logic [1:0] mem_action[0:DEPTH-1];
+  logic [8:0] mem_p_port[0:DEPTH-1];
+
+  integer _i;
+  initial begin
+    for (_i = 0; _i < DEPTH; _i = _i + 1)
+      mem_valid[_i] = 1'b0;
+  end
+
+  // XOR-fold hash: 48-bit key -> 10-bit BRAM address
+  function automatic logic [9:0] hash_key(input logic [49:0] k);
+    logic [9:0] h;
+    integer c;
+    begin
+      h = '0;
+      for (c = 0; c < 5; c = c + 1)
+        h = h ^ k[c*10 +: 10];
+      hash_key = h;
+    end
+  endfunction
+
+  logic [49:0] wr_key_concat;
+  assign wr_key_concat = {2'd0, cp_wr_key_dstAddr};
+  logic [9:0] wr_addr;
+  assign wr_addr = hash_key(wr_key_concat);
+
+  logic [49:0] lkp_key_concat;
+  assign lkp_key_concat = {2'd0, lkp_dstAddr};
+  logic [9:0] lkp_addr;
+  assign lkp_addr = hash_key(lkp_key_concat);
+
+  // Synchronous write (control plane)
+  always_ff @(posedge clk) begin
+    if (cp_wr_en) begin
+      mem_valid[wr_addr]  <= 1'b1;
+      mem_key_dstAddr[wr_addr] <= cp_wr_key_dstAddr;
+      mem_action[wr_addr] <= cp_wr_action;
+      mem_p_port[wr_addr] <= cp_wr_p_port;
+    end
+  end
+
+  // Registered BRAM read + tag-compare stage (1-cycle lookup latency)
+  logic        valid_r;
+  logic [47:0] key_r_dstAddr;
+  logic [47:0] mem_key_r_dstAddr;
+  logic [1:0] action_id_r;
+  logic [8:0] p_r_port;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      valid_r <= 1'b0;
+    end else begin
+      valid_r     <= mem_valid[lkp_addr];
+      key_r_dstAddr     <= lkp_dstAddr;
+      mem_key_r_dstAddr <= mem_key_dstAddr[lkp_addr];
+      action_id_r <= mem_action[lkp_addr];
+      p_r_port <= mem_p_port[lkp_addr];
+    end
+  end
+
+  assign hit       = valid_r && (mem_key_r_dstAddr == key_r_dstAddr);
+  assign action_id = hit ? action_id_r : 2'd1;
+  assign p_port = hit ? p_r_port : 9'b0;
+
+  // Action ID encoding:
+  //   0 = NoAction
+  //   1 = multicast
+  //   2 = mac_forward
+  //   3 = drop
+
+endmodule

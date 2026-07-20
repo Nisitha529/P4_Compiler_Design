@@ -4,13 +4,11 @@ module parser_generated(
   input  logic valid_in,
   input  logic [15:0] ethernet_etherType,
   output logic extract_ethernet,
-  output logic extract_ipv4,
   output logic done
 );
 
-  typedef enum logic [1:0] {
+  typedef enum logic [0:0] {
     START,
-    PARSE_IPV4,
     ACCEPT
   } state_t;
 
@@ -18,7 +16,6 @@ module parser_generated(
 
   always_comb begin
     extract_ethernet = 0;
-    extract_ipv4 = 0;
     done = 0;
     next_state = state;
 
@@ -27,14 +24,8 @@ module parser_generated(
       START: begin
         extract_ethernet = 1;
         case (ethernet_etherType)
-          16'h0800: next_state = PARSE_IPV4;
           default: next_state = ACCEPT;
         endcase
-      end
-
-      PARSE_IPV4: begin
-        extract_ipv4 = 1;
-        next_state = ACCEPT;
       end
 
       ACCEPT: begin

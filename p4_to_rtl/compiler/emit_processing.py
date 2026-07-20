@@ -165,13 +165,42 @@ def _collect_std_meta_outputs(ctrl):
     return fields
 
 
-def _collect_std_meta_inputs(tables):
+def _collect_std_meta_inputs(ctrl):
+    """Every standard_metadata.* field that gets *read* anywhere needs an
+    input port -- not just ones used as table keys. `_map_expr`/`_map_cond`
+    convert any `standard_metadata.X` read to the bare `std_meta_X` signal
+    unconditionally, so if this scan misses one (e.g. a plain assignment
+    like `meta.ingress_port = standard_metadata.ingress_port;`, not a table
+    key), the generated RTL references a signal that was never declared."""
     fields = {}
-    for tbl in tables:
+    for tbl in ctrl.tables:
         for key in tbl.keys:
             fn = _std_meta_fname(key.field)
             if fn:
                 fields[fn] = _STD_META_WIDTHS.get(fn, 9)
+
+    def _scan_text(text):
+        for m in re.finditer(r'standard_metadata\.(\w+)', text):
+            fn = m.group(1)
+            if fn not in fields:
+                fields[fn] = _STD_META_WIDTHS.get(fn, 9)
+
+    def _scan_stmts(stmts):
+        for s in stmts:
+            if isinstance(s, Assignment):
+                _scan_text(s.rhs)
+            elif isinstance(s, ExternCall):
+                for a in s.args:
+                    _scan_text(a)
+            elif isinstance(s, IfStatement):
+                _scan_text(s.condition)
+                _scan_stmts(s.then_body)
+                _scan_stmts(s.else_body)
+
+    for action in ctrl.actions:
+        _scan_stmts(action.body)
+    _scan_stmts(ctrl.statements)
+
     return fields
 
 
@@ -253,41 +282,42 @@ def _collect_local_signals(ctrl, fwmap, table_wire_names=None, meta_shadow_names
             if sig not in locals_:
                 locals_[sig] = 1
 
-    def _scan_stmts(stmts):
+    def _scan_stmts(stmts, pw=None, default_width=16):
+        # `pw` (action-parameter widths) and `default_width` let this one
+        # recursive scanner serve both action bodies and the top-level
+        # apply block with each one's original width-resolution rule,
+        # while still recursing into IfStatement branches either way --
+        # a local only ever assigned inside a reconstructed if/else (see
+        # _translate_primitives() in ingest_bmv2.py) must still get
+        # declared, not just ones assigned at the statement-list top level.
+        pw = pw or {}
         for s in stmts:
             if isinstance(s, Assignment):
                 if not _is_hdr(s.lhs) and not _is_std_meta(s.lhs) and not _is_meta(s.lhs):
                     n = _lhs_sig(s.lhs)
                     if n not in locals_ and n not in tbl_wires and n not in meta_shadows:
-                        rhs_sig = _map_expr(s.rhs)
-                        locals_[n] = fwmap.get(rhs_sig, 16)
+                        rhs = s.rhs.strip()
+                        if rhs in pw:
+                            locals_[n] = pw[rhs]
+                        else:
+                            rhs_sig = _map_expr(rhs)
+                            locals_[n] = fwmap.get(rhs_sig, default_width)
             elif isinstance(s, IfStatement):
                 _scan_cond(s.condition)
-                _scan_stmts(s.then_body)
-                _scan_stmts(s.else_body)
+                _scan_stmts(s.then_body, pw, default_width)
+                _scan_stmts(s.else_body, pw, default_width)
             elif isinstance(s, TableApply) and s.result_var:
                 if s.result_var not in locals_ and s.result_var not in tbl_wires:
                     locals_[s.result_var] = 1
 
     for a in ctrl.actions:
-        pw = _param_widths(a)
-        for stmt in a.body:
-            if isinstance(stmt, Assignment):
-                if not _is_hdr(stmt.lhs) and not _is_std_meta(stmt.lhs) and not _is_meta(stmt.lhs):
-                    n = _lhs_sig(stmt.lhs)
-                    if n not in locals_ and n not in tbl_wires and n not in meta_shadows:
-                        rhs = stmt.rhs.strip()
-                        if rhs in pw:
-                            locals_[n] = pw[rhs]
-                        else:
-                            rhs_sig = _map_expr(rhs)
-                            locals_[n] = fwmap.get(rhs_sig, 32)
+        _scan_stmts(a.body, _param_widths(a), default_width=32)
 
     for lv in ctrl.local_vars:
         if lv.name not in tbl_wires and lv.name not in meta_shadows:
             locals_[lv.name] = lv.width
 
-    _scan_stmts(ctrl.statements)
+    _scan_stmts(ctrl.statements, default_width=16)
     return locals_
 
 
@@ -308,6 +338,12 @@ def _inline(action_name, amap, depth=0):
                 result.extend(sub)
             else:
                 result.append(stmt)
+        elif isinstance(stmt, IfStatement):
+            # Passed through as-is (not recursively inlined into its own
+            # branches) -- _emit_inlined_body renders it directly, and any
+            # ExternCall inside its branches still goes through the usual
+            # extern-stub path regardless of nesting depth.
+            result.append(stmt)
     return result
 
 
@@ -321,6 +357,20 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
             f.write(f'{ind}{lhs} = {_map_expr(rhs, cmap)};\n')
         elif isinstance(stmt, ExternCall):
             _emit_extern_stub(f, stmt, ind, pmap, cmap)
+        elif isinstance(stmt, IfStatement):
+            # A ternary/if-else inside a single action body -- see
+            # _translate_primitives() in ingest_bmv2.py for how bmv2's
+            # jump-based lowering gets reconstructed into this node.
+            cond = stmt.condition
+            for pname, psig in pmap.items():
+                cond = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, cond)
+            f.write(f'{ind}if ({_map_cond(cond, cmap)}) begin\n')
+            _emit_inlined_body(f, stmt.then_body, pmap, cmap, ind + '  ')
+            f.write(f'{ind}end\n')
+            if stmt.else_body:
+                f.write(f'{ind}else begin\n')
+                _emit_inlined_body(f, stmt.else_body, pmap, cmap, ind + '  ')
+                f.write(f'{ind}end\n')
 
 
 def _subst(text, pmap, cmap):
@@ -661,7 +711,7 @@ def emit_processing(ir, output_path):
     amap          = {a.name: a for a in ctrl.actions}
     fwmap         = _build_field_width_map(ir)
     std_meta_outs = _collect_std_meta_outputs(ctrl)
-    std_meta_ins  = _collect_std_meta_inputs(ctrl.tables)
+    std_meta_ins  = _collect_std_meta_inputs(ctrl)
 
     # ── Port lists ─────────────────────────────────────────────────────────
     instances  = ir.header_instances

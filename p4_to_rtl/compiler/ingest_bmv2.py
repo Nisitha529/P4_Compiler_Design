@@ -19,6 +19,8 @@ pipelines[] tables +
 deparsers[0].order[]        Deparser.emit_list
 """
 
+import re
+
 from ir import (
     IR,
     ParserState, Extract, ParserSelect,
@@ -46,6 +48,17 @@ def _sanitize(name):
     is required before any name is used as a signal, module, or file name.
     """
     return name.rsplit('.', 1)[-1]
+
+
+def _sanitize_stack_idx(name):
+    """bmv2 names each header-stack *element* 'name[idx]' (e.g.
+    'srcRoutes[0]') both as its own entry in headers[] and inside any
+    expression that references it. Brackets are illegal inside a
+    SystemVerilog identifier, so this converts them to 'name_idx'
+    everywhere -- header-instance registration, expression strings, and
+    deparser emit-list entries alike.
+    """
+    return re.sub(r'\[(\d+)\]', r'_\1', name)
 
 
 def _is_synthetic(tbl_json):
@@ -82,7 +95,7 @@ def _expr(node, runtime_data=None):
     if t == 'field':
         hdr_name, fld_name = v[0], v[1]
         if fld_name == '$valid$':           # bmv2 header-validity pseudo-field
-            return f'hdr.{hdr_name}.isValid()'
+            return f'hdr.{_sanitize_stack_idx(hdr_name)}.isValid()'
         if hdr_name == 'standard_metadata':
             return f'standard_metadata.{fld_name}'
         if hdr_name.startswith('scalars'):
@@ -91,9 +104,12 @@ def _expr(node, runtime_data=None):
             if '.' in fld_name:
                 return 'meta.' + fld_name.rsplit('.', 1)[-1]
             return fld_name
-        return f'hdr.{hdr_name}.{fld_name}'
+        return f'hdr.{_sanitize_stack_idx(hdr_name)}.{fld_name}'
 
-    if t == 'runtime_data':
+    if t in ('runtime_data', 'local'):
+        # 'local' is bmv2's alternate encoding for an action-parameter
+        # reference inside nested expressions (e.g. inside a jump_if_zero
+        # condition) -- same index scheme as 'runtime_data'.
         return rd[v]['name'] if v < len(rd) else f'param_{v}'
 
     if t == 'hexstr':
@@ -107,7 +123,7 @@ def _expr(node, runtime_data=None):
         return '1' if v else '0'
 
     if t == 'header':
-        return f'hdr.{v}'
+        return f'hdr.{_sanitize_stack_idx(v)}'
 
     if t == 'expression':
         return _expr(v, rd)
@@ -118,7 +134,7 @@ def _expr(node, runtime_data=None):
     right = node.get('right')
 
     if op == 'valid':
-        hname = _expr(right, rd).replace('hdr.', '')
+        hname = _sanitize_stack_idx(_expr(right, rd).replace('hdr.', ''))
         return f'hdr.{hname}.isValid()'
     if op == 'not':
         return f'!({_expr(right, rd)})'
@@ -134,8 +150,28 @@ def _expr(node, runtime_data=None):
         return f'({_expr(left, rd)} {op} {_expr(right, rd)})'
     if op == 'two_comp_mod':   # bmv2 modular (wrap-around) subtraction
         return f'({_expr(left, rd)} - {_expr(right, rd)})'
-    if op == 'd2b':            # bool-to-bit cast
+    if op in ('d2b', 'b2d'):   # bool<->bit cast: no-op in this string-based IR
         return _expr(right, rd)
+    if op == 'usat_cast':
+        # Saturating cast -- this is how p4c-bm2-ss lowers P4's `|-|`
+        # (saturating subtract): `left` is the expression to saturate
+        # (typically a plain `-`, which can underflow), `right` is the
+        # target bit-width. Reconstruct the clamp-at-0 ternary explicitly
+        # for the subtraction case; anything else falls back to an
+        # unclamped pass-through rather than silently producing '0'.
+        width_val = right.get('value') if isinstance(right, dict) else None
+        try:
+            width = int(width_val, 16) if isinstance(width_val, str) else int(width_val)
+        except (TypeError, ValueError):
+            width = None
+        inner = left
+        if isinstance(inner, dict) and inner.get('type') == 'expression':
+            inner = inner.get('value')
+        if isinstance(inner, dict) and inner.get('op') == '-' and width is not None:
+            a_txt = _expr(inner.get('left'), rd)
+            b_txt = _expr(inner.get('right'), rd)
+            return f'(({a_txt} < {b_txt}) ? {width}\'d0 : ({a_txt} - {b_txt}))'
+        return _expr(left, rd)
 
     return '0'
 
@@ -184,11 +220,11 @@ def _prim(primitive, runtime_data, calcs):
                            '{' + ', '.join(fields) + '}', max_val])
 
     if op == 'add_header':
-        hdr = params[0].get('value', '')
+        hdr = _sanitize_stack_idx(params[0].get('value', ''))
         return ExternCall(f'hdr.{hdr}.setValid', [])
 
     if op == 'remove_header':
-        hdr = params[0].get('value', '')
+        hdr = _sanitize_stack_idx(params[0].get('value', ''))
         return ExternCall(f'hdr.{hdr}.setInvalid', [])
 
     if op == 'drop':
@@ -198,6 +234,74 @@ def _prim(primitive, runtime_data, calcs):
     # that emit an UNIMPLEMENTED comment in the generated RTL
     args = [p(i) for i in range(len(params))]
     return ExternCall(f'_bmv2_{op}', args)
+
+
+def _jump_target(param):
+    v = param['value']
+    if isinstance(v, str):
+        return int(v, 16) if v.lower().startswith('0x') else int(v)
+    return int(v)
+
+
+def _translate_primitives(primitives, rd, calcs, start=0, end=None):
+    """Translate a slice of an action's primitive list to IR statements.
+
+    A ternary or if/else *inside a single action body* is lowered by
+    p4c-bm2-ss to `_jump_if_zero(cond, else_idx)` / `_jump(merge_idx)`
+    branch primitives (index-based, like a tiny bytecode) -- a different,
+    lower-level mechanism than the conditionals/tables DAG used for
+    apply-block control flow (see `_reconstruct_flow`). Left untranslated,
+    these primitives silently vanish (no IR node recognizes `_jump*` as an
+    op), so whichever branch they guard just never executes. Reconstruct
+    them into a normal IfStatement instead.
+    """
+    if end is None:
+        end = len(primitives)
+    stmts = []
+    i = start
+    while i < end:
+        prim = primitives[i]
+        op = prim['op']
+
+        if op == '_jump_if_zero':
+            cond_expr = _expr(prim['parameters'][0], rd)
+            else_idx  = _jump_target(prim['parameters'][1])
+            # A well-formed then-branch ends with an unconditional `_jump`
+            # to the merge point (skipping the else-branch). If it's not
+            # there, treat this as an if-with-no-else: the "else" target
+            # is just where normal flow continues.
+            merge_idx = else_idx
+            then_last = else_idx - 1
+            if start < then_last < end and primitives[then_last]['op'] == '_jump':
+                merge_idx = _jump_target(primitives[then_last]['parameters'][0])
+                then_stmts = _translate_primitives(primitives, rd, calcs, i + 1, then_last)
+            else:
+                then_stmts = _translate_primitives(primitives, rd, calcs, i + 1, else_idx)
+            else_stmts = (_translate_primitives(primitives, rd, calcs, else_idx, merge_idx)
+                          if merge_idx > else_idx else [])
+
+            ifstmt = IfStatement(cond_expr)
+            for s in then_stmts:
+                ifstmt.add_then(s)
+            for s in else_stmts:
+                ifstmt.add_else(s)
+            stmts.append(ifstmt)
+            i = merge_idx
+            continue
+
+        if op == '_jump':
+            # Unconditional jump with no enclosing `_jump_if_zero` in this
+            # slice -- shouldn't normally occur, but follow it rather than
+            # silently dropping whatever it was meant to skip.
+            i = _jump_target(prim['parameters'][0])
+            continue
+
+        stmt = _prim(prim, rd, calcs)
+        if stmt is not None:
+            stmts.append(stmt)
+        i += 1
+
+    return stmts
 
 
 # ============================================================
@@ -354,8 +458,10 @@ def ingest_bmv2(bm):
                 if fld.width:
                     ir.add_metadata_field(MetadataField(fld.name, fld.width))
         else:
+            # bmv2 lists each header-stack *element* here too, named
+            # 'name[idx]' -- sanitize so it becomes a legal SV identifier.
             ir.add_header_instance(HeaderInstance(
-                inst_name   = hname,
+                inst_name   = _sanitize_stack_idx(hname),
                 type_name   = hdr['header_type'],
                 header_type = htype_obj,
                 is_stack    = False,
@@ -386,7 +492,7 @@ def ingest_bmv2(bm):
                 if op['op'] == 'extract':
                     hdr_ref = op['parameters'][0].get('value', '')
                     # hdr_ref is the header instance name (string) in bmv2
-                    state.add_extract(Extract(hdr_ref))
+                    state.add_extract(Extract(_sanitize_stack_idx(hdr_ref)))
 
             tkey        = ps.get('transition_key', [])
             transitions = ps.get('transitions', [])
@@ -439,10 +545,8 @@ def ingest_bmv2(bm):
                 rd['bitwidth'],
             ))
 
-        for prim in act.get('primitives', []):
-            stmt = _prim(prim, rd_list, calcs)
-            if stmt is not None:
-                a.add_statement(stmt)
+        for stmt in _translate_primitives(act.get('primitives', []), rd_list, calcs):
+            a.add_statement(stmt)
 
         actions_by_name[san_name] = a
         ir.add_action(a)
@@ -529,7 +633,7 @@ def ingest_bmv2(bm):
     deps = bm.get('deparsers', [])
     if deps:
         d = Deparser()
-        d.emit_list = list(deps[0].get('order', []))
+        d.emit_list = [_sanitize_stack_idx(n) for n in deps[0].get('order', [])]
         ir.pipeline.deparser = d
 
     return ir
