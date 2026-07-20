@@ -28,12 +28,12 @@ module parser_generated(
 
   always_comb begin
     extract_vlan = 0;
-    extract_tcpopt = 0;
-    extract_ipv4opt = 0;
-    extract_udp = 0;
+    extract_tcp = 0;
     extract_ipv4 = 0;
     extract_eth = 0;
-    extract_tcp = 0;
+    extract_tcpopt = 0;
+    extract_udp = 0;
+    extract_ipv4opt = 0;
     done = 0;
     next_state = state;
 

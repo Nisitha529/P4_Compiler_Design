@@ -246,10 +246,10 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
         f.write('  // Priority-match reduction: balanced binary tree (log2(DEPTH) levels)\n')
         f.write('  // instead of a serial DEPTH-deep priority chain. Lowest index still wins.\n')
 
-        f.write(f'  logic        hit_l0[0:{depth-1}];\n')
-        f.write(f'  logic [{act_id_w-1}:0] act_l0[0:{depth-1}];\n')
+        f.write(f'  logic        hit_l0_c[0:{depth-1}];\n')
+        f.write(f'  logic [{act_id_w-1}:0] act_l0_c[0:{depth-1}];\n')
         for pname, pw in params:
-            f.write(f'  logic [{pw-1}:0] p_{pname}_l0[0:{depth-1}];\n')
+            f.write(f'  logic [{pw-1}:0] p_{pname}_l0_c[0:{depth-1}];\n')
         f.write('\n')
 
         for j in range(depth):
@@ -282,11 +282,37 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
                 conds = [f'(lkp_{_field_basename(k.field)} == mem_key_{_field_basename(k.field)}[{j}])'
                          for k in table.keys]
                 cond = ' && '.join(conds)
-            f.write(f'  assign hit_l0[{j}] = mem_valid[{j}] && {cond};\n')
-            f.write(f'  assign act_l0[{j}] = mem_action[{j}];\n')
+            f.write(f'  assign hit_l0_c[{j}] = mem_valid[{j}] && {cond};\n')
+            f.write(f'  assign act_l0_c[{j}] = mem_action[{j}];\n')
             for pname, _ in params:
-                f.write(f'  assign p_{pname}_l0[{j}] = mem_p_{pname}[{j}];\n')
+                f.write(f'  assign p_{pname}_l0_c[{j}] = mem_p_{pname}[{j}];\n')
         f.write('\n')
+
+        # Register the leaf level: splits the per-entry match computation
+        # (variable-width barrel shift for LPM, mask-compare for ternary --
+        # itself a nontrivial combinational depth) from the log2(DEPTH)-level
+        # tree reduction that follows. Gives the table a fixed 1-cycle lookup
+        # latency, same external timing contract as the hash+BRAM exact-match
+        # table, so it plugs into the same pipeline-stage boundary machinery
+        # in emit_processing.py.
+        f.write(f'  logic        hit_l0[0:{depth-1}];\n')
+        f.write(f'  logic [{act_id_w-1}:0] act_l0[0:{depth-1}];\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] p_{pname}_l0[0:{depth-1}];\n')
+        f.write('  integer _rj;\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write('      for (_rj = 0; _rj < DEPTH; _rj = _rj + 1)\n')
+        f.write('        hit_l0[_rj] <= 1\'b0;\n')
+        f.write('    end else begin\n')
+        f.write('      for (_rj = 0; _rj < DEPTH; _rj = _rj + 1) begin\n')
+        f.write('        hit_l0[_rj] <= hit_l0_c[_rj];\n')
+        f.write('        act_l0[_rj] <= act_l0_c[_rj];\n')
+        for pname, _ in params:
+            f.write(f'        p_{pname}_l0[_rj] <= p_{pname}_l0_c[_rj];\n')
+        f.write('      end\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
         prev_n, level = depth, 0
         while prev_n > 1:

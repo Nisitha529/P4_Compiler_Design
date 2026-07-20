@@ -276,42 +276,47 @@ module tb_qos;
 
     // ── PR1: UDP (proto=17) → expedited_forwarding → diffserv = 46 ───────────
     $display("  PR1: proto=17 (UDP) → diffserv = 46 (expedited forwarding)");
-    pr_ipv4_proto = 8'd17; #1;
+    pr_ipv4_proto = 8'd17; @(posedge clk); #1;
     chk("PR1: out_ipv4_diffserv = 46",     pr_o_ipv4_ds == 6'd46);
     chk("PR1: other fields unchanged",     pr_o_eth_dst == 48'hAABBCCDDEEFF);
     chk("PR1: not dropped",                !pr_drop);
 
     // ── PR2: TCP (proto=6) → voice_admit → diffserv = 44 ─────────────────────
     $display("  PR2: proto=6 (TCP) → diffserv = 44 (voice admit)");
-    pr_ipv4_proto = 8'd6; #1;
+    pr_ipv4_proto = 8'd6; @(posedge clk); #1;
     chk("PR2: out_ipv4_diffserv = 44",     pr_o_ipv4_ds == 6'd44);
     chk("PR2: not dropped",                !pr_drop);
 
     // ── PR3: ICMP (proto=1) → neither branch → diffserv unchanged ─────────────
     $display("  PR3: proto=1 (ICMP) → no DSCP change → diffserv = input");
-    pr_ipv4_proto = 8'd1; pr_ipv4_ds = 6'd20; #1;
+    pr_ipv4_proto = 8'd1; pr_ipv4_ds = 6'd20; @(posedge clk); #1;
     chk("PR3: out_ipv4_diffserv unchanged", pr_o_ipv4_ds == 6'd20);
     pr_ipv4_ds = 6'd0;
 
     // ── PR4: OSPF (proto=89) → no DSCP change ─────────────────────────────────
     $display("  PR4: proto=89 (OSPF) → no DSCP change");
-    pr_ipv4_proto = 8'd89; pr_ipv4_ds = 6'd0; #1;
+    pr_ipv4_proto = 8'd89; pr_ipv4_ds = 6'd0; @(posedge clk); #1;
     chk("PR4: out_ipv4_diffserv = 0",      pr_o_ipv4_ds == 6'd0);
 
     // ── PR5: ipv4_valid=0 → outer guard fails → diffserv unchanged ────────────
     $display("  PR5: ipv4_valid=0 → apply block skipped");
-    pr_ipv4_valid = 0; pr_ipv4_proto = 8'd17; #1;
+    pr_ipv4_valid = 0; pr_ipv4_proto = 8'd17; @(posedge clk); #1;
     chk("PR5: diffserv unchanged when !ipv4_valid", pr_o_ipv4_ds == 6'd0);
     pr_ipv4_valid = 1;
 
     // ── PR6: valid_out pipeline register ──────────────────────────────────────
-    $display("  PR6: valid_out is one-cycle registered");
+    // ipv4_lpm is now a registered (1-cycle) pipeline boundary too (the
+    // priority-match tree's leaf level is pipelined for Fmax headroom), so
+    // valid_out is 2 cycles behind valid_in (1 baseline + 1 boundary).
+    $display("  PR6: valid_out is two-cycle registered (1 baseline + 1 lpm boundary)");
     do_reset();
     pr_valid_in = 1; #1;
     chk("PR6: valid_out=0 before posedge", !pr_valid_out);
     @(posedge clk); #1;
-    chk("PR6: valid_out=1 after posedge",  pr_valid_out);
+    chk("PR6: valid_out=0 after 1st posedge", !pr_valid_out);
     pr_valid_in = 0;
+    @(posedge clk); #1;
+    chk("PR6: valid_out=1 after 2nd posedge",  pr_valid_out);
     @(posedge clk); #1;
     chk("PR6: valid_out=0 after deassert", !pr_valid_out);
 
@@ -373,7 +378,7 @@ module tb_qos;
     pr_ipv4_ttl   = 8'd128; pr_ipv4_proto = 8'd17;   // UDP
     pr_ipv4_chk   = 16'h5678;
     pr_ipv4_src   = 32'h0A000001; pr_ipv4_dst = 32'h0A000002;
-    #1;
+    @(posedge clk); #1;
 
     dep_eth_valid  = 1; dep_ipv4_valid = 1;
     dep_eth_dst    = pr_o_eth_dst; dep_eth_src  = pr_o_eth_src;
@@ -397,7 +402,7 @@ module tb_qos;
     $display("  INT2: TCP → voice_admit → DSCP=44 in deparser bus");
     pr_ipv4_proto = 8'd6;   // TCP
     pr_ipv4_ds    = 6'd0;   // starts at 0
-    #1;
+    @(posedge clk); #1;
     dep_ipv4_ds = pr_o_ipv4_ds; #1;
     chk("INT2: dep diffserv = 44",         dep_pkt_out[DS_HI:DS_LO] == 6'd44);
 
@@ -423,7 +428,7 @@ module tb_qos;
 
     // ── T1: Table empty → miss → NoAction (no field changes) ─────────────────
     $display("  T1: Table miss (empty) → NoAction");
-    pr_ipv4_dst = 32'h0A000001; #1;
+    pr_ipv4_dst = 32'h0A000001; @(posedge clk); #1;
     chk("T1: no hit → drop=0",             !pr_drop);
     chk("T1: no hit → ttl unchanged",      pr_o_ipv4_ttl == 8'd64);
     chk("T1: no hit → egress_spec=0",      pr_o_egress_spec == 9'd0);
@@ -438,7 +443,7 @@ module tb_qos;
     #1;
 
     pr_ipv4_dst = 32'h0A000042;  // 10.0.0.66 — matches /24
-    #1;
+    @(posedge clk); #1;
     chk("T2: hit → drop=0",                !pr_drop);
     chk("T2: hit → out_eth_dst rewritten", pr_o_eth_dst == 48'hDEADBEEFCAFE);
     chk("T2: hit → out_eth_src = old_dst", pr_o_eth_src == 48'hAABBCCDDEEFF);
@@ -448,7 +453,7 @@ module tb_qos;
     // ── T3: Different dst — does NOT match /24 entry → miss → pass-through ──
     $display("  T3: dst outside /24 → miss → pass-through");
     pr_ipv4_dst = 32'h0B000001;  // 11.0.0.1
-    #1;
+    @(posedge clk); #1;
     chk("T3: miss → drop=0",               !pr_drop);
     chk("T3: miss → eth_dst unchanged",    pr_o_eth_dst == 48'hAABBCCDDEEFF);
     chk("T3: miss → TTL unchanged",        pr_o_ipv4_ttl == 8'd64);
@@ -461,7 +466,7 @@ module tb_qos;
     #1;
 
     pr_ipv4_dst = 32'hC0A80101;  // 192.168.1.1 — matches /24
-    #1;
+    @(posedge clk); #1;
     chk("T4: drop entry → drop=1",         pr_drop);
     chk("T4: drop entry → egress_spec=0",  pr_o_egress_spec == 9'd0);
 
@@ -470,7 +475,7 @@ module tb_qos;
     pr_ipv4_proto = 8'd17;   // UDP
     pr_ipv4_dst   = 32'h0A000010;  // 10.0.0.16 — hits entry 0
     pr_ipv4_ttl   = 8'd128;
-    #1;
+    @(posedge clk); #1;
     chk("T5: diffserv=46 (QoS wins)",      pr_o_ipv4_ds  == 6'd46);
     chk("T5: MAC rewritten (tbl wins)",    pr_o_eth_dst  == 48'hDEADBEEFCAFE);
     chk("T5: TTL decremented to 127",      pr_o_ipv4_ttl == 8'd127);

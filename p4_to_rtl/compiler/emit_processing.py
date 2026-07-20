@@ -805,7 +805,10 @@ def emit_processing(ir, output_path):
         f.write(');\n\n')
 
         # ── Pipeline-stage scheduling ────────────────────────────────────
-        exact_names = {tw['table'].name for tw in table_wires if tw['is_exact']}
+        # Every table type (exact hash+BRAM, and now LPM/ternary's registered
+        # leaf-level priority tree) has a uniform 1-cycle lookup latency, so
+        # every table is a pipeline-stage boundary -- not just exact-match.
+        exact_names = {tw['table'].name for tw in table_wires}
         stages, boundary_forwards = _schedule_stages(ctrl.statements, exact_names)
         n_bounds = len(boundary_forwards)
 
