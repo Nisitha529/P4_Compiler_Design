@@ -233,45 +233,90 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
         default_act_name = (table.default_action or 'NoAction').rstrip('()')
         default_act_id   = act_ids.get(default_act_name, 0)
 
-        f.write('  // Combinational lookup\n')
-        f.write('  // LPM: first-match wins; CP software should insert longest-prefix-first.\n')
-        f.write('  always @(*) begin\n')
-        f.write('    hit       = 1\'b0;\n')
-        f.write(f'    action_id = {act_id_w}\'d{default_act_id};\n')
+        # ── Combinational lookup: balanced priority-match tree ──────────
+        # Each entry's match condition only depends on its own storage, so
+        # the DEPTH comparisons are already independent (O(1) depth each).
+        # The old version picked the winner with a `for` loop threading
+        # `!hit` through every iteration -- an O(DEPTH) *serial* priority
+        # chain. This reduces the same DEPTH leaf comparisons with a
+        # balanced binary tree instead (log2(DEPTH) levels), keeping the
+        # exact same "lowest index wins" semantics (CP software still
+        # inserts longest-prefix-first for LPM) with a bounded, depth-
+        # independent critical path.
+        f.write('  // Priority-match reduction: balanced binary tree (log2(DEPTH) levels)\n')
+        f.write('  // instead of a serial DEPTH-deep priority chain. Lowest index still wins.\n')
+
+        f.write(f'  logic        hit_l0[0:{depth-1}];\n')
+        f.write(f'  logic [{act_id_w-1}:0] act_l0[0:{depth-1}];\n')
         for pname, pw in params:
-            f.write(f'    p_{pname} = {pw}\'b0;\n')
-        f.write('    for (int _j = 0; _j < DEPTH; _j++) begin\n')
-        f.write('      if (!hit && mem_valid[_j]) begin\n')
+            f.write(f'  logic [{pw-1}:0] p_{pname}_l0[0:{depth-1}];\n')
+        f.write('\n')
 
-        if is_lpm and table.keys:
-            fname = _field_basename(table.keys[0].field)
-            key_w = _key_width(table.keys[0].field, fwmap)
-            # Shift-based LPM comparison: top pfx_len bits must match
-            f.write(f'        if (mem_pfx_len[_j] == {pfx_w}\'d0 ||\n')
-            f.write(f'            (lkp_{fname} >> ({key_w} - mem_pfx_len[_j])) ==\n')
-            f.write(f'            (mem_key_{fname}[_j] >> ({key_w} - mem_pfx_len[_j]))) begin\n')
-        elif is_ternary and table.keys:
-            conditions = []
-            for key in table.keys:
-                fname = _field_basename(key.field)
-                conditions.append(
-                    f'(lkp_{fname} & mem_mask_{fname}[_j]) == '
-                    f'(mem_key_{fname}[_j] & mem_mask_{fname}[_j])'
-                )
-            f.write('        if (' + ' &&\n            '.join(conditions) + ') begin\n')
-        else:  # exact
-            conditions = [f'lkp_{_field_basename(k.field)} == mem_key_{_field_basename(k.field)}[_j]'
-                          for k in table.keys]
-            f.write('        if (' + ' && '.join(conditions) + ') begin\n')
+        for j in range(depth):
+            # NOTE: array elements are pulled out into their own named wire
+            # before use, rather than inlined directly into the match
+            # expression below. Inlining (e.g. `mem_pfx_len[j]` referenced
+            # three times inline inside one `assign`) reproducibly corrupts
+            # Icarus Verilog's vvp code generator on parameterized-DEPTH
+            # register arrays (confirmed via minimal repro, iverilog 11.0) —
+            # this is a simulator code-gen bug, not a synthesis issue, but
+            # the workaround is free so it stays in unconditionally.
+            if is_lpm and table.keys:
+                fname = _field_basename(table.keys[0].field)
+                key_w = _key_width(table.keys[0].field, fwmap)
+                f.write(f'  logic [{pfx_w-1}:0] _pfx_{j}; assign _pfx_{j} = mem_pfx_len[{j}];\n')
+                f.write(f'  logic [{key_w-1}:0] _key_{j}; assign _key_{j} = mem_key_{fname}[{j}];\n')
+                cond = (f'(_pfx_{j} == {pfx_w}\'d0 || '
+                        f'(lkp_{fname} >> ({key_w} - _pfx_{j})) == '
+                        f'(_key_{j} >> ({key_w} - _pfx_{j})))')
+            elif is_ternary and table.keys:
+                conds = []
+                for key in table.keys:
+                    kfname = _field_basename(key.field)
+                    kw = _key_width(key.field, fwmap)
+                    f.write(f'  logic [{kw-1}:0] _key_{kfname}_{j}; assign _key_{kfname}_{j} = mem_key_{kfname}[{j}];\n')
+                    f.write(f'  logic [{kw-1}:0] _msk_{kfname}_{j}; assign _msk_{kfname}_{j} = mem_mask_{kfname}[{j}];\n')
+                    conds.append(f'((lkp_{kfname} & _msk_{kfname}_{j}) == (_key_{kfname}_{j} & _msk_{kfname}_{j}))')
+                cond = ' && '.join(conds)
+            else:  # exact (unused here, but kept for completeness)
+                conds = [f'(lkp_{_field_basename(k.field)} == mem_key_{_field_basename(k.field)}[{j}])'
+                         for k in table.keys]
+                cond = ' && '.join(conds)
+            f.write(f'  assign hit_l0[{j}] = mem_valid[{j}] && {cond};\n')
+            f.write(f'  assign act_l0[{j}] = mem_action[{j}];\n')
+            for pname, _ in params:
+                f.write(f'  assign p_{pname}_l0[{j}] = mem_p_{pname}[{j}];\n')
+        f.write('\n')
 
-        f.write('          hit       = 1\'b1;\n')
-        f.write('          action_id = mem_action[_j];\n')
-        for pname, _ in params:
-            f.write(f'          p_{pname} = mem_p_{pname}[_j];\n')
-        f.write('        end\n')
-        f.write('      end\n')
-        f.write('    end\n')
-        f.write('  end\n\n')
+        prev_n, level = depth, 0
+        while prev_n > 1:
+            nxt_n = (prev_n + 1) // 2
+            f.write(f'  logic        hit_l{level+1}[0:{nxt_n-1}];\n')
+            f.write(f'  logic [{act_id_w-1}:0] act_l{level+1}[0:{nxt_n-1}];\n')
+            for pname, pw in params:
+                f.write(f'  logic [{pw-1}:0] p_{pname}_l{level+1}[0:{nxt_n-1}];\n')
+            for i in range(nxt_n):
+                left, right = 2 * i, 2 * i + 1
+                if right < prev_n:
+                    f.write(f'  assign hit_l{level+1}[{i}] = hit_l{level}[{left}] || hit_l{level}[{right}];\n')
+                    f.write(f'  assign act_l{level+1}[{i}] = hit_l{level}[{left}] ? '
+                            f'act_l{level}[{left}] : act_l{level}[{right}];\n')
+                    for pname, _ in params:
+                        f.write(f'  assign p_{pname}_l{level+1}[{i}] = hit_l{level}[{left}] ? '
+                                f'p_{pname}_l{level}[{left}] : p_{pname}_l{level}[{right}];\n')
+                else:
+                    f.write(f'  assign hit_l{level+1}[{i}] = hit_l{level}[{left}];\n')
+                    f.write(f'  assign act_l{level+1}[{i}] = act_l{level}[{left}];\n')
+                    for pname, _ in params:
+                        f.write(f'  assign p_{pname}_l{level+1}[{i}] = p_{pname}_l{level}[{left}];\n')
+            f.write('\n')
+            prev_n, level = nxt_n, level + 1
+
+        f.write(f'  assign hit       = hit_l{level}[0];\n')
+        f.write(f'  assign action_id = hit_l{level}[0] ? act_l{level}[0] : {act_id_w}\'d{default_act_id};\n')
+        for pname, pw in params:
+            f.write(f'  assign p_{pname} = hit_l{level}[0] ? p_{pname}_l{level}[0] : {pw}\'b0;\n')
+        f.write('\n')
 
         # ── Action encoding comment ───────────────────────────────────
         f.write('  // Action ID encoding:\n')

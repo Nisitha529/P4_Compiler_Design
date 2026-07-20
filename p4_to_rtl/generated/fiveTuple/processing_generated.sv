@@ -130,7 +130,8 @@ module processing_generated (
   logic [15:0] table_key_dport;
   logic [15:0] table_key_sport;
 
-  // Pipeline-stage forwarding registers (exact-match table boundary)
+  // Pipeline-stage forwarding registers (one set per exact-match
+  // table boundary in the chain)
   logic valid_s1;
   logic out_eth_valid_s1;
   logic eth_valid_s1;
@@ -233,8 +234,8 @@ module processing_generated (
   logic __stage_cond_1_r;
   logic __stage_cond_0_r;
 
-  // Stage-0 working copies (pool A: out_*/drop kept separate from
-  // the real output ports, which stage 1 alone drives)
+  // Pool-A (out_*/drop) working copies -- every stage except the
+  // last, which drives the real output ports directly
   logic out_eth_valid__st0;
   logic out_new_vlan_valid__st0;
   logic out_vlan_valid__st0;
@@ -284,8 +285,8 @@ module processing_generated (
   logic [15:0] out_udp_checksum__st0;
   logic drop__st0;
 
-  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr
-  // and std_meta reads, seeded from the stage-0 forwarding regs)
+  // Pool-B (locals/meta shadow/raw hdr+std_meta reads) working
+  // copies -- every stage except the first, which reads live inputs
   logic [0:0] hit__st1;
   logic [15:0] table_key_dport__st1;
   logic [15:0] table_key_sport__st1;
@@ -377,7 +378,7 @@ module processing_generated (
   // Table hit outputs
   assign FiveTuple_hit_out = FiveTuple_hit;
 
-  // ---- Pipeline stage 0 (combinational, feeds the exact-match table) ----
+  // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin
     drop__st0 = 0;
     hit = 1'b0;
@@ -435,7 +436,7 @@ module processing_generated (
     out_udp_length__st0 = udp_length;
     out_udp_checksum__st0 = udp_checksum;
 
-    // apply block (stage 0 — before the exact-match table split)
+    // apply block (stage 0 of 1)
     hit = 1'b0;
     if (udp_valid) begin
       table_key_sport = udp_src_port;
@@ -449,8 +450,8 @@ module processing_generated (
     end
   end
 
-  // Forward stage-0 state into stage-1 registers (1-cycle boundary —
-  // matches the exact-match table's registered hit/action_id latency)
+  // Forward stage-0 state into stage-1 registers (1-cycle
+  // boundary — matches the exact-match table's registered latency)
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       valid_s1 <= 1'b0;
@@ -559,7 +560,7 @@ module processing_generated (
     end
   end
 
-  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----
+  // ---- Pipeline stage 1 (registered 1 cycle(s) after stage 0) ----
   always_comb begin
     drop = drop_s1;
     hit__st1 = hit_s1;
@@ -660,7 +661,7 @@ module processing_generated (
     out_udp_checksum = out_udp_checksum_s1;
     udp_checksum__st1 = udp_checksum_s1;
 
-    // apply block (stage 1 — after the exact-match table split)
+    // apply block (stage 1 of 1)
     if (__stage_cond_1_r) begin
       if (FiveTuple_hit) begin
         // FiveTuple.apply()

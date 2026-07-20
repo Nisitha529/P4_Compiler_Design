@@ -808,13 +808,64 @@ def emit_processing(ir, output_path):
         exact_names = {tw['table'].name for tw in table_wires if tw['is_exact']}
         stages, boundary_forwards = _schedule_stages(ctrl.statements, exact_names)
         n_bounds = len(boundary_forwards)
-        if n_bounds > 1:
-            raise NotImplementedError(
-                'emit_processing: this control block has more than one '
-                'exact-match table pipeline boundary in sequence; only a '
-                'single boundary (0 or 1 exact-match tables gating further '
-                'exact-match tables) is currently supported.'
-            )
+
+        # A table's `meta.*` key input is only safe to wire straight to the
+        # bare `meta_x_w` name (module scope, no rename) if nothing writes
+        # that field from inside a later pipeline stage -- e.g. a *chain* of
+        # exact-match tables where an earlier one's own action sets the
+        # metadata field a later one keys on. In that case the value only
+        # becomes correct once it's been through that stage's own rename
+        # (`meta_x_w__stK`), so any table keying on it must be wired to the
+        # stage-suffixed name, not the stale bare one. Tables keyed only on
+        # raw header/std_meta fields are unaffected (those never have a
+        # same-block writer, so the bare name is always the live value).
+        def _action_writes_meta(action, field_name):
+            return any(isinstance(s, Assignment) and _meta_fname(s.lhs) == field_name
+                       for s in action.body)
+
+        def _table_writes_meta(tname, field_name):
+            tbl = next((t for t in ctrl.tables if t.name == tname), None)
+            if not tbl:
+                return False
+            for araw in tbl.actions:
+                action = amap.get(araw.strip().rstrip('()'))
+                if action and _action_writes_meta(action, field_name):
+                    return True
+            return False
+
+        def _stmts_reference_meta_write(stmts, field_name):
+            for s in stmts:
+                if isinstance(s, TableApply) and _table_writes_meta(s.table_name, field_name):
+                    return True
+                if isinstance(s, ExternCall):
+                    action = amap.get(s.name)
+                    if action and _action_writes_meta(action, field_name):
+                        return True
+                if isinstance(s, IfStatement):
+                    if any(_table_writes_meta(tn, field_name) for tn in _tbl_refs_in_cond(s.condition)):
+                        return True
+                    if _stmts_reference_meta_write(s.then_body, field_name) or \
+                       _stmts_reference_meta_write(s.else_body, field_name):
+                        return True
+            return False
+
+        def _meta_key_producing_stage(field_name):
+            producing = 0
+            for i, stg in enumerate(stages):
+                if _stmts_reference_meta_write(stg, field_name):
+                    producing = i
+            return producing
+
+        for tw in table_wires:
+            fixed = []
+            for fname, ksig, kw in tw['key_sigs']:
+                m = re.match(r'^meta_(\w+)_w$', ksig)
+                if m:
+                    stage_idx = _meta_key_producing_stage(m.group(1))
+                    if stage_idx > 0:
+                        ksig = f'{ksig}__st{stage_idx}'
+                fixed.append((fname, ksig, kw))
+            tw['key_sigs'] = fixed
 
         def _stmts_contain_write(stmts, reg_name):
             for s in stmts:
@@ -927,53 +978,60 @@ def emit_processing(ir, output_path):
         # always_comb blocks can't both drive the same bare signal name —
         # see `_stage_text` above for which pool uses which stage).
         if n_bounds:
-            f.write('  // Pipeline-stage forwarding registers (exact-match table boundary)\n')
-            f.write('  logic valid_s1;\n')
-            for hname in hdr_valids:
-                f.write(f'  logic out_{hname}_valid_s1;\n')
-                f.write(f'  logic {hname}_valid_s1;\n')
-            for hname, fname, w in hdr_ports:
-                f.write(f'  logic [{w-1}:0] out_{hname}_{fname}_s1;\n')
-                f.write(f'  logic [{w-1}:0] {hname}_{fname}_s1;\n')
-            for mf in meta_fields:
-                f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w_s1;\n')
-            for lname, lw in sorted(locals_.items()):
-                f.write(f'  logic [{lw-1}:0] {lname}_s1;\n')
-            for fname in sorted(std_meta_outs):
-                fw = std_meta_outs[fname]
-                f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}_s1;\n')
-            for fname in sorted(std_meta_ins):
-                fw = std_meta_ins[fname]
-                f.write(f'  logic [{fw-1}:0] std_meta_{fname}_s1;\n')
-            f.write('  logic drop_s1;\n')
-            for reg_name, _ in boundary_forwards[0]:
-                f.write(f'  logic {reg_name};\n')
+            f.write('  // Pipeline-stage forwarding registers (one set per exact-match\n')
+            f.write('  // table boundary in the chain)\n')
+            for k in range(n_bounds):
+                f.write(f'  logic valid_s{k+1};\n')
+                for hname in hdr_valids:
+                    f.write(f'  logic out_{hname}_valid_s{k+1};\n')
+                    f.write(f'  logic {hname}_valid_s{k+1};\n')
+                for hname, fname, w in hdr_ports:
+                    f.write(f'  logic [{w-1}:0] out_{hname}_{fname}_s{k+1};\n')
+                    f.write(f'  logic [{w-1}:0] {hname}_{fname}_s{k+1};\n')
+                for mf in meta_fields:
+                    f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w_s{k+1};\n')
+                for lname, lw in sorted(locals_.items()):
+                    f.write(f'  logic [{lw-1}:0] {lname}_s{k+1};\n')
+                for fname in sorted(std_meta_outs):
+                    fw = std_meta_outs[fname]
+                    f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}_s{k+1};\n')
+                for fname in sorted(std_meta_ins):
+                    fw = std_meta_ins[fname]
+                    f.write(f'  logic [{fw-1}:0] std_meta_{fname}_s{k+1};\n')
+                f.write(f'  logic drop_s{k+1};\n')
+                for reg_name, _ in boundary_forwards[k]:
+                    f.write(f'  logic {reg_name};\n')
             f.write('\n')
 
-            f.write('  // Stage-0 working copies (pool A: out_*/drop kept separate from\n')
-            f.write('  // the real output ports, which stage 1 alone drives)\n')
-            for hname in hdr_valids:
-                f.write(f'  logic out_{hname}_valid__st0;\n')
-            for hname, fname, w in hdr_ports:
-                f.write(f'  logic [{w-1}:0] out_{hname}_{fname}__st0;\n')
-            for fname in sorted(std_meta_outs):
-                fw = std_meta_outs[fname]
-                f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}__st0;\n')
-            f.write('  logic drop__st0;\n\n')
+            f.write('  // Pool-A (out_*/drop) working copies -- every stage except the\n')
+            f.write('  // last, which drives the real output ports directly\n')
+            for k in range(n_bounds):
+                suf = f'__st{k}'
+                for hname in hdr_valids:
+                    f.write(f'  logic out_{hname}_valid{suf};\n')
+                for hname, fname, w in hdr_ports:
+                    f.write(f'  logic [{w-1}:0] out_{hname}_{fname}{suf};\n')
+                for fname in sorted(std_meta_outs):
+                    fw = std_meta_outs[fname]
+                    f.write(f'  logic [{fw-1}:0] out_std_meta_{fname}{suf};\n')
+                f.write(f'  logic drop{suf};\n')
+            f.write('\n')
 
-            f.write('  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr\n')
-            f.write('  // and std_meta reads, seeded from the stage-0 forwarding regs)\n')
-            for lname, lw in sorted(locals_.items()):
-                f.write(f'  logic [{lw-1}:0] {lname}__st1;\n')
-            for mf in meta_fields:
-                f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w__st1;\n')
-            for hname in hdr_valids:
-                f.write(f'  logic {hname}_valid__st1;\n')
-            for hname, fname, w in hdr_ports:
-                f.write(f'  logic [{w-1}:0] {hname}_{fname}__st1;\n')
-            for fname in sorted(std_meta_ins):
-                fw = std_meta_ins[fname]
-                f.write(f'  logic [{fw-1}:0] std_meta_{fname}__st1;\n')
+            f.write('  // Pool-B (locals/meta shadow/raw hdr+std_meta reads) working\n')
+            f.write('  // copies -- every stage except the first, which reads live inputs\n')
+            for k in range(1, n_bounds + 1):
+                suf = f'__st{k}'
+                for lname, lw in sorted(locals_.items()):
+                    f.write(f'  logic [{lw-1}:0] {lname}{suf};\n')
+                for mf in meta_fields:
+                    f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w{suf};\n')
+                for hname in hdr_valids:
+                    f.write(f'  logic {hname}_valid{suf};\n')
+                for hname, fname, w in hdr_ports:
+                    f.write(f'  logic [{w-1}:0] {hname}_{fname}{suf};\n')
+                for fname in sorted(std_meta_ins):
+                    fw = std_meta_ins[fname]
+                    f.write(f'  logic [{fw-1}:0] std_meta_{fname}{suf};\n')
             f.write('\n')
 
         # ── Register memory arrays + write-staging signals ─────────────
@@ -1063,115 +1121,108 @@ def emit_processing(ir, output_path):
             f.write('\n')
 
         # ── Combinational logic (staged) ────────────────────────────────
-        # Stage 0 (n_bounds == 0: this is the *only* stage, and this
-        # whole section is byte-identical to the original single-block
-        # generator — apps with no exact-match table, e.g. qos, are
-        # completely unaffected by pipelining).
-        buf0 = io.StringIO()
-        buf0.write('  always_comb begin\n')
-        buf0.write('    drop = 0;\n')
+        # n_bounds == 0: a single stage, byte-identical to the original
+        # single-block generator (apps with no exact-match table, e.g.
+        # qos, are completely unaffected by pipelining). n_bounds >= 1:
+        # `stages` has n_bounds+1 entries; stage k runs k cycles after
+        # stage 0, chained through one forwarding-register boundary per
+        # exact-match table in the sequence.
+        for k, stmts_k in enumerate(stages):
+            buf = io.StringIO()
+            buf.write('  always_comb begin\n')
 
-        for lname, lw in sorted(locals_.items()):
-            buf0.write(f'    {lname} = {lw}\'b0;\n')
+            if k == 0:
+                buf.write('    drop = 0;\n')
+                for lname, lw in sorted(locals_.items()):
+                    buf.write(f'    {lname} = {lw}\'b0;\n')
+                if meta_fields:
+                    buf.write('\n    // Metadata shadow defaults (init from inputs)\n')
+                    for mf in meta_fields:
+                        buf.write(f'    meta_{mf.name}_w = meta_{mf.name};\n')
+                for reg in registers:
+                    if reg_write_stage[reg.name] == 0:
+                        buf.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
+                        buf.write(f'    {reg.name}_wr_addr = \'0;\n')
+                        buf.write(f'    {reg.name}_wr_data = \'0;\n')
+                if std_meta_outs:
+                    buf.write('\n    // Standard metadata defaults\n')
+                    for fname in sorted(std_meta_outs):
+                        fw = std_meta_outs[fname]
+                        buf.write(f'    out_std_meta_{fname} = {fw}\'b0;\n')
+                buf.write('\n    // Header valid flag pass-through defaults\n')
+                for hname in hdr_valids:
+                    buf.write(f'    out_{hname}_valid = {hname}_valid;\n')
+                buf.write('\n    // Header field pass-through defaults\n')
+                for hname, fname, _ in hdr_ports:
+                    buf.write(f'    out_{hname}_{fname} = {hname}_{fname};\n')
+            else:
+                buf.write(f'    drop = drop_s{k};\n')
+                for lname, _ in sorted(locals_.items()):
+                    buf.write(f'    {lname} = {lname}_s{k};\n')
+                for mf in meta_fields:
+                    buf.write(f'    meta_{mf.name}_w = meta_{mf.name}_w_s{k};\n')
+                for reg in registers:
+                    if reg_write_stage[reg.name] == k:
+                        buf.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
+                        buf.write(f'    {reg.name}_wr_addr = \'0;\n')
+                        buf.write(f'    {reg.name}_wr_data = \'0;\n')
+                for hname in hdr_valids:
+                    buf.write(f'    out_{hname}_valid = out_{hname}_valid_s{k};\n')
+                    buf.write(f'    {hname}_valid = {hname}_valid_s{k};\n')
+                for hname, fname, _ in hdr_ports:
+                    buf.write(f'    out_{hname}_{fname} = out_{hname}_{fname}_s{k};\n')
+                    buf.write(f'    {hname}_{fname} = {hname}_{fname}_s{k};\n')
+                for fname in sorted(std_meta_outs):
+                    buf.write(f'    out_std_meta_{fname} = out_std_meta_{fname}_s{k};\n')
+                for fname in sorted(std_meta_ins):
+                    buf.write(f'    std_meta_{fname} = std_meta_{fname}_s{k};\n')
 
-        if meta_fields:
-            buf0.write('\n    // Metadata shadow defaults (init from inputs)\n')
-            for mf in meta_fields:
-                buf0.write(f'    meta_{mf.name}_w = meta_{mf.name};\n')
+            if stmts_k:
+                stage_note = f' (stage {k} of {n_bounds})' if n_bounds else ''
+                buf.write(f'\n    // apply block{stage_note}\n')
+                _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables)
 
-        for reg in registers:
-            if reg_write_stage[reg.name] == 0:
-                buf0.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
-                buf0.write(f'    {reg.name}_wr_addr = \'0;\n')
-                buf0.write(f'    {reg.name}_wr_data = \'0;\n')
-
-        if std_meta_outs:
-            buf0.write('\n    // Standard metadata defaults\n')
-            for fname in sorted(std_meta_outs):
-                fw = std_meta_outs[fname]
-                buf0.write(f'    out_std_meta_{fname} = {fw}\'b0;\n')
-
-        buf0.write('\n    // Header valid flag pass-through defaults\n')
-        for hname in hdr_valids:
-            buf0.write(f'    out_{hname}_valid = {hname}_valid;\n')
-
-        buf0.write('\n    // Header field pass-through defaults\n')
-        for hname, fname, _ in hdr_ports:
-            buf0.write(f'    out_{hname}_{fname} = {hname}_{fname};\n')
-
-        if stages[0]:
-            buf0.write('\n    // apply block'
-                        + (' (stage 0 — before the exact-match table split)' if n_bounds else '')
-                        + '\n')
-            _emit_stmts(buf0, stages[0], amap, '    ', cmap, ctrl.tables)
-
-        buf0.write('  end\n')
-        f.write(f'  // ---- Pipeline stage 0{" (combinational, feeds the exact-match table)" if n_bounds else ""} ----\n')
-        f.write(_stage_text(buf0.getvalue(), 0))
-        f.write('\n')
-
-        if n_bounds:
-            # ── Stage-0 -> stage-1 forwarding register ──────────────────
-            f.write('  // Forward stage-0 state into stage-1 registers (1-cycle boundary —\n')
-            f.write('  // matches the exact-match table\'s registered hit/action_id latency)\n')
-            f.write('  always_ff @(posedge clk) begin\n')
-            f.write('    if (!rst_n) begin\n')
-            f.write('      valid_s1 <= 1\'b0;\n')
-            f.write('    end else begin\n')
-            f.write('      valid_s1 <= valid_in;\n')
-            f.write('      drop_s1 <= drop__st0;\n')
-            for lname, _ in sorted(locals_.items()):
-                f.write(f'      {lname}_s1 <= {lname};\n')
-            for mf in meta_fields:
-                f.write(f'      meta_{mf.name}_w_s1 <= meta_{mf.name}_w;\n')
-            for hname in hdr_valids:
-                f.write(f'      out_{hname}_valid_s1 <= out_{hname}_valid__st0;\n')
-                f.write(f'      {hname}_valid_s1 <= {hname}_valid;\n')
-            for hname, fname, _ in hdr_ports:
-                f.write(f'      out_{hname}_{fname}_s1 <= out_{hname}_{fname}__st0;\n')
-                f.write(f'      {hname}_{fname}_s1 <= {hname}_{fname};\n')
-            for fname in sorted(std_meta_outs):
-                f.write(f'      out_std_meta_{fname}_s1 <= out_std_meta_{fname}__st0;\n')
-            for fname in sorted(std_meta_ins):
-                f.write(f'      std_meta_{fname}_s1 <= std_meta_{fname};\n')
-            for reg_name, raw_cond in boundary_forwards[0]:
-                f.write(f'      {reg_name} <= ({_map_cond(raw_cond, cmap)});\n')
-            f.write('    end\n')
-            f.write('  end\n\n')
-
-            # ── Stage 1 ──────────────────────────────────────────────────
-            buf1 = io.StringIO()
-            buf1.write('  always_comb begin\n')
-            buf1.write('    drop = drop_s1;\n')
-            for lname, _ in sorted(locals_.items()):
-                buf1.write(f'    {lname} = {lname}_s1;\n')
-            for mf in meta_fields:
-                buf1.write(f'    meta_{mf.name}_w = meta_{mf.name}_w_s1;\n')
-            for hname in hdr_valids:
-                buf1.write(f'    out_{hname}_valid = out_{hname}_valid_s1;\n')
-                buf1.write(f'    {hname}_valid = {hname}_valid_s1;\n')
-            for hname, fname, _ in hdr_ports:
-                buf1.write(f'    out_{hname}_{fname} = out_{hname}_{fname}_s1;\n')
-                buf1.write(f'    {hname}_{fname} = {hname}_{fname}_s1;\n')
-            for fname in sorted(std_meta_outs):
-                buf1.write(f'    out_std_meta_{fname} = out_std_meta_{fname}_s1;\n')
-            for fname in sorted(std_meta_ins):
-                buf1.write(f'    std_meta_{fname} = std_meta_{fname}_s1;\n')
-
-            for reg in registers:
-                if reg_write_stage[reg.name] == 1:
-                    buf1.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
-                    buf1.write(f'    {reg.name}_wr_addr = \'0;\n')
-                    buf1.write(f'    {reg.name}_wr_data = \'0;\n')
-
-            if stages[1]:
-                buf1.write('\n    // apply block (stage 1 — after the exact-match table split)\n')
-                _emit_stmts(buf1, stages[1], amap, '    ', cmap, ctrl.tables)
-
-            buf1.write('  end\n')
-            f.write('  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----\n')
-            f.write(_stage_text(buf1.getvalue(), 1))
+            buf.write('  end\n')
+            f.write(f'  // ---- Pipeline stage {k}'
+                     + (f' (registered {k} cycle(s) after stage 0)' if k else
+                        (' (combinational, feeds the first exact-match table boundary)' if n_bounds else ''))
+                     + ' ----\n')
+            f.write(_stage_text(buf.getvalue(), k))
             f.write('\n')
+
+            if k < n_bounds:
+                f.write(f'  // Forward stage-{k} state into stage-{k+1} registers (1-cycle\n')
+                f.write('  // boundary — matches the exact-match table\'s registered latency)\n')
+                f.write('  always_ff @(posedge clk) begin\n')
+                f.write('    if (!rst_n) begin\n')
+                f.write(f'      valid_s{k+1} <= 1\'b0;\n')
+                f.write('    end else begin\n')
+                src_valid = 'valid_in' if k == 0 else f'valid_s{k}'
+                f.write(f'      valid_s{k+1} <= {src_valid};\n')
+                f.write(f'      drop_s{k+1} <= drop__st{k};\n')
+                for lname, _ in sorted(locals_.items()):
+                    src = lname if k == 0 else f'{lname}__st{k}'
+                    f.write(f'      {lname}_s{k+1} <= {src};\n')
+                for mf in meta_fields:
+                    src = f'meta_{mf.name}_w' if k == 0 else f'meta_{mf.name}_w__st{k}'
+                    f.write(f'      meta_{mf.name}_w_s{k+1} <= {src};\n')
+                for hname in hdr_valids:
+                    f.write(f'      out_{hname}_valid_s{k+1} <= out_{hname}_valid__st{k};\n')
+                    src = f'{hname}_valid' if k == 0 else f'{hname}_valid__st{k}'
+                    f.write(f'      {hname}_valid_s{k+1} <= {src};\n')
+                for hname, fname, _ in hdr_ports:
+                    f.write(f'      out_{hname}_{fname}_s{k+1} <= out_{hname}_{fname}__st{k};\n')
+                    src = f'{hname}_{fname}' if k == 0 else f'{hname}_{fname}__st{k}'
+                    f.write(f'      {hname}_{fname}_s{k+1} <= {src};\n')
+                for fname in sorted(std_meta_outs):
+                    f.write(f'      out_std_meta_{fname}_s{k+1} <= out_std_meta_{fname}__st{k};\n')
+                for fname in sorted(std_meta_ins):
+                    src = f'std_meta_{fname}' if k == 0 else f'std_meta_{fname}__st{k}'
+                    f.write(f'      std_meta_{fname}_s{k+1} <= {src};\n')
+                for reg_name, raw_cond in boundary_forwards[k]:
+                    f.write(f'      {reg_name} <= ({_stage_text(_map_cond(raw_cond, cmap), k)});\n')
+                f.write('    end\n')
+                f.write('  end\n\n')
 
         # ── Register write-back ────────────────────────────────────────
         if registers:
@@ -1187,7 +1238,7 @@ def emit_processing(ir, output_path):
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) valid_out <= 0;\n')
         if n_bounds:
-            f.write('    else        valid_out <= valid_s1;\n')
+            f.write(f'    else        valid_out <= valid_s{n_bounds};\n')
         else:
             f.write('    else        valid_out <= valid_in;\n')
         f.write('  end\n\n')

@@ -138,7 +138,8 @@ module processing_generated (
   logic [7:0] tmp_8;
   logic [31:0] tmp_9;
 
-  // Pipeline-stage forwarding registers (exact-match table boundary)
+  // Pipeline-stage forwarding registers (one set per exact-match
+  // table boundary in the chain)
   logic valid_s1;
   logic out_ethernet_valid_s1;
   logic ethernet_valid_s1;
@@ -243,8 +244,8 @@ module processing_generated (
   logic __stage_cond_1_r;
   logic __stage_cond_0_r;
 
-  // Stage-0 working copies (pool A: out_*/drop kept separate from
-  // the real output ports, which stage 1 alone drives)
+  // Pool-A (out_*/drop) working copies -- every stage except the
+  // last, which drives the real output ports directly
   logic out_ethernet_valid__st0;
   logic out_ipv4_valid__st0;
   logic out_tcp_valid__st0;
@@ -283,8 +284,8 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_spec__st0;
   logic drop__st0;
 
-  // Stage-1 working copies (pool B: locals/meta shadow/raw hdr
-  // and std_meta reads, seeded from the stage-0 forwarding regs)
+  // Pool-B (locals/meta shadow/raw hdr+std_meta reads) working
+  // copies -- every stage except the first, which reads live inputs
   logic [4:0] _padding_0__st1;
   logic [0:0] direction_0__st1;
   logic [31:0] reg_pos_one_0__st1;
@@ -421,7 +422,7 @@ module processing_generated (
   assign ipv4_lpm_hit_out = ipv4_lpm_hit;
   assign check_ports_hit_out = check_ports_hit;
 
-  // ---- Pipeline stage 0 (combinational, feeds the exact-match table) ----
+  // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin
     drop__st0 = 0;
     _padding_0 = 5'b0;
@@ -493,7 +494,7 @@ module processing_generated (
     out_tcp_checksum__st0 = tcp_checksum;
     out_tcp_urgentPtr__st0 = tcp_urgentPtr;
 
-    // apply block (stage 0 — before the exact-match table split)
+    // apply block (stage 0 of 1)
     if (ipv4_valid) begin
       // ipv4_lpm.apply()
       if (ipv4_lpm_hit) begin
@@ -519,8 +520,8 @@ module processing_generated (
     end
   end
 
-  // Forward stage-0 state into stage-1 registers (1-cycle boundary —
-  // matches the exact-match table's registered hit/action_id latency)
+  // Forward stage-0 state into stage-1 registers (1-cycle
+  // boundary — matches the exact-match table's registered latency)
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       valid_s1 <= 1'b0;
@@ -631,7 +632,7 @@ module processing_generated (
     end
   end
 
-  // ---- Pipeline stage 1 (1 cycle after stage 0; exact-match table result is valid here) ----
+  // ---- Pipeline stage 1 (registered 1 cycle(s) after stage 0) ----
   always_comb begin
     drop = drop_s1;
     _padding_0__st1 = _padding_0_s1;
@@ -660,6 +661,12 @@ module processing_generated (
     tmp_7__st1 = tmp_7_s1;
     tmp_8__st1 = tmp_8_s1;
     tmp_9__st1 = tmp_9_s1;
+    bloom_filter_1_wr_en   = 1'b0;
+    bloom_filter_1_wr_addr = '0;
+    bloom_filter_1_wr_data = '0;
+    bloom_filter_2_wr_en   = 1'b0;
+    bloom_filter_2_wr_addr = '0;
+    bloom_filter_2_wr_data = '0;
     out_ethernet_valid = out_ethernet_valid_s1;
     ethernet_valid__st1 = ethernet_valid_s1;
     out_ipv4_valid = out_ipv4_valid_s1;
@@ -733,14 +740,8 @@ module processing_generated (
     out_std_meta_egress_spec = out_std_meta_egress_spec_s1;
     std_meta_egress_spec__st1 = std_meta_egress_spec_s1;
     std_meta_ingress_port__st1 = std_meta_ingress_port_s1;
-    bloom_filter_1_wr_en   = 1'b0;
-    bloom_filter_1_wr_addr = '0;
-    bloom_filter_1_wr_data = '0;
-    bloom_filter_2_wr_en   = 1'b0;
-    bloom_filter_2_wr_addr = '0;
-    bloom_filter_2_wr_data = '0;
 
-    // apply block (stage 1 — after the exact-match table split)
+    // apply block (stage 1 of 1)
     if (__stage_cond_1_r) begin
       if (__stage_cond_0_r) begin
         // check_ports.apply()
