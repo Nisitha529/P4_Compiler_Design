@@ -120,6 +120,7 @@ def _map_cond(cond, cmap=None):
     cond = re.sub(r'hdr\.(\w+)\.isValid\(\)', r'\1_valid', cond)
     cond = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', cond)
     cond = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', cond)  # reads use the shadow
+    cond = re.sub(r'\bstandard_metadata\.(\w+)', r'std_meta_\1', cond)
     if cmap:
         for name, sv_lit in cmap.items():
             cond = re.sub(r'\b' + re.escape(name) + r'\b', sv_lit, cond)
@@ -140,7 +141,9 @@ def _map_expr(e, cmap=None):
 # Control-block resolution
 # ============================================================
 
-def _find_processing_ctrl(ir):
+def _find_processing_ctrl(ir, stage='ingress'):
+    if stage == 'egress':
+        return ir.pipeline.egress
     if ir.pipeline.ingress is not None:
         return ir.pipeline.ingress
     _SKIP = {'parser', 'deparser', 'verify', 'compute', 'checksum'}
@@ -662,10 +665,10 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
 
         elif isinstance(stmt, TableApply):
             tbl = next((t for t in ctrl_tables if t.name == stmt.table_name), None)
-            if tbl and tbl.keys:
+            if tbl and tbl.actions:
                 _emit_table_case(f, tbl, amap, ind, cmap)
             else:
-                f.write(f'{ind}// {stmt.table_name}.apply()  [no keys — stub]\n')
+                f.write(f'{ind}// {stmt.table_name}.apply()  [no actions — stub]\n')
 
         elif isinstance(stmt, ExternCall):
             action = amap.get(stmt.name)
@@ -699,13 +702,15 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
 # Main emitter
 # ============================================================
 
-def emit_processing(ir, output_path):
+def emit_processing(ir, output_path, stage='ingress'):
 
-    ctrl = _find_processing_ctrl(ir)
+    ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
         raise RuntimeError(
             "emit_processing: no processing control block found in ir.controls."
         )
+
+    module_name = 'processing_generated' if stage == 'ingress' else f'{stage}_processing_generated'
 
     cmap          = _build_const_map(ir)
     amap          = {a.name: a for a in ctrl.actions}
@@ -740,12 +745,26 @@ def emit_processing(ir, output_path):
     # ── Table wiring info ──────────────────────────────────────────────────
     table_wires = []
     for tbl in ctrl.tables:
-        if not tbl.keys:
+        if not tbl.actions:
             continue
         act_ids  = _table_action_ids(tbl)
         n_acts   = max(act_ids.values()) + 1 if act_ids else 1
         id_w     = max(1, math.ceil(math.log2(n_acts))) if n_acts > 1 else 1
         params   = _table_params(tbl, amap)
+
+        if not tbl.keys:
+            # Keyless table: no lookup key, no lookup latency, and not a
+            # pipeline-stage boundary (see emit_table.py's
+            # _emit_keyless_table) -- flagged separately below so the
+            # scheduler doesn't treat it as one.
+            table_wires.append({
+                'table': tbl, 'hit_sig': f'{tbl.name}_hit',
+                'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
+                'params': params, 'key_sigs': [],
+                'depth': None, 'is_exact': False, 'is_keyless': True,
+            })
+            continue
+
         key_sigs = [(_field_basename(k.field), _table_key_sig(k.field),
                      _STD_META_WIDTHS.get(_std_meta_fname(k.field) or '', None)
                      or fwmap.get(_sig(k.field), 32))
@@ -763,7 +782,7 @@ def emit_processing(ir, output_path):
             'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
             'params': params, 'key_sigs': fixed_key_sigs,
             'depth': tbl.size if tbl.size else 1024,
-            'is_exact': mt not in ('lpm', 'ternary'),
+            'is_exact': mt not in ('lpm', 'ternary'), 'is_keyless': False,
         })
 
     tbl_wire_names = set()
@@ -780,7 +799,7 @@ def emit_processing(ir, output_path):
     with open(output_path, 'w') as f:
 
         # ── Module declaration ──────────────────────────────────────────
-        f.write('module processing_generated (\n')
+        f.write(f'module {module_name} (\n')
         f.write('  input  logic        clk,\n')
         f.write('  input  logic        rst_n,\n')
         f.write('  input  logic        valid_in,\n')
@@ -824,6 +843,14 @@ def emit_processing(ir, output_path):
             for tw in table_wires:
                 tbl   = tw['table']
                 tname = tbl.name
+
+                if tw.get('is_keyless'):
+                    f.write(f'  input  logic        {tname}_cp_wr_en,\n')
+                    f.write(f'  input  logic [{tw["id_w"]-1}:0] {tname}_cp_wr_action,\n')
+                    for pname, pw in tw['params']:
+                        f.write(f'  input  logic [{pw-1}:0] {tname}_cp_wr_p_{pname},\n')
+                    continue
+
                 depth = tw['depth']
                 idx_w = max(1, math.ceil(math.log2(depth))) if depth > 1 else 1
                 mt    = tbl.keys[0].match_type if tbl.keys else 'exact'
@@ -855,10 +882,13 @@ def emit_processing(ir, output_path):
         f.write(');\n\n')
 
         # ── Pipeline-stage scheduling ────────────────────────────────────
-        # Every table type (exact hash+BRAM, and now LPM/ternary's registered
-        # leaf-level priority tree) has a uniform 1-cycle lookup latency, so
-        # every table is a pipeline-stage boundary -- not just exact-match.
-        exact_names = {tw['table'].name for tw in table_wires}
+        # Every table type with an actual key (exact hash+BRAM, and
+        # LPM/ternary's registered leaf-level priority tree) has a uniform
+        # 1-cycle lookup latency, so each is a pipeline-stage boundary.
+        # Keyless tables are excluded -- there's no key input to align a
+        # registered output against, so they're plain combinational reads
+        # of a control-plane-writable register (see _emit_keyless_table).
+        exact_names = {tw['table'].name for tw in table_wires if not tw.get('is_keyless')}
         stages, boundary_forwards = _schedule_stages(ctrl.statements, exact_names)
         n_bounds = len(boundary_forwards)
 
@@ -1132,6 +1162,27 @@ def emit_processing(ir, output_path):
             for tw in table_wires:
                 tbl   = tw['table']
                 tname = tbl.name
+
+                if tw.get('is_keyless'):
+                    f.write(f'  {tname}_table u_{tname} (\n')
+                    f.write('    .clk    (clk),\n')
+                    f.write('    .rst_n  (rst_n),\n')
+                    f.write(f'    .hit       ({tw["hit_sig"]}),\n')
+                    f.write(f'    .action_id ({tw["aid_sig"]}),\n')
+                    for pname, _ in tw['params']:
+                        f.write(f'    .p_{pname}  ({tname}_p_{pname}),\n')
+                    f.write(f'    .cp_wr_en  ({tname}_cp_wr_en),\n')
+                    f.write(f'    .cp_wr_action ({tname}_cp_wr_action)')
+                    if tw['params']:
+                        f.write(',\n')
+                        for i, (pname, _) in enumerate(tw['params']):
+                            comma = ',' if i < len(tw['params']) - 1 else ''
+                            f.write(f'    .cp_wr_p_{pname} ({tname}_cp_wr_p_{pname}){comma}\n')
+                    else:
+                        f.write('\n')
+                    f.write('  );\n\n')
+                    continue
+
                 depth = tw['depth']
                 mt    = tbl.keys[0].match_type if tbl.keys else 'exact'
                 is_lpm     = (mt == 'lpm')

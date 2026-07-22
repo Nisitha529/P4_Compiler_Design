@@ -363,6 +363,20 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None):
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
 
+    # Egress control block, linear (one-packet-in-one-packet-out) case only —
+    # e.g. ecn.p4's ECN marking, mri.p4's swtrace hop-count table. Does NOT
+    # cover multicast-style replication (egress running once per replica),
+    # which needs a fan-out/queueing model this compiler doesn't have.
+    eg = ir.pipeline.egress
+    if eg is not None and (eg.tables or eg.statements):
+        out_egress_processing = os.path.join(out_dir, "egress_processing_generated.sv")
+        print("[INFO] Generating egress table RTL...")
+        emit_tables(ir, out_dir, stage='egress')
+
+        print("[INFO] Generating egress processing RTL...")
+        emit_processing(ir, out_egress_processing, stage='egress')
+        print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
+
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
         print("[INFO] Generating deparser RTL...")
         emit_deparser(ir, out_deparser)

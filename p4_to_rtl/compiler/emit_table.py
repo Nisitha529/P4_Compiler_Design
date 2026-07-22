@@ -15,7 +15,9 @@ _STD_META_WIDTHS = {
 # Helpers
 # ============================================================
 
-def _find_processing_ctrl(ir):
+def _find_processing_ctrl(ir, stage='ingress'):
+    if stage == 'egress':
+        return ir.pipeline.egress
     if ir.pipeline.ingress is not None:
         return ir.pipeline.ingress
     _SKIP = {'parser', 'deparser', 'verify', 'compute', 'checksum'}
@@ -119,6 +121,10 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
     params    = _collect_params(table, amap)
     n_acts    = max(act_ids.values()) + 1
     act_id_w  = max(1, math.ceil(math.log2(n_acts))) if n_acts > 1 else 1
+
+    if not table.keys:
+        _emit_keyless_table(table, act_ids, params, act_id_w, output_path)
+        return
 
     # Determine table type from first key (default exact)
     match_type = table.keys[0].match_type if table.keys else 'exact'
@@ -354,6 +360,77 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
 
 
 # ============================================================
+# Keyless table: unconditional control-plane-configurable default action
+# ============================================================
+#
+# A P4 table with no `key = {...}` block always applies its default
+# action -- but that default action (and its parameters) is still a
+# control-plane-writable runtime value (P4Runtime's "set default table
+# entry"), not a compile-time constant, even though there's no match/no
+# hit logic at all. This is the simplest possible "table": a single
+# control-plane-writable action_id + parameter register bank, `hit`
+# hardwired true, output available combinationally (no lookup latency of
+# any kind -- there's no key comparison to register a boundary around).
+
+def _emit_keyless_table(table, act_ids, params, act_id_w, output_path):
+    default_act_name = (table.default_action or 'NoAction').rstrip('()')
+    default_act_id   = act_ids.get(default_act_name, 0)
+
+    with open(output_path, 'w') as f:
+        f.write(f'module {table.name}_table (\n')
+        f.write('  input  logic clk,\n')
+        f.write('  input  logic rst_n,\n')
+
+        f.write('\n  // Result (no key -- always hits the configured default action)\n')
+        f.write('  output logic        hit,\n')
+        f.write(f'  output logic [{act_id_w-1}:0] action_id,\n')
+        for pname, pw in params:
+            f.write(f'  output logic [{pw-1}:0] p_{pname},\n')
+
+        f.write('\n  // Control-plane write port (synchronous) -- sets the default action\n')
+        f.write('  input  logic        cp_wr_en,\n')
+        f.write(f'  input  logic [{act_id_w-1}:0] cp_wr_action')
+        if params:
+            f.write(',\n')
+            for i, (pname, pw) in enumerate(params):
+                comma = ',' if i < len(params) - 1 else ''
+                f.write(f'  input  logic [{pw-1}:0] cp_wr_p_{pname}{comma}\n')
+        else:
+            f.write('\n')
+        f.write(');\n\n')
+
+        f.write(f'  logic [{act_id_w-1}:0] action_id_r;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] p_{pname}_r;\n')
+        f.write('\n')
+
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write(f'      action_id_r <= {act_id_w}\'d{default_act_id};\n')
+        for pname, pw in params:
+            f.write(f'      p_{pname}_r <= {pw}\'b0;\n')
+        f.write('    end else if (cp_wr_en) begin\n')
+        f.write('      action_id_r <= cp_wr_action;\n')
+        for pname, _ in params:
+            f.write(f'      p_{pname}_r <= cp_wr_p_{pname};\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        f.write("  assign hit       = 1'b1;\n")
+        f.write('  assign action_id = action_id_r;\n')
+        for pname, _ in params:
+            f.write(f'  assign p_{pname} = p_{pname}_r;\n')
+        f.write('\n')
+
+        f.write('  // Action ID encoding:\n')
+        for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):
+            f.write(f'  //   {aid} = {aname}\n')
+        f.write('\n')
+
+        f.write('endmodule\n')
+
+
+# ============================================================
 # Exact-match table: hash-indexed BRAM lookup, fixed 1-cycle latency
 # ============================================================
 #
@@ -516,15 +593,15 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
 # Public entry point
 # ============================================================
 
-def emit_tables(ir, out_dir):
+def emit_tables(ir, out_dir, stage='ingress'):
     """Generate one _table.sv per table in the processing control block."""
-    ctrl = _find_processing_ctrl(ir)
+    ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
         return
     amap  = {a.name: a for a in ctrl.actions}
     fwmap = _build_field_width_map(ir)
     for tbl in ctrl.tables:
-        if not tbl.keys:
+        if not tbl.actions:
             continue
         out_path = os.path.join(out_dir, f'{tbl.name}_table.sv')
         _emit_one_table(ir, tbl, amap, fwmap, out_path)
