@@ -661,6 +661,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
     # ── Packet buffer ──────────────────────────────────────────────────────────
     f.write('  // ── Packet buffer ────────────────────────────────────────────────────────\n')
+    f.write('  (* ram_style = "block" *)\n')
     f.write('  logic [7:0]                              pkt_buf  [0:MAX_PKT_BYTES-1];\n')
     f.write(f'  logic [AXI_DATA_W/8-1:0]               pkt_keep [{MAX_PKT_BEATS-1}:0];\n')
     f.write(f'  logic [{BEAT_CNT_W-1}:0]               beat_cnt;  // beats received\n')

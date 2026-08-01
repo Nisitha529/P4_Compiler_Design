@@ -145,6 +145,7 @@ def emit_parser(ir, output_path):
             f.write(f"    {s}{comma}\n")
         f.write("  } state_t;\n\n")
 
+        f.write('  (* fsm_encoding = "one_hot" *)\n')
         f.write("  state_t state, next_state;\n\n")
 
         # FSM

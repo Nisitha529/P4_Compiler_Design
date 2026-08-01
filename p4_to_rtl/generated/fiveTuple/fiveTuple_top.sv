@@ -44,6 +44,7 @@ module fiveTuple_top #(
   localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 2048
 
   // ── Packet buffer ────────────────────────────────────────────────────────
+  (* ram_style = "block" *)
   logic [7:0]                              pkt_buf  [0:MAX_PKT_BYTES-1];
   logic [AXI_DATA_W/8-1:0]               pkt_keep [255:0];
   logic [8:0]               beat_cnt;  // beats received
