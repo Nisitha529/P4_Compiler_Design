@@ -16,7 +16,8 @@ An open-source, vendor-agnostic compiler that generates a complete hardware pipe
 - **Full Ingress & Egress** pipeline compilation.
 - **Pure SystemVerilog** output – no proprietary IP or toolchain lock-in.
 - **Explicit Pipeline Scheduling** with metadata hazard detection.
-  
+
+
 ## Quick Start
 
 ```bash
