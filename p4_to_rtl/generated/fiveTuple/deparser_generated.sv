@@ -62,48 +62,40 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (eth_valid) begin
       pkt_hdr_out[1199:1088] = {eth_dmac, eth_smac, eth_type};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
     if (new_vlan_valid) begin
       pkt_hdr_out[1087:1056] = {new_vlan_pcp, new_vlan_cfi, new_vlan_vid, new_vlan_tpid};
-      pkt_hdr_len = pkt_hdr_len + 16'd32;
     end
 
     if (vlan_valid) begin
       pkt_hdr_out[1055:1024] = {vlan_pcp, vlan_cfi, vlan_vid, vlan_tpid};
-      pkt_hdr_len = pkt_hdr_len + 16'd32;
     end
 
     if (ipv4_valid) begin
       pkt_hdr_out[1023:864] = {ipv4_version, ipv4_hdr_len, ipv4_tos, ipv4_length, ipv4_id, ipv4_flags, ipv4_offset, ipv4_ttl, ipv4_protocol, ipv4_hdr_chk, ipv4_src, ipv4_dst};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
     if (ipv4opt_valid) begin
       pkt_hdr_out[863:544] = {ipv4opt_options};
-      pkt_hdr_len = pkt_hdr_len + 16'd320;
     end
 
     if (tcp_valid) begin
       pkt_hdr_out[543:384] = {tcp_src_port, tcp_dst_port, tcp_seqNum, tcp_ackNum, tcp_dataOffset, tcp_resv, tcp_flags, tcp_window, tcp_checksum, tcp_urgPtr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
     if (tcpopt_valid) begin
       pkt_hdr_out[383:64] = {tcpopt_options};
-      pkt_hdr_len = pkt_hdr_len + 16'd320;
     end
 
     if (udp_valid) begin
       pkt_hdr_out[63:0] = {udp_src_port, udp_dst_port, udp_length, udp_checksum};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
+    pkt_hdr_len = (eth_valid ? 16'd112 : 16'd0) + (new_vlan_valid ? 16'd32 : 16'd0) + (vlan_valid ? 16'd32 : 16'd0) + (ipv4_valid ? 16'd160 : 16'd0) + (ipv4opt_valid ? 16'd320 : 16'd0) + (tcp_valid ? 16'd160 : 16'd0) + (tcpopt_valid ? 16'd320 : 16'd0) + (udp_valid ? 16'd64 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

@@ -95,11 +95,27 @@ module ecmp_nhop_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_ecmp_select == key_r_ecmp_select);
-  assign action_id = hit ? action_id_r : 2'd0;
-  assign p_nhop_dmac = hit ? p_r_nhop_dmac : 48'b0;
-  assign p_nhop_ipv4 = hit ? p_r_nhop_ipv4 : 32'b0;
-  assign p_port = hit ? p_r_port : 9'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_ecmp_select == key_r_ecmp_select);
+  logic [1:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 2'd0;
+  logic [47:0] p_nhop_dmac_c;
+  assign p_nhop_dmac_c = hit_c ? p_r_nhop_dmac : 48'b0;
+  logic [31:0] p_nhop_ipv4_c;
+  assign p_nhop_ipv4_c = hit_c ? p_r_nhop_ipv4 : 32'b0;
+  logic [8:0] p_port_c;
+  assign p_port_c = hit_c ? p_r_port : 9'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_nhop_dmac <= p_nhop_dmac_c;
+      p_nhop_ipv4 <= p_nhop_ipv4_c;
+      p_port <= p_port_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

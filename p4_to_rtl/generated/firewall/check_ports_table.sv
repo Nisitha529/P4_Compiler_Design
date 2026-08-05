@@ -91,9 +91,21 @@ module check_ports_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_ingress_port == key_r_ingress_port) && (mem_key_r_egress_spec == key_r_egress_spec);
-  assign action_id = hit ? action_id_r : 1'd0;
-  assign p_dir = hit ? p_r_dir : 1'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_ingress_port == key_r_ingress_port) && (mem_key_r_egress_spec == key_r_egress_spec);
+  logic [0:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 1'd0;
+  logic [0:0] p_dir_c;
+  assign p_dir_c = hit_c ? p_r_dir : 1'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_dir <= p_dir_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

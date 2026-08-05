@@ -83,9 +83,21 @@ module send_frame_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_egress_port == key_r_egress_port);
-  assign action_id = hit ? action_id_r : 2'd0;
-  assign p_smac = hit ? p_r_smac : 48'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_egress_port == key_r_egress_port);
+  logic [1:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 2'd0;
+  logic [47:0] p_smac_c;
+  assign p_smac_c = hit_c ? p_r_smac : 48'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_smac <= p_smac_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

@@ -72,11 +72,22 @@ def emit_deparser(ir, output_path):
         f.write(');\n\n')
 
         # Combinational packing
+        # `pkt_hdr_out`'s per-header slices are disjoint bit ranges (MSB
+        # first, non-overlapping), so they're already independent -- no
+        # data dependency between headers there. `pkt_hdr_len` used to be
+        # accumulated with `len = len + W` inside each header's `if`
+        # block in sequence, which makes each header's write depend on
+        # every earlier header's write even though the actual value
+        # doesn't need to -- an N-deep serial adder chain (N = number of
+        # headers in the emit list, e.g. 12 for mri.p4's stacked
+        # swtraces) for no reason. Built as one flat sum of
+        # conditionally-selected constants instead, so there's no
+        # artificial sequencing in the RTL text for synthesis to untangle.
         f.write('  always_comb begin\n')
-        f.write("    pkt_hdr_out = '0;\n")
-        f.write('    pkt_hdr_len = 0;\n\n')
+        f.write("    pkt_hdr_out = '0;\n\n")
 
         bit_offset = total_w
+        len_terms = []
         for hname, htype, w in hdr_slots:
             hi = bit_offset - 1
             lo = bit_offset - w
@@ -87,10 +98,11 @@ def emit_deparser(ir, output_path):
             )
             f.write(f'    if ({hname}_valid) begin\n')
             f.write(f'      pkt_hdr_out[{hi}:{lo}] = {{{fields_cat}}};\n')
-            f.write(f'      pkt_hdr_len = pkt_hdr_len + 16\'d{w};\n')
             f.write('    end\n\n')
             bit_offset -= w
+            len_terms.append(f"({hname}_valid ? 16'd{w} : 16'd0)")
 
+        f.write(f'    pkt_hdr_len = {" + ".join(len_terms)};\n')
         f.write('  end\n\n')
 
         # Pipeline register

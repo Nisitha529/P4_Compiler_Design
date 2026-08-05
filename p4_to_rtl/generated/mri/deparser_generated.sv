@@ -66,73 +66,60 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (ethernet_valid) begin
       pkt_hdr_out[879:768] = {ethernet_dstAddr, ethernet_srcAddr, ethernet_etherType};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
     if (ipv4_valid) begin
       pkt_hdr_out[767:608] = {ipv4_version, ipv4_ihl, ipv4_diffserv, ipv4_totalLen, ipv4_identification, ipv4_flags, ipv4_fragOffset, ipv4_ttl, ipv4_protocol, ipv4_hdrChecksum, ipv4_srcAddr, ipv4_dstAddr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
     if (ipv4_option_valid) begin
       pkt_hdr_out[607:592] = {ipv4_option_copyFlag, ipv4_option_optClass, ipv4_option_option, ipv4_option_optionLength};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (mri_valid) begin
       pkt_hdr_out[591:576] = {mri_count};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (swtraces_0_valid) begin
       pkt_hdr_out[575:512] = {swtraces_0_swid, swtraces_0_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_1_valid) begin
       pkt_hdr_out[511:448] = {swtraces_1_swid, swtraces_1_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_2_valid) begin
       pkt_hdr_out[447:384] = {swtraces_2_swid, swtraces_2_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_3_valid) begin
       pkt_hdr_out[383:320] = {swtraces_3_swid, swtraces_3_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_4_valid) begin
       pkt_hdr_out[319:256] = {swtraces_4_swid, swtraces_4_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_5_valid) begin
       pkt_hdr_out[255:192] = {swtraces_5_swid, swtraces_5_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_6_valid) begin
       pkt_hdr_out[191:128] = {swtraces_6_swid, swtraces_6_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_7_valid) begin
       pkt_hdr_out[127:64] = {swtraces_7_swid, swtraces_7_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
     if (swtraces_8_valid) begin
       pkt_hdr_out[63:0] = {swtraces_8_swid, swtraces_8_qdepth};
-      pkt_hdr_len = pkt_hdr_len + 16'd64;
     end
 
+    pkt_hdr_len = (ethernet_valid ? 16'd112 : 16'd0) + (ipv4_valid ? 16'd160 : 16'd0) + (ipv4_option_valid ? 16'd16 : 16'd0) + (mri_valid ? 16'd16 : 16'd0) + (swtraces_0_valid ? 16'd64 : 16'd0) + (swtraces_1_valid ? 16'd64 : 16'd0) + (swtraces_2_valid ? 16'd64 : 16'd0) + (swtraces_3_valid ? 16'd64 : 16'd0) + (swtraces_4_valid ? 16'd64 : 16'd0) + (swtraces_5_valid ? 16'd64 : 16'd0) + (swtraces_6_valid ? 16'd64 : 16'd0) + (swtraces_7_valid ? 16'd64 : 16'd0) + (swtraces_8_valid ? 16'd64 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

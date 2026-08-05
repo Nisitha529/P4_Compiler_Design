@@ -197,7 +197,11 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
             w     = _key_width(key.field, fwmap)
             f.write(f'  logic [{w-1}:0] mem_key_{fname}[0:DEPTH-1];\n')
         if is_lpm:
-            f.write(f'  logic [{pfx_w-1}:0] mem_pfx_len[0:DEPTH-1];\n')
+            # Stored as a precomputed prefix *mask*, not a length -- see the
+            # CP-write block below for why (avoids a barrel shifter per
+            # entry at lookup time).
+            fname0 = _field_basename(table.keys[0].field) if table.keys else 'key'
+            f.write(f'  logic [{key_w-1}:0] mem_pfx_mask_{fname0}[0:DEPTH-1];\n')
         elif is_ternary:
             for key in table.keys:
                 fname = _field_basename(key.field)
@@ -223,7 +227,12 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
             fname = _field_basename(key.field)
             f.write(f'      mem_key_{fname}[cp_wr_idx] <= cp_wr_key_{fname};\n')
         if is_lpm:
-            f.write('      mem_pfx_len[cp_wr_idx] <= cp_wr_pfx_len;\n')
+            # Shift once here (a control-plane write, rare) instead of once
+            # per entry per lookup (every cycle, x DEPTH instances) -- see
+            # the leaf-comparison comment below for the actual motivation.
+            f.write(f'      mem_pfx_mask_{fname0}[cp_wr_idx] <= '
+                    f'(cp_wr_pfx_len == {pfx_w}\'d0) ? {key_w}\'d0 : '
+                    f'({{{key_w}{{1\'b1}}}} << ({key_w} - cp_wr_pfx_len));\n')
         elif is_ternary:
             for key in table.keys:
                 fname = _field_basename(key.field)
@@ -270,11 +279,19 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
             if is_lpm and table.keys:
                 fname = _field_basename(table.keys[0].field)
                 key_w = _key_width(table.keys[0].field, fwmap)
-                f.write(f'  logic [{pfx_w-1}:0] _pfx_{j}; assign _pfx_{j} = mem_pfx_len[{j}];\n')
+                # Mask-based compare (like ternary), not a shift-based one.
+                # The old version did `(lkp >> (W-pfx)) == (key >> (W-pfx))`
+                # -- a *variable-width barrel shifter on both operands, per
+                # entry*, re-evaluated every cycle. At DEPTH=1024 that's
+                # ~2048 barrel shifter instances and dominated the whole
+                # table's area in real synthesis (measured: this one table
+                # was 385K of a 386K-cell design). The prefix mask is
+                # precomputed once at CP-write time (see above) instead, so
+                # the lookup-time cost per entry drops to a plain AND +
+                # equality compare -- no shifting at all on the hot path.
                 f.write(f'  logic [{key_w-1}:0] _key_{j}; assign _key_{j} = mem_key_{fname}[{j}];\n')
-                cond = (f'(_pfx_{j} == {pfx_w}\'d0 || '
-                        f'(lkp_{fname} >> ({key_w} - _pfx_{j})) == '
-                        f'(_key_{j} >> ({key_w} - _pfx_{j})))')
+                f.write(f'  logic [{key_w-1}:0] _mask_{j}; assign _mask_{j} = mem_pfx_mask_{fname}[{j}];\n')
+                cond = f'((lkp_{fname} & _mask_{j}) == (_key_{j} & _mask_{j}))'
             elif is_ternary and table.keys:
                 conds = []
                 for key in table.keys:
@@ -344,11 +361,37 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
             f.write('\n')
             prev_n, level = nxt_n, level + 1
 
-        f.write(f'  assign hit       = hit_l{level}[0];\n')
-        f.write(f'  assign action_id = hit_l{level}[0] ? act_l{level}[0] : {act_id_w}\'d{default_act_id};\n')
+        # Register the tree's final output instead of exposing it as a raw
+        # combinational port. Real synthesis (Vivado, Artix-7) on firewall
+        # showed the critical path running clean through this tree's log2
+        # (DEPTH) reduction levels *and* straight on through the caller's
+        # action-dispatch mux and action-body arithmetic with no register
+        # in between (measured: 16 logic levels, ~93MHz worst case, all in
+        # one unbroken combinational stretch from this table's leaf
+        # register to the caller's output register). Registering hit/
+        # action_id/params here gives the table 2-cycle total latency
+        # (lookup + this output stage) but cleanly separates "the tree
+        # settles" from "the caller acts on it" into two real cycles --
+        # the actual fix the timing data pointed at. emit_processing.py's
+        # scheduler inserts a matching second no-op register hop so the
+        # caller's stage count still lines up (see _schedule_stages).
+        f.write(f'  logic hit_c; assign hit_c = hit_l{level}[0];\n')
+        f.write(f'  logic [{act_id_w-1}:0] action_id_c;\n')
+        f.write(f'  assign action_id_c = hit_l{level}[0] ? act_l{level}[0] : {act_id_w}\'d{default_act_id};\n')
         for pname, pw in params:
-            f.write(f'  assign p_{pname} = hit_l{level}[0] ? p_{pname}_l{level}[0] : {pw}\'b0;\n')
+            f.write(f'  logic [{pw-1}:0] p_{pname}_c;\n')
+            f.write(f'  assign p_{pname}_c = hit_l{level}[0] ? p_{pname}_l{level}[0] : {pw}\'b0;\n')
         f.write('\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      hit <= 1'b0;\n")
+        f.write('    end else begin\n')
+        f.write('      hit <= hit_c;\n')
+        f.write('      action_id <= action_id_c;\n')
+        for pname, _ in params:
+            f.write(f'      p_{pname} <= p_{pname}_c;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
         # ── Action encoding comment ───────────────────────────────────
         f.write('  // Action ID encoding:\n')
@@ -574,12 +617,29 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
         f.write('    end\n')
         f.write('  end\n\n')
 
+        # Registered output (same reasoning as the LPM/ternary tree's final
+        # stage above): keeps the tag-compare + action-select settling in
+        # its own cycle instead of fusing straight into the caller's
+        # action-dispatch mux and arithmetic. 2-cycle total latency
+        # (lookup + this stage); emit_processing.py's scheduler matches it.
         tag_match = ' && '.join(f'(mem_key_r_{fname} == key_r_{fname})' for fname, _ in key_fields) or "1'b1"
-        f.write(f'  assign hit       = valid_r && {tag_match};\n')
-        f.write(f'  assign action_id = hit ? action_id_r : {act_id_w}\'d{default_act_id};\n')
+        f.write(f'  logic hit_c; assign hit_c = valid_r && {tag_match};\n')
+        f.write(f'  logic [{act_id_w-1}:0] action_id_c;\n')
+        f.write(f'  assign action_id_c = hit_c ? action_id_r : {act_id_w}\'d{default_act_id};\n')
         for pname, pw in params:
-            f.write(f'  assign p_{pname} = hit ? p_r_{pname} : {pw}\'b0;\n')
+            f.write(f'  logic [{pw-1}:0] p_{pname}_c;\n')
+            f.write(f'  assign p_{pname}_c = hit_c ? p_r_{pname} : {pw}\'b0;\n')
         f.write('\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      hit <= 1'b0;\n")
+        f.write('    end else begin\n')
+        f.write('      hit <= hit_c;\n')
+        f.write('      action_id <= action_id_c;\n')
+        for pname, _ in params:
+            f.write(f'      p_{pname} <= p_{pname}_c;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
         f.write('  // Action ID encoding:\n')
         for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):

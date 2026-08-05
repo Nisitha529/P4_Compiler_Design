@@ -44,23 +44,20 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (ethernet_valid) begin
       pkt_hdr_out[431:320] = {ethernet_dstAddr, ethernet_srcAddr, ethernet_etherType};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
     if (ipv4_valid) begin
       pkt_hdr_out[319:160] = {ipv4_version, ipv4_ihl, ipv4_diffserv, ipv4_totalLen, ipv4_identification, ipv4_flags, ipv4_fragOffset, ipv4_ttl, ipv4_protocol, ipv4_hdrChecksum, ipv4_srcAddr, ipv4_dstAddr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
     if (tcp_valid) begin
       pkt_hdr_out[159:0] = {tcp_srcPort, tcp_dstPort, tcp_seqNo, tcp_ackNo, tcp_dataOffset, tcp_res, tcp_ecn, tcp_ctrl, tcp_window, tcp_checksum, tcp_urgentPtr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
+    pkt_hdr_len = (ethernet_valid ? 16'd112 : 16'd0) + (ipv4_valid ? 16'd160 : 16'd0) + (tcp_valid ? 16'd160 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

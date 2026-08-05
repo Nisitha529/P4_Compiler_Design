@@ -632,6 +632,18 @@ def _schedule_stages(ctrl_statements, exact_names):
         before, after, fwd, _ = _split_stage(remaining, target, fwd_counter)
         stages.append(before)
         boundary_forwards.append(fwd)
+        # Every table (see emit_table.py) now registers its hit/action_id/
+        # params output as its own final stage, instead of exposing the
+        # tree/tag-compare result combinationally -- 2-cycle total table
+        # latency (lookup + output register), not 1. This second, no-op
+        # stage is the matching register hop: it carries every bit of
+        # apply-block state forward one more cycle with no logic of its
+        # own, so that by the time the *next* stage's action-dispatch
+        # reads {target}_hit/{target}_act_id/{target}_p_*, the table's own
+        # output register has actually settled. Without this, the
+        # consuming stage would read those signals one cycle too early.
+        stages.append([])
+        boundary_forwards.append([])
         names_left.discard(target)
         remaining = after
 
