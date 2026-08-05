@@ -12,6 +12,7 @@ module parser_generated(
     ACCEPT
   } state_t;
 
+  (* fsm_encoding = "one_hot" *)
   state_t state, next_state;
 
   always_comb begin

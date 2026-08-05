@@ -35,23 +35,20 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (ethernet_valid) begin
       pkt_hdr_out[303:192] = {ethernet_dstAddr, ethernet_srcAddr, ethernet_etherType};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
     if (myTunnel_valid) begin
       pkt_hdr_out[191:160] = {myTunnel_proto_id, myTunnel_dst_id};
-      pkt_hdr_len = pkt_hdr_len + 16'd32;
     end
 
     if (ipv4_valid) begin
       pkt_hdr_out[159:0] = {ipv4_version, ipv4_ihl, ipv4_diffserv, ipv4_totalLen, ipv4_identification, ipv4_flags, ipv4_fragOffset, ipv4_ttl, ipv4_protocol, ipv4_hdrChecksum, ipv4_srcAddr, ipv4_dstAddr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
+    pkt_hdr_len = (ethernet_valid ? 16'd112 : 16'd0) + (myTunnel_valid ? 16'd32 : 16'd0) + (ipv4_valid ? 16'd160 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

@@ -52,6 +52,18 @@ module processing_generated (
   logic [15:0] out_std_meta_mcast_grp_s1;
   logic drop_s1;
   logic __stage_cond_0_r;
+  logic valid_s2;
+  logic out_ethernet_valid_s2;
+  logic ethernet_valid_s2;
+  logic [47:0] out_ethernet_dstAddr_s2;
+  logic [47:0] ethernet_dstAddr_s2;
+  logic [47:0] out_ethernet_srcAddr_s2;
+  logic [47:0] ethernet_srcAddr_s2;
+  logic [15:0] out_ethernet_etherType_s2;
+  logic [15:0] ethernet_etherType_s2;
+  logic [8:0] out_std_meta_egress_spec_s2;
+  logic [15:0] out_std_meta_mcast_grp_s2;
+  logic drop_s2;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -62,6 +74,13 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_spec__st0;
   logic [15:0] out_std_meta_mcast_grp__st0;
   logic drop__st0;
+  logic out_ethernet_valid__st1;
+  logic [47:0] out_ethernet_dstAddr__st1;
+  logic [47:0] out_ethernet_srcAddr__st1;
+  logic [15:0] out_ethernet_etherType__st1;
+  logic [8:0] out_std_meta_egress_spec__st1;
+  logic [15:0] out_std_meta_mcast_grp__st1;
+  logic drop__st1;
 
   // Pool-B (locals/meta shadow/raw hdr+std_meta reads) working
   // copies -- every stage except the first, which reads live inputs
@@ -69,6 +88,10 @@ module processing_generated (
   logic [47:0] ethernet_dstAddr__st1;
   logic [47:0] ethernet_srcAddr__st1;
   logic [15:0] ethernet_etherType__st1;
+  logic ethernet_valid__st2;
+  logic [47:0] ethernet_dstAddr__st2;
+  logic [47:0] ethernet_srcAddr__st2;
+  logic [15:0] ethernet_etherType__st2;
 
   // Table lookup result wires
   logic        mac_lookup_hit;
@@ -109,7 +132,7 @@ module processing_generated (
     out_ethernet_srcAddr__st0 = ethernet_srcAddr;
     out_ethernet_etherType__st0 = ethernet_etherType;
 
-    // apply block (stage 0 of 1)
+    // apply block (stage 0 of 2)
     if (ethernet_valid) begin
     end
   end
@@ -138,19 +161,55 @@ module processing_generated (
 
   // ---- Pipeline stage 1 (registered 1 cycle(s) after stage 0) ----
   always_comb begin
-    drop = drop_s1;
-    out_ethernet_valid = out_ethernet_valid_s1;
+    drop__st1 = drop_s1;
+    out_ethernet_valid__st1 = out_ethernet_valid_s1;
     ethernet_valid__st1 = ethernet_valid_s1;
-    out_ethernet_dstAddr = out_ethernet_dstAddr_s1;
+    out_ethernet_dstAddr__st1 = out_ethernet_dstAddr_s1;
     ethernet_dstAddr__st1 = ethernet_dstAddr_s1;
-    out_ethernet_srcAddr = out_ethernet_srcAddr_s1;
+    out_ethernet_srcAddr__st1 = out_ethernet_srcAddr_s1;
     ethernet_srcAddr__st1 = ethernet_srcAddr_s1;
-    out_ethernet_etherType = out_ethernet_etherType_s1;
+    out_ethernet_etherType__st1 = out_ethernet_etherType_s1;
     ethernet_etherType__st1 = ethernet_etherType_s1;
-    out_std_meta_egress_spec = out_std_meta_egress_spec_s1;
-    out_std_meta_mcast_grp = out_std_meta_mcast_grp_s1;
+    out_std_meta_egress_spec__st1 = out_std_meta_egress_spec_s1;
+    out_std_meta_mcast_grp__st1 = out_std_meta_mcast_grp_s1;
+  end
 
-    // apply block (stage 1 of 1)
+  // Forward stage-1 state into stage-2 registers (1-cycle
+  // boundary — matches the exact-match table's registered latency)
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      valid_s2 <= 1'b0;
+    end else begin
+      valid_s2 <= valid_s1;
+      drop_s2 <= drop__st1;
+      out_ethernet_valid_s2 <= out_ethernet_valid__st1;
+      ethernet_valid_s2 <= ethernet_valid__st1;
+      out_ethernet_dstAddr_s2 <= out_ethernet_dstAddr__st1;
+      ethernet_dstAddr_s2 <= ethernet_dstAddr__st1;
+      out_ethernet_srcAddr_s2 <= out_ethernet_srcAddr__st1;
+      ethernet_srcAddr_s2 <= ethernet_srcAddr__st1;
+      out_ethernet_etherType_s2 <= out_ethernet_etherType__st1;
+      ethernet_etherType_s2 <= ethernet_etherType__st1;
+      out_std_meta_egress_spec_s2 <= out_std_meta_egress_spec__st1;
+      out_std_meta_mcast_grp_s2 <= out_std_meta_mcast_grp__st1;
+    end
+  end
+
+  // ---- Pipeline stage 2 (registered 2 cycle(s) after stage 0) ----
+  always_comb begin
+    drop = drop_s2;
+    out_ethernet_valid = out_ethernet_valid_s2;
+    ethernet_valid__st2 = ethernet_valid_s2;
+    out_ethernet_dstAddr = out_ethernet_dstAddr_s2;
+    ethernet_dstAddr__st2 = ethernet_dstAddr_s2;
+    out_ethernet_srcAddr = out_ethernet_srcAddr_s2;
+    ethernet_srcAddr__st2 = ethernet_srcAddr_s2;
+    out_ethernet_etherType = out_ethernet_etherType_s2;
+    ethernet_etherType__st2 = ethernet_etherType_s2;
+    out_std_meta_egress_spec = out_std_meta_egress_spec_s2;
+    out_std_meta_mcast_grp = out_std_meta_mcast_grp_s2;
+
+    // apply block (stage 2 of 2)
     if (__stage_cond_0_r) begin
       // mac_lookup.apply()
       if (mac_lookup_hit) begin
@@ -175,7 +234,7 @@ module processing_generated (
 
   always_ff @(posedge clk) begin
     if (!rst_n) valid_out <= 0;
-    else        valid_out <= valid_s1;
+    else        valid_out <= valid_s2;
   end
 
 endmodule

@@ -17,12 +17,13 @@ module parser_generated(
     ACCEPT
   } state_t;
 
+  (* fsm_encoding = "one_hot" *)
   state_t state, next_state;
 
   always_comb begin
-    extract_ethernet = 0;
-    extract_myTunnel = 0;
     extract_ipv4 = 0;
+    extract_myTunnel = 0;
+    extract_ethernet = 0;
     done = 0;
     next_state = state;
 

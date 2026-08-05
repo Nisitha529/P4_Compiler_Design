@@ -338,11 +338,13 @@ module tb_firewall;
 
   // One-cycle valid strobe so bloom filter writes commit
   task send_packet;
-    // Data path is now 2 cycles deep (ipv4_lpm's pipelined priority tree,
-    // then check_ports' hash+BRAM lookup) before bloom_filter_*_wr_en is
-    // computed, plus 1 more cycle for that write to actually commit to
-    // bloom_filter_*_mem -- 3 edges total.
+    // Data path is now 4 cycles deep (ipv4_lpm: lookup + output register,
+    // then check_ports: lookup + output register) before
+    // bloom_filter_*_wr_en is computed, plus 1 more cycle for that write
+    // to actually commit to bloom_filter_*_mem -- 5 edges total.
     pr_valid_in=1; @(posedge clk); #1; pr_valid_in=0;
+    @(posedge clk); #1;
+    @(posedge clk); #1;
     @(posedge clk); #1;
     @(posedge clk); #1;  // let register write propagate
   endtask
@@ -422,7 +424,7 @@ module tb_firewall;
     pr_eth_valid=1; pr_ipv4_valid=1; pr_tcp_valid=0;
     pr_ipv4_src=32'hC0A80001; pr_ipv4_dst=32'h01010101;
     pr_ipv4_proto=8'd6; pr_ipv4_ttl=64;
-    pr_ingress_port=9'd1; pr_egress_spec_i=9'd0; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd1; pr_egress_spec_i=9'd0; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("L1: drop=1",           pr_drop);
     chk("L1: egress_spec=0",    pr_o_egress_spec==9'd0);
 
@@ -430,7 +432,7 @@ module tb_firewall;
     $display("  L2: LPM hit (10.0.0.1) → MAC rewrite, TTL--, port=3");
     pr_ipv4_dst=32'h0A000001; pr_ipv4_ttl=64;
     pr_eth_dst=48'h112233445566; pr_eth_src=48'hCAFECAFECAFE;
-    pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); #1;
+    pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("L2: not dropped",          !pr_drop);
     chk("L2: eth_dst=AA:BB...",     pr_o_eth_dst==48'hAABBCCDDEEFF);
     chk("L2: eth_src=old_eth_dst",  pr_o_eth_src==48'h112233445566);
@@ -439,7 +441,7 @@ module tb_firewall;
 
     // L3: Hit entry 1 → forward to port=1
     $display("  L3: LPM hit (192.168.0.2) → port=1");
-    pr_ipv4_dst=32'hC0A80002; pr_ipv4_ttl=128; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ipv4_dst=32'hC0A80002; pr_ipv4_ttl=128; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("L3: not dropped",      !pr_drop);
     chk("L3: eth_dst=11:22...", pr_o_eth_dst==48'h112233445566);
     chk("L3: egress_spec=1",    pr_o_egress_spec==9'd1);
@@ -448,7 +450,7 @@ module tb_firewall;
     // L4: Non-IPv4 → pass through (no LPM applied)
     $display("  L4: Non-IPv4 → pass-through, not dropped");
     pr_eth_valid=1; pr_ipv4_valid=0; pr_tcp_valid=0;
-    pr_eth_dst=48'hDEADBEEFCAFE; @(posedge clk); @(posedge clk); #1;
+    pr_eth_dst=48'hDEADBEEFCAFE; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("L4: not dropped",           !pr_drop);
     chk("L4: eth_dst pass-through",  pr_o_eth_dst==48'hDEADBEEFCAFE);
 
@@ -456,7 +458,7 @@ module tb_firewall;
     $display("  L5: TTL=1 → decrements to 0 (edge case)");
     pr_eth_valid=1; pr_ipv4_valid=1;
     pr_ipv4_dst=32'h0A000001; pr_ipv4_ttl=8'd1;
-    pr_eth_dst=48'hAABBCCDDEEFF; pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); #1;
+    pr_eth_dst=48'hAABBCCDDEEFF; pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("L5: TTL=0",   pr_o_ipv4_ttl==8'd0);
     chk("L5: not drop",!pr_drop);
 
@@ -479,13 +481,13 @@ module tb_firewall;
     pr_tcp_srcPort=16'h1234; pr_tcp_dstPort=16'h0050;
     pr_tcp_syn=0; pr_tcp_ack=1;
     pr_ingress_port=9'd5;   // not in check_ports → miss
-    pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); #1;
+    pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("C1: not dropped (check_ports miss)", !pr_drop);
 
     // C2: TCP, direction=0, no SYN → bloom filter not written
     $display("  C2: TCP from internal, no SYN → not dropped, no bloom write");
     pr_ingress_port=9'd1; pr_egress_spec_i=9'd3;
-    pr_tcp_syn=0; pr_tcp_ack=0; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_syn=0; pr_tcp_ack=0; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("C2: not dropped", !pr_drop);
 
     // C3: direction=1, bloom NOT set → drop
@@ -493,7 +495,7 @@ module tb_firewall;
     pr_ipv4_src=32'h0A000001; pr_ipv4_dst=32'hC0A80001;
     pr_tcp_srcPort=16'h0050; pr_tcp_dstPort=16'h1234;
     pr_tcp_ack=1; pr_tcp_syn=0;
-    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("C3: drop=1 (bloom not set)", pr_drop);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -542,19 +544,19 @@ module tb_firewall;
     pr_ipv4_src=32'h0A000001; pr_ipv4_dst=32'hC0A80001;
     pr_tcp_srcPort=16'h0050; pr_tcp_dstPort=16'h1234;
     pr_tcp_syn=0; pr_tcp_ack=1;
-    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("FW3: allowed (bloom set at 0x262)", !pr_drop);
     chk("FW3: forwarded to port=1",          pr_o_egress_spec==9'd1);
 
     // FW4: External FIN on established connection
     $display("  FW4: External FIN (established) → allowed");
-    pr_tcp_ack=0; pr_tcp_fin=1; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_ack=0; pr_tcp_fin=1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("FW4: FIN allowed", !pr_drop);
     pr_tcp_fin=0;
 
     // FW5: Another request on same 5-tuple
     $display("  FW5: Same 5-tuple, different flags → allowed");
-    pr_tcp_ack=1; pr_tcp_rst=0; pr_tcp_syn=0; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_ack=1; pr_tcp_rst=0; pr_tcp_syn=0; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("FW5: subsequent packet allowed", !pr_drop);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -568,7 +570,7 @@ module tb_firewall;
     pr_ipv4_dst=32'hC0A80001;
     pr_tcp_srcPort=16'h0050; pr_tcp_dstPort=16'h1234;
     pr_tcp_ack=1; pr_tcp_syn=0;
-    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     // hash(C0A80001^01020304^1234^0050^6) & 0x7 = 0x7 (not written)
     chk("FW6: unsolicited dropped",  pr_drop);
     chk("FW6: bf1[7]=0 (never written)",
@@ -576,7 +578,7 @@ module tb_firewall;
 
     // FW7: Unsolicited SYN from external — no existing connection
     $display("  FW7: Unsolicited SYN from external → dropped");
-    pr_tcp_syn=1; pr_tcp_ack=0; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_syn=1; pr_tcp_ack=0; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("FW7: unsolicited SYN dropped", pr_drop);
     pr_tcp_syn=0;
 
@@ -584,7 +586,7 @@ module tb_firewall;
     $display("  FW8: Different dst port → unestablished, dropped");
     pr_ipv4_src=32'h0A000001; pr_ipv4_dst=32'hC0A80001;
     pr_tcp_srcPort=16'h0050; pr_tcp_dstPort=16'hABCD;  // different client port
-    pr_tcp_ack=1; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_ack=1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("FW8: different-port dropped", pr_drop);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -599,19 +601,19 @@ module tb_firewall;
     pr_eth_valid=1; pr_ipv4_valid=1; pr_tcp_valid=0;
     pr_ipv4_src=32'hC0A80001; pr_ipv4_dst=32'h0A000001;
     pr_ipv4_proto=8'd17; pr_ipv4_ttl=64;
-    pr_ingress_port=9'd1; pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd1; pr_egress_spec_i=9'd3; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("U1: UDP not dropped",   !pr_drop);
     chk("U1: MAC rewritten",     pr_o_eth_dst==48'hAABBCCDDEEFF);
     chk("U1: TTL decremented",   pr_o_ipv4_ttl==8'd63);
     chk("U1: egress_spec=3",     pr_o_egress_spec==9'd3);
 
     $display("  U2: ICMP to 10.0.0.1 → forwarded");
-    pr_ipv4_proto=8'd1; pr_ipv4_ttl=64; @(posedge clk); @(posedge clk); #1;
+    pr_ipv4_proto=8'd1; pr_ipv4_ttl=64; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("U2: ICMP not dropped",  !pr_drop);
     chk("U2: MAC rewritten",     pr_o_eth_dst==48'hAABBCCDDEEFF);
 
     $display("  U3: UDP to unrouted address → dropped (LPM miss)");
-    pr_ipv4_dst=32'hFFFFFFFF; @(posedge clk); @(posedge clk); #1;
+    pr_ipv4_dst=32'hFFFFFFFF; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("U3: unrouted UDP dropped", pr_drop);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -698,13 +700,13 @@ module tb_firewall;
     pr_ipv4_src=32'h0A000001; pr_ipv4_dst=32'hC0A80001;
     pr_tcp_srcPort=16'h01BB; pr_tcp_dstPort=16'h5678;
     pr_tcp_syn=1; pr_tcp_ack=1;
-    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("INT2: SYN-ACK allowed",    !pr_drop);
     chk("INT2: forwarded to port=1", pr_o_egress_spec==9'd1);
 
     // Step 3: More data from server
     $display("  INT3: Server data → allowed");
-    pr_tcp_syn=0; pr_tcp_ack=1; @(posedge clk); @(posedge clk); #1;
+    pr_tcp_syn=0; pr_tcp_ack=1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("INT3: data allowed", !pr_drop);
 
     // Step 4: A different attacker tries to reach the same client
@@ -712,15 +714,14 @@ module tb_firewall;
     pr_ipv4_src=32'h02030405;
     pr_tcp_srcPort=16'h01BB; pr_tcp_dstPort=16'h5678;
     pr_tcp_syn=0; pr_tcp_ack=1;
-    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); #1;
+    pr_ingress_port=9'd2; pr_egress_spec_i=9'd1; @(posedge clk); @(posedge clk); @(posedge clk); @(posedge clk); #1;
     chk("INT4: attacker dropped", pr_drop);
 
     // Step 5: valid_out pipeline register
-    // firewall has one exact-match table (check_ports) on its critical
-    // path, adding a registered pipeline stage -> valid_out is now
-    // 3 cycles behind valid_in (1 baseline + 2 boundaries: ipv4_lpm's
-    // pipelined priority tree, then the check_ports exact-match table).
-    $display("  INT5: valid_out is three-cycle delayed (1 baseline + 2 boundaries)");
+    // ipv4_lpm and check_ports are each now a 2-cycle boundary (lookup +
+    // output register -- see emit_table.py/emit_processing.py), so
+    // valid_out is 5 cycles behind valid_in (1 baseline + 4 boundary).
+    $display("  INT5: valid_out is five-cycle delayed (1 baseline + 4 boundary)");
     do_reset();
     pr_valid_in=1; #1;
     chk("INT5: valid_out=0 before edge", !pr_valid_out);
@@ -730,7 +731,11 @@ module tb_firewall;
     @(posedge clk); #1;
     chk("INT5: valid_out=0 after 2nd edge", !pr_valid_out);
     @(posedge clk); #1;
-    chk("INT5: valid_out=1 after 3rd edge",   pr_valid_out);
+    chk("INT5: valid_out=0 after 3rd edge", !pr_valid_out);
+    @(posedge clk); #1;
+    chk("INT5: valid_out=0 after 4th edge", !pr_valid_out);
+    @(posedge clk); #1;
+    chk("INT5: valid_out=1 after 5th edge",   pr_valid_out);
     @(posedge clk); #1;
     chk("INT5: valid_out=0 deasserted",  !pr_valid_out);
 

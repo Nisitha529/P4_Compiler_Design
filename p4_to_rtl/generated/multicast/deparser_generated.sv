@@ -19,13 +19,12 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (ethernet_valid) begin
       pkt_hdr_out[111:0] = {ethernet_dstAddr, ethernet_srcAddr, ethernet_etherType};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
+    pkt_hdr_len = (ethernet_valid ? 16'd112 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

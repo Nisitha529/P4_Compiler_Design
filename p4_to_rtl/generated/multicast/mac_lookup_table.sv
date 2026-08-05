@@ -83,9 +83,21 @@ module mac_lookup_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_dstAddr == key_r_dstAddr);
-  assign action_id = hit ? action_id_r : 2'd1;
-  assign p_port = hit ? p_r_port : 9'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_dstAddr == key_r_dstAddr);
+  logic [1:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 2'd1;
+  logic [8:0] p_port_c;
+  assign p_port_c = hit_c ? p_r_port : 9'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_port <= p_port_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

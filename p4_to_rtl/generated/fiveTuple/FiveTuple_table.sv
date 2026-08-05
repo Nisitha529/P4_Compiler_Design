@@ -133,12 +133,30 @@ module FiveTuple_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_src == key_r_src) && (mem_key_r_dst == key_r_dst) && (mem_key_r_protocol == key_r_protocol) && (mem_key_r_table_key_sport == key_r_table_key_sport) && (mem_key_r_table_key_dport == key_r_table_key_dport);
-  assign action_id = hit ? action_id_r : 1'd0;
-  assign p_counter_index = hit ? p_r_counter_index : 13'b0;
-  assign p_pcp = hit ? p_r_pcp : 3'b0;
-  assign p_cfi = hit ? p_r_cfi : 1'b0;
-  assign p_vid = hit ? p_r_vid : 12'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_src == key_r_src) && (mem_key_r_dst == key_r_dst) && (mem_key_r_protocol == key_r_protocol) && (mem_key_r_table_key_sport == key_r_table_key_sport) && (mem_key_r_table_key_dport == key_r_table_key_dport);
+  logic [0:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 1'd0;
+  logic [12:0] p_counter_index_c;
+  assign p_counter_index_c = hit_c ? p_r_counter_index : 13'b0;
+  logic [2:0] p_pcp_c;
+  assign p_pcp_c = hit_c ? p_r_pcp : 3'b0;
+  logic [0:0] p_cfi_c;
+  assign p_cfi_c = hit_c ? p_r_cfi : 1'b0;
+  logic [11:0] p_vid_c;
+  assign p_vid_c = hit_c ? p_r_vid : 12'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_counter_index <= p_counter_index_c;
+      p_pcp <= p_pcp_c;
+      p_cfi <= p_cfi_c;
+      p_vid <= p_vid_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction
