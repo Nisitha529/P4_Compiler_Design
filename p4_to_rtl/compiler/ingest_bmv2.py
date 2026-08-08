@@ -308,6 +308,70 @@ def _translate_primitives(primitives, rd, calcs, start=0, end=None):
 # Control-flow DAG reconstruction
 # ============================================================
 
+def _dag_successors(node_name, tables_map, conds_map):
+    """Every node this DAG node can transition to (both branches of a
+    conditional, or every distinct next_tables target of a table)."""
+    if not node_name:
+        return []
+    if node_name in conds_map:
+        c = conds_map[node_name]
+        return [n for n in (c.get('true_next'), c.get('false_next')) if n]
+    if node_name in tables_map:
+        nxt = tables_map[node_name].get('next_tables', {})
+        return list({v for v in nxt.values() if v is not None})
+    return []
+
+
+def _find_merge_node(start_a, start_b, tables_map, conds_map):
+    """Find the nearest DAG node reachable from *both* start_a and
+    start_b, i.e. where two branches of a conditional (or a table's
+    hit/miss split) reconverge -- or None if they never do.
+
+    Without this, a naive recursive walk of the DAG duplicates whichever
+    node the branches share into *both* reconstructed branches instead of
+    representing it as one statement that runs after the if/else
+    regardless of which side was taken. That duplication is silently
+    harmless for a purely-combinational, single-cycle emitter (one copy
+    ends up on a now-unreachable path, e.g. gated by a condition that's
+    already been ruled out) but breaks once pipeline staging treats each
+    copy as a separate, independently-scheduled occurrence of the same
+    table apply -- see basic_tunnel.p4's `if (ipv4 && !tunnel) {A} ; if
+    (tunnel) {B}`, which p4c's bmv2 backend represents as a DAG where both
+    branches of the first check lead to the second check.
+
+    Level-synchronized BFS from both starts so the result is the nearest
+    shared node, not just any shared node.
+    """
+    if start_a is None or start_b is None:
+        return None
+    if start_a == start_b:
+        return start_a
+
+    seen_a, seen_b = {start_a}, {start_b}
+    frontier_a, frontier_b = [start_a], [start_b]
+
+    while frontier_a or frontier_b:
+        next_a = []
+        for n in frontier_a:
+            for s in _dag_successors(n, tables_map, conds_map):
+                if s in seen_b:
+                    return s
+                if s not in seen_a:
+                    seen_a.add(s)
+                    next_a.append(s)
+        next_b = []
+        for n in frontier_b:
+            for s in _dag_successors(n, tables_map, conds_map):
+                if s in seen_a:
+                    return s
+                if s not in seen_b:
+                    seen_b.add(s)
+                    next_b.append(s)
+        frontier_a, frontier_b = next_a, next_b
+
+    return None
+
+
 def _reconstruct_flow(node_name, tables_map, conds_map, actions_by_name=None,
                       visited=None):
     """Walk the bmv2 pipeline DAG (tables + conditionals) and return a list of
@@ -336,11 +400,21 @@ def _reconstruct_flow(node_name, tables_map, conds_map, actions_by_name=None,
         true_n   = cond.get('true_next')
         false_n  = cond.get('false_next')
 
-        for s in _reconstruct_flow(true_n,  tables_map, conds_map, amap, visited):
+        # If both branches eventually reconverge on the same node, stop
+        # each branch's walk right there (branch_visited) instead of
+        # letting both duplicate it, then emit it once after the if/else.
+        merge = _find_merge_node(true_n, false_n, tables_map, conds_map)
+        branch_visited = visited | ({merge} if merge else set())
+
+        for s in _reconstruct_flow(true_n,  tables_map, conds_map, amap, branch_visited):
             if_stmt.add_then(s)
-        for s in _reconstruct_flow(false_n, tables_map, conds_map, amap, visited):
+        for s in _reconstruct_flow(false_n, tables_map, conds_map, amap, branch_visited):
             if_stmt.add_else(s)
-        stmts.append(if_stmt)
+        if if_stmt.then_body or if_stmt.else_body:
+            stmts.append(if_stmt)
+
+        if merge:
+            stmts.extend(_reconstruct_flow(merge, tables_map, conds_map, amap, visited))
 
     elif node_name in tables_map:
         tbl       = tables_map[node_name]
@@ -371,21 +445,28 @@ def _reconstruct_flow(node_name, tables_map, conds_map, actions_by_name=None,
             hit_next  = next_nodes.get('__HIT__')
             miss_next = next_nodes.get('__MISS__')
             if hit_next or miss_next:
+                merge = _find_merge_node(hit_next, miss_next, tables_map, conds_map)
+                branch_visited = visited | ({merge} if merge else set())
+
                 if not synthetic:
                     ta.result_var = f'{san_name}_result'
                     branch = IfStatement(f'{san_name}_result')
-                    for s in _reconstruct_flow(hit_next,  tables_map, conds_map, amap, visited):
+                    for s in _reconstruct_flow(hit_next,  tables_map, conds_map, amap, branch_visited):
                         branch.add_then(s)
-                    for s in _reconstruct_flow(miss_next, tables_map, conds_map, amap, visited):
+                    for s in _reconstruct_flow(miss_next, tables_map, conds_map, amap, branch_visited):
                         branch.add_else(s)
-                    stmts.append(branch)
+                    if branch.then_body or branch.else_body:
+                        stmts.append(branch)
                 else:
                     # synthetic table with divergent actions — follow successors
                     for succ in [hit_next, miss_next]:
                         if succ:
                             stmts.extend(
-                                _reconstruct_flow(succ, tables_map, conds_map, amap, visited)
+                                _reconstruct_flow(succ, tables_map, conds_map, amap, branch_visited)
                             )
+
+                if merge:
+                    stmts.extend(_reconstruct_flow(merge, tables_map, conds_map, amap, visited))
 
     return stmts
 

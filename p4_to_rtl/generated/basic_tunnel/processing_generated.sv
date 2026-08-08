@@ -208,7 +208,6 @@ module processing_generated (
   logic [31:0] ipv4_dstAddr_s3;
   logic [8:0] out_std_meta_egress_spec_s3;
   logic drop_s3;
-  logic __stage_cond_2_r;
   logic __stage_cond_1_r;
   logic valid_s4;
   logic out_ethernet_valid_s4;
@@ -507,25 +506,6 @@ module processing_generated (
     // apply block (stage 0 of 4)
     if ((ipv4_valid && !(myTunnel_valid))) begin
     end
-    else begin
-      if (myTunnel_valid) begin
-        // myTunnel_exact.apply()
-        if (myTunnel_exact_hit) begin
-          unique case (myTunnel_exact_act_id)
-            2'd0: ; // NoAction
-            2'd1: begin // myTunnel_forward
-              out_std_meta_egress_spec__st0 = myTunnel_exact_p_port;
-            end
-            2'd2: begin // drop__st0
-              drop__st0 = 1;
-            end
-            default: ; // default = drop__st0
-          endcase
-        end else begin // drop__st0 on miss
-          drop__st0 = 1;
-        end
-      end
-    end
   end
 
   // Forward stage-0 state into stage-1 registers (1-cycle
@@ -744,8 +724,8 @@ module processing_generated (
       end else begin // drop__st2 on miss
         drop__st2 = 1;
       end
-      if (myTunnel_valid__st2) begin
-      end
+    end
+    if (myTunnel_valid__st2) begin
     end
   end
 
@@ -798,7 +778,6 @@ module processing_generated (
       out_ipv4_dstAddr_s3 <= out_ipv4_dstAddr__st2;
       ipv4_dstAddr_s3 <= ipv4_dstAddr__st2;
       out_std_meta_egress_spec_s3 <= out_std_meta_egress_spec__st2;
-      __stage_cond_2_r <= (__stage_cond_0_r);
       __stage_cond_1_r <= (myTunnel_valid__st2);
     end
   end
@@ -947,23 +926,21 @@ module processing_generated (
     out_std_meta_egress_spec = out_std_meta_egress_spec_s4;
 
     // apply block (stage 4 of 4)
-    if (__stage_cond_2_r) begin
-      if (__stage_cond_1_r) begin
-        // myTunnel_exact.apply()
-        if (myTunnel_exact_hit) begin
-          unique case (myTunnel_exact_act_id)
-            2'd0: ; // NoAction
-            2'd1: begin // myTunnel_forward
-              out_std_meta_egress_spec = myTunnel_exact_p_port;
-            end
-            2'd2: begin // drop
-              drop = 1;
-            end
-            default: ; // default = drop
-          endcase
-        end else begin // drop on miss
-          drop = 1;
-        end
+    if (__stage_cond_1_r) begin
+      // myTunnel_exact.apply()
+      if (myTunnel_exact_hit) begin
+        unique case (myTunnel_exact_act_id)
+          2'd0: ; // NoAction
+          2'd1: begin // myTunnel_forward
+            out_std_meta_egress_spec = myTunnel_exact_p_port;
+          end
+          2'd2: begin // drop
+            drop = 1;
+          end
+          default: ; // default = drop
+        endcase
+      end else begin // drop on miss
+        drop = 1;
       end
     end
   end

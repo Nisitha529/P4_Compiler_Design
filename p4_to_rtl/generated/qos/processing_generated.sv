@@ -107,8 +107,6 @@ module processing_generated (
   logic [31:0] ipv4_dstAddr_s1;
   logic [8:0] out_std_meta_egress_spec_s1;
   logic drop_s1;
-  logic __stage_cond_2_r;
-  logic __stage_cond_1_r;
   logic __stage_cond_0_r;
   logic valid_s2;
   logic out_ethernet_valid_s2;
@@ -346,9 +344,7 @@ module processing_generated (
       out_ipv4_dstAddr_s1 <= out_ipv4_dstAddr__st0;
       ipv4_dstAddr_s1 <= ipv4_dstAddr;
       out_std_meta_egress_spec_s1 <= out_std_meta_egress_spec__st0;
-      __stage_cond_2_r <= (ipv4_valid);
-      __stage_cond_1_r <= ((ipv4_protocol == 'h11));
-      __stage_cond_0_r <= ((ipv4_protocol == 'h06));
+      __stage_cond_0_r <= (ipv4_valid);
     end
   end
 
@@ -484,62 +480,22 @@ module processing_generated (
     out_std_meta_egress_spec = out_std_meta_egress_spec_s2;
 
     // apply block (stage 2 of 2)
-    if (__stage_cond_2_r) begin
-      if (__stage_cond_1_r) begin
-        // ipv4_lpm.apply()
-        if (ipv4_lpm_hit) begin
-          unique case (ipv4_lpm_act_id)
-            2'd0: ; // NoAction
-            2'd1: begin // ipv4_forward
-              out_std_meta_egress_spec = ipv4_lpm_p_port;
-              out_ethernet_srcAddr = ethernet_dstAddr__st2;
-              out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
-              out_ipv4_ttl = ((ipv4_ttl__st2 + 'hFF) & 'hFF);
-            end
-            2'd2: begin // drop
-              drop = 1;
-            end
-            default: ; // default = NoAction
-          endcase
-        end
-      end
-      else begin
-        if (__stage_cond_0_r) begin
-          // ipv4_lpm.apply()
-          if (ipv4_lpm_hit) begin
-            unique case (ipv4_lpm_act_id)
-              2'd0: ; // NoAction
-              2'd1: begin // ipv4_forward
-                out_std_meta_egress_spec = ipv4_lpm_p_port;
-                out_ethernet_srcAddr = ethernet_dstAddr__st2;
-                out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
-                out_ipv4_ttl = ((ipv4_ttl__st2 + 'hFF) & 'hFF);
-              end
-              2'd2: begin // drop
-                drop = 1;
-              end
-              default: ; // default = NoAction
-            endcase
+    if (__stage_cond_0_r) begin
+      // ipv4_lpm.apply()
+      if (ipv4_lpm_hit) begin
+        unique case (ipv4_lpm_act_id)
+          2'd0: ; // NoAction
+          2'd1: begin // ipv4_forward
+            out_std_meta_egress_spec = ipv4_lpm_p_port;
+            out_ethernet_srcAddr = ethernet_dstAddr__st2;
+            out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
+            out_ipv4_ttl = ((ipv4_ttl__st2 + 'hFF) & 'hFF);
           end
-        end
-        else begin
-          // ipv4_lpm.apply()
-          if (ipv4_lpm_hit) begin
-            unique case (ipv4_lpm_act_id)
-              2'd0: ; // NoAction
-              2'd1: begin // ipv4_forward
-                out_std_meta_egress_spec = ipv4_lpm_p_port;
-                out_ethernet_srcAddr = ethernet_dstAddr__st2;
-                out_ethernet_dstAddr = ipv4_lpm_p_dstAddr;
-                out_ipv4_ttl = ((ipv4_ttl__st2 + 'hFF) & 'hFF);
-              end
-              2'd2: begin // drop
-                drop = 1;
-              end
-              default: ; // default = NoAction
-            endcase
+          2'd2: begin // drop
+            drop = 1;
           end
-        end
+          default: ; // default = NoAction
+        endcase
       end
     end
   end

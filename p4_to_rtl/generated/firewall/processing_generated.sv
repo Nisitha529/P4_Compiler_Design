@@ -2020,25 +2020,6 @@ module processing_generated (
           tmp_18__st4 = ipv4_protocol__st4;
           // hash() stub — XOR-based behavioral approximation
           reg_pos_two_0__st4 = (tmp_14__st4 ^ tmp_15__st4 ^ tmp_16__st4 ^ tmp_17__st4 ^ tmp_18__st4) & 12'hFFF;
-          if ((direction_0__st4 == 'h00)) begin
-            if ((tcp_syn__st4 == 'h01)) begin
-              bloom_filter_1_wr_en   = 1'b1;
-              bloom_filter_1_wr_addr = reg_pos_one_0__st4;
-              bloom_filter_1_wr_data = 'h01;
-              bloom_filter_2_wr_en   = 1'b1;
-              bloom_filter_2_wr_addr = reg_pos_two_0__st4;
-              bloom_filter_2_wr_data = 'h01;
-            end
-          end
-          else begin
-            if ((direction_0__st4 == 'h01)) begin
-              reg_val_one_0__st4 = bloom_filter_1_rd_reg_val_one_0;
-              reg_val_two_0__st4 = bloom_filter_2_rd_reg_val_two_0;
-              if (((reg_val_one_0__st4 != 'h01) || (reg_val_two_0__st4 != 'h01))) begin
-                drop = 1;
-              end
-            end
-          end
         end
         else begin
           tmp_9__st4 = ipv4_dstAddr__st4;
@@ -2055,23 +2036,23 @@ module processing_generated (
           tmp_18__st4 = ipv4_protocol__st4;
           // hash() stub — XOR-based behavioral approximation
           reg_pos_two_0__st4 = (tmp_14__st4 ^ tmp_15__st4 ^ tmp_16__st4 ^ tmp_17__st4 ^ tmp_18__st4) & 12'hFFF;
-          if ((direction_0__st4 == 'h00)) begin
-            if ((tcp_syn__st4 == 'h01)) begin
-              bloom_filter_1_wr_en   = 1'b1;
-              bloom_filter_1_wr_addr = reg_pos_one_0__st4;
-              bloom_filter_1_wr_data = 'h01;
-              bloom_filter_2_wr_en   = 1'b1;
-              bloom_filter_2_wr_addr = reg_pos_two_0__st4;
-              bloom_filter_2_wr_data = 'h01;
-            end
+        end
+        if ((direction_0__st4 == 'h00)) begin
+          if ((tcp_syn__st4 == 'h01)) begin
+            bloom_filter_1_wr_en   = 1'b1;
+            bloom_filter_1_wr_addr = reg_pos_one_0__st4;
+            bloom_filter_1_wr_data = 'h01;
+            bloom_filter_2_wr_en   = 1'b1;
+            bloom_filter_2_wr_addr = reg_pos_two_0__st4;
+            bloom_filter_2_wr_data = 'h01;
           end
-          else begin
-            if ((direction_0__st4 == 'h01)) begin
-              reg_val_one_0__st4 = bloom_filter_1_rd_reg_val_one_0;
-              reg_val_two_0__st4 = bloom_filter_2_rd_reg_val_two_0;
-              if (((reg_val_one_0__st4 != 'h01) || (reg_val_two_0__st4 != 'h01))) begin
-                drop = 1;
-              end
+        end
+        else begin
+          if ((direction_0__st4 == 'h01)) begin
+            reg_val_one_0__st4 = bloom_filter_1_rd_reg_val_one_0;
+            reg_val_two_0__st4 = bloom_filter_2_rd_reg_val_two_0;
+            if (((reg_val_one_0__st4 != 'h01) || (reg_val_two_0__st4 != 'h01))) begin
+              drop = 1;
             end
           end
         end
