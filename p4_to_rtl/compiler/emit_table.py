@@ -3,6 +3,7 @@ import os
 import re
 
 from ir import ActionParam
+from timing_model import table_tree_stages
 
 _STD_META_WIDTHS = {
     'egress_spec': 9, 'ingress_port': 9, 'egress_port': 9,
@@ -115,7 +116,7 @@ def _collect_params(table, amap):
 # Single table emitter
 # ============================================================
 
-def _emit_one_table(ir, table, amap, fwmap, output_path):
+def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None):
 
     act_ids   = _action_ids(table)
     params    = _collect_params(table, amap)
@@ -337,29 +338,88 @@ def _emit_one_table(ir, table, amap, fwmap, output_path):
         f.write('    end\n')
         f.write('  end\n\n')
 
+        # Opt-in mid-tree pipeline registers (--target-freq-mhz): src_hit/
+        # src_act/src_p track *where this iteration reads its previous
+        # level from* -- the plain hit_l{level}/act_l{level}/p_*_l{level}
+        # names when budget_levels is None (never reassigned outside the
+        # insertion branch below, so that case's generated text is
+        # byte-identical to before this parameter existed by construction,
+        # not by a separate check) or a registered _r copy once a hop's
+        # accumulated depth reaches budget_levels tree-levels. See
+        # timing_model.table_tree_stages() -- emit_processing.py's
+        # scheduler inserts one matching no-op pass-through stage per
+        # insertion here, computed from that same shared function so the
+        # two files' cycle counts can never drift apart.
         prev_n, level = depth, 0
+        src_hit, src_act = 'hit_l0', 'act_l0'
+        src_p = {pname: f'p_{pname}_l0' for pname, _ in params}
+        levels_since_reg = 0
+        n_insertions = 0
         while prev_n > 1:
             nxt_n = (prev_n + 1) // 2
-            f.write(f'  logic        hit_l{level+1}[0:{nxt_n-1}];\n')
-            f.write(f'  logic [{act_id_w-1}:0] act_l{level+1}[0:{nxt_n-1}];\n')
+            dst_hit, dst_act = f'hit_l{level+1}', f'act_l{level+1}'
+            dst_p = {pname: f'p_{pname}_l{level+1}' for pname, _ in params}
+            f.write(f'  logic        {dst_hit}[0:{nxt_n-1}];\n')
+            f.write(f'  logic [{act_id_w-1}:0] {dst_act}[0:{nxt_n-1}];\n')
             for pname, pw in params:
-                f.write(f'  logic [{pw-1}:0] p_{pname}_l{level+1}[0:{nxt_n-1}];\n')
+                f.write(f'  logic [{pw-1}:0] {dst_p[pname]}[0:{nxt_n-1}];\n')
             for i in range(nxt_n):
                 left, right = 2 * i, 2 * i + 1
                 if right < prev_n:
-                    f.write(f'  assign hit_l{level+1}[{i}] = hit_l{level}[{left}] || hit_l{level}[{right}];\n')
-                    f.write(f'  assign act_l{level+1}[{i}] = hit_l{level}[{left}] ? '
-                            f'act_l{level}[{left}] : act_l{level}[{right}];\n')
+                    f.write(f'  assign {dst_hit}[{i}] = {src_hit}[{left}] || {src_hit}[{right}];\n')
+                    f.write(f'  assign {dst_act}[{i}] = {src_hit}[{left}] ? '
+                            f'{src_act}[{left}] : {src_act}[{right}];\n')
                     for pname, _ in params:
-                        f.write(f'  assign p_{pname}_l{level+1}[{i}] = hit_l{level}[{left}] ? '
-                                f'p_{pname}_l{level}[{left}] : p_{pname}_l{level}[{right}];\n')
+                        f.write(f'  assign {dst_p[pname]}[{i}] = {src_hit}[{left}] ? '
+                                f'{src_p[pname]}[{left}] : {src_p[pname]}[{right}];\n')
                 else:
-                    f.write(f'  assign hit_l{level+1}[{i}] = hit_l{level}[{left}];\n')
-                    f.write(f'  assign act_l{level+1}[{i}] = act_l{level}[{left}];\n')
+                    f.write(f'  assign {dst_hit}[{i}] = {src_hit}[{left}];\n')
+                    f.write(f'  assign {dst_act}[{i}] = {src_act}[{left}];\n')
                     for pname, _ in params:
-                        f.write(f'  assign p_{pname}_l{level+1}[{i}] = p_{pname}_l{level}[{left}];\n')
+                        f.write(f'  assign {dst_p[pname]}[{i}] = {src_p[pname]}[{left}];\n')
             f.write('\n')
             prev_n, level = nxt_n, level + 1
+            levels_since_reg += 1
+            src_hit, src_act, src_p = dst_hit, dst_act, dst_p
+
+            is_final_level = (prev_n == 1)
+            if (budget_levels is not None and not is_final_level
+                    and levels_since_reg >= budget_levels):
+                reg_hit, reg_act = f'{dst_hit}_r', f'{dst_act}_r'
+                reg_p = {pname: f'{dst_p[pname]}_r' for pname, _ in params}
+                lv = f'_rj_l{level}'
+                f.write(f'  logic        {reg_hit}[0:{nxt_n-1}];\n')
+                f.write(f'  logic [{act_id_w-1}:0] {reg_act}[0:{nxt_n-1}];\n')
+                for pname, pw in params:
+                    f.write(f'  logic [{pw-1}:0] {reg_p[pname]}[0:{nxt_n-1}];\n')
+                f.write(f'  integer {lv};\n')
+                f.write('  always_ff @(posedge clk) begin\n')
+                f.write('    if (!rst_n) begin\n')
+                f.write(f'      for ({lv} = 0; {lv} < {nxt_n}; {lv} = {lv} + 1)\n')
+                f.write(f"        {reg_hit}[{lv}] <= 1'b0;\n")
+                f.write('    end else begin\n')
+                f.write(f'      for ({lv} = 0; {lv} < {nxt_n}; {lv} = {lv} + 1) begin\n')
+                f.write(f'        {reg_hit}[{lv}] <= {dst_hit}[{lv}];\n')
+                f.write(f'        {reg_act}[{lv}] <= {dst_act}[{lv}];\n')
+                for pname, _ in params:
+                    f.write(f'        {reg_p[pname]}[{lv}] <= {dst_p[pname]}[{lv}];\n')
+                f.write('      end\n')
+                f.write('    end\n')
+                f.write('  end\n\n')
+                src_hit, src_act, src_p = reg_hit, reg_act, reg_p
+                levels_since_reg = 0
+                n_insertions += 1
+
+        # Structural guarantee (not just "the arithmetic should agree"):
+        # this count must exactly match what emit_processing.py's scheduler
+        # will independently compute from the same table_tree_stages() for
+        # this same (depth, budget_levels) -- a drift here wouldn't crash,
+        # it would silently read hit/action_id one cycle too early.
+        assert n_insertions == table_tree_stages(depth, budget_levels) - 1, (
+            f'{table.name}: inserted {n_insertions} mid-tree registers but '
+            f'table_tree_stages({depth}, {budget_levels}) says the scheduler '
+            f'expects {table_tree_stages(depth, budget_levels) - 1}'
+        )
 
         # Register the tree's final output instead of exposing it as a raw
         # combinational port. Real synthesis (Vivado, Artix-7) on firewall
@@ -653,8 +713,10 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
 # Public entry point
 # ============================================================
 
-def emit_tables(ir, out_dir, stage='ingress'):
-    """Generate one _table.sv per table in the processing control block."""
+def emit_tables(ir, out_dir, stage='ingress', budget_levels=None):
+    """Generate one _table.sv per table in the processing control block.
+    budget_levels: None (default) = no mid-tree pipeline splitting, output
+    identical to before this parameter existed. See table_tree_stages()."""
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
         return
@@ -664,5 +726,5 @@ def emit_tables(ir, out_dir, stage='ingress'):
         if not tbl.actions:
             continue
         out_path = os.path.join(out_dir, f'{tbl.name}_table.sv')
-        _emit_one_table(ir, tbl, amap, fwmap, out_path)
+        _emit_one_table(ir, tbl, amap, fwmap, out_path, budget_levels=budget_levels)
         print(f'[SUCCESS] Table RTL      -> {out_path}')

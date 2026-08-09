@@ -15,6 +15,7 @@ from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
 from emit_top import emit_top
+from timing_model import budget_levels as _budget_levels, DEVICE_FACTOR
 
 
 # ============================================================
@@ -295,9 +296,11 @@ def debug_ir(ir):
 # Main compiler driver
 # ============================================================
 
-def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None):
+def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
+    budget_levels: None (default) = today's behavior exactly, no budget-splitting.
+        Otherwise, an int logic-level budget per pipeline stage (see timing_model.py).
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -355,10 +358,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None):
 
     if ir.controls:
         print("[INFO] Generating table RTL...")
-        emit_tables(ir, out_dir)
+        emit_tables(ir, out_dir, budget_levels=budget_levels)
 
         print("[INFO] Generating processing RTL...")
-        emit_processing(ir, out_processing)
+        emit_processing(ir, out_processing, budget_levels=budget_levels)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
@@ -371,10 +374,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None):
     if eg is not None and (eg.tables or eg.statements):
         out_egress_processing = os.path.join(out_dir, "egress_processing_generated.sv")
         print("[INFO] Generating egress table RTL...")
-        emit_tables(ir, out_dir, stage='egress')
+        emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels)
 
         print("[INFO] Generating egress processing RTL...")
-        emit_processing(ir, out_egress_processing, stage='egress')
+        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
@@ -433,8 +436,50 @@ def main():
         default=None,
         help="Force a specific frontend (default: auto-detect from P4 source)",
     )
+    parser.add_argument(
+        "--target-freq-mhz",
+        metavar="FLOAT",
+        type=float,
+        default=None,
+        help=(
+            "Opt-in pipeline delay budget, in MHz. Default: unset, meaning no "
+            "budget-splitting -- identical output to not passing this flag at all. "
+            "When set, stages are split to fit a logic-level budget derived from a "
+            "single real Artix-7 calibration point (see timing_model.py). For "
+            "--device other than artix7, the result is an UNVERIFIED ESTIMATE: this "
+            "machine has no Synthesis license for UltraScale+/Versal."
+        ),
+    )
+    parser.add_argument(
+        "--device",
+        choices=sorted(DEVICE_FACTOR),
+        default='artix7',
+        help="Target device family for --target-freq-mhz budget scaling (default: artix7)",
+    )
     args = parser.parse_args()
-    run_compiler(args.app, p4c_bin=args.p4c, p4test_bin=args.p4test, frontend=args.frontend)
+
+    levels = None
+    if args.target_freq_mhz is not None:
+        levels = _budget_levels(args.target_freq_mhz, args.device)
+        print(
+            f"[INFO] Pipeline delay budget: {levels} logic levels/stage "
+            f"(target {args.target_freq_mhz} MHz on {args.device})"
+        )
+        if args.device != 'artix7':
+            print(
+                "[WARN] --device "
+                f"{args.device} timing is an UNVERIFIED ESTIMATE "
+                "(no Synthesis license for this device class on this machine) -- "
+                "only artix7 numbers come from real synthesis/timing runs."
+            )
+
+    run_compiler(
+        args.app,
+        p4c_bin=args.p4c,
+        p4test_bin=args.p4test,
+        frontend=args.frontend,
+        budget_levels=levels,
+    )
 
 
 if __name__ == "__main__":

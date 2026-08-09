@@ -3,6 +3,7 @@ import math
 import re
 
 from ir import Assignment, ExternCall, IfStatement, TableApply, ActionParam
+from timing_model import estimate_expr_delay, table_tree_stages
 
 # ============================================================
 # Standard-metadata field widths (v1model definitions)
@@ -614,12 +615,21 @@ def _find_first_exact_table(stmts, exact_names):
     return None
 
 
-def _schedule_stages(ctrl_statements, exact_names):
+def _schedule_stages(ctrl_statements, table_noop_stages):
     """Returns (stages, boundary_forwards): stages[0] runs this cycle,
     stages[i] runs i cycles later. boundary_forwards[i] is the list of
-    (reg_name, raw_condition) pairs registered between stage i and i+1."""
+    (reg_name, raw_condition) pairs registered between stage i and i+1.
+
+    table_noop_stages: {table_name: n} -- every keyed table registers its
+    hit/action_id/params output as n further no-op pass-through stages
+    after the boundary where its key inputs are produced (n=1 for every
+    table when budget_levels is None, today's fixed 2-cycle-total table
+    latency; n can be >1 for a budget-split LPM/ternary priority-match
+    tree -- see timing_model.table_tree_stages(), the single source of
+    truth this count and emit_table.py's actual inserted-register count
+    both derive from, so they can never drift apart)."""
     remaining = ctrl_statements
-    names_left = set(exact_names)
+    names_left = set(table_noop_stages)
     stages = []
     boundary_forwards = []
     fwd_counter = [0]
@@ -632,22 +642,118 @@ def _schedule_stages(ctrl_statements, exact_names):
         before, after, fwd, _ = _split_stage(remaining, target, fwd_counter)
         stages.append(before)
         boundary_forwards.append(fwd)
-        # Every table (see emit_table.py) now registers its hit/action_id/
+        # Every table (see emit_table.py) registers its hit/action_id/
         # params output as its own final stage, instead of exposing the
-        # tree/tag-compare result combinationally -- 2-cycle total table
-        # latency (lookup + output register), not 1. This second, no-op
-        # stage is the matching register hop: it carries every bit of
-        # apply-block state forward one more cycle with no logic of its
-        # own, so that by the time the *next* stage's action-dispatch
-        # reads {target}_hit/{target}_act_id/{target}_p_*, the table's own
-        # output register has actually settled. Without this, the
-        # consuming stage would read those signals one cycle too early.
-        stages.append([])
-        boundary_forwards.append([])
+        # tree/tag-compare result combinationally -- at least 2-cycle
+        # total table latency (lookup + output register), not 1. These
+        # no-op stages are the matching register hop(s): they carry every
+        # bit of apply-block state forward, cycle by cycle, with no logic
+        # of their own, so that by the time the *next* real stage's
+        # action-dispatch reads {target}_hit/{target}_act_id/
+        # {target}_p_*, the table's own output register has actually
+        # settled. Without this, the consuming stage would read those
+        # signals one cycle too early.
+        for _ in range(table_noop_stages[target]):
+            stages.append([])
+            boundary_forwards.append([])
         names_left.discard(target)
         remaining = after
 
     return stages, boundary_forwards
+
+
+# ============================================================
+# Phase B: opt-in delay-budget splitting (see timing_model.py and the
+# architecture-redesign plan). Runs as a refinement pass immediately after
+# _schedule_stages -- Phase A's table boundaries are correctness-mandated
+# and untouched here; this pass only adds *extra* boundaries, heuristically,
+# inside a stage whose estimated cost exceeds budget_levels. Phase 2 scope:
+# flat splitting only -- an IfStatement is charged as one atomic block
+# (see _block_cost) and never split internally; that's Phase 3.
+# ============================================================
+
+def _cost_width_of(fwmap):
+    """Adapts _build_field_width_map's key format (raw hdr/meta field
+    names) to the mapped signal names that appear in an Assignment.rhs /
+    IfStatement.condition after _map_expr/_map_cond (e.g. meta.x -> the
+    shadow meta_x_w, standard_metadata.x -> std_meta_x)."""
+    def width_of(name):
+        if name in fwmap:
+            return fwmap[name]
+        m = re.match(r'^meta_(\w+)_w$', name)
+        if m:
+            return fwmap.get(f'meta_{m.group(1)}')
+        m = re.match(r'^std_meta_(\w+)$', name)
+        if m:
+            return _STD_META_WIDTHS.get(m.group(1))
+        return None
+    return width_of
+
+
+def _block_cost(stmts, cmap, width_of):
+    """Conservative (never-under-count) combinational cost of a statement
+    list if left entirely unsplit: sums sequential statement costs (worst
+    case -- a full dependency chain) and, for a nested IfStatement, adds
+    the condition's own cost plus the costlier branch's block cost. Used
+    both to decide split points (each top-level statement's own cost) and
+    to size an IfStatement as one atomic lump in Phase 2, since Phase 2
+    does not split inside a branch."""
+    total = 0
+    for s in stmts:
+        if isinstance(s, Assignment):
+            total += estimate_expr_delay(_map_expr(s.rhs, cmap), width_of)
+        elif isinstance(s, IfStatement):
+            cond_cost = estimate_expr_delay(_map_cond(s.condition, cmap), width_of)
+            total += cond_cost + 1 + max(
+                _block_cost(s.then_body, cmap, width_of),
+                _block_cost(s.else_body, cmap, width_of),
+            )
+        # ExternCall / keyless-TableApply (the only kinds left in a stage's
+        # statement list besides the above -- keyed TableApply nodes are
+        # already Phase-A boundaries by this point): atomic, not modeled --
+        # see the architecture-redesign plan's open risks.
+    return total
+
+
+def _budget_split_flat(stmts, budget, cmap, width_of):
+    """Split one flat statement list into budget-bounded sub-stages,
+    without recursing into any IfStatement's branches (Phase 2 scope --
+    see Phase 3 for that). A single statement over budget by itself is
+    left as its own, still-over-budget sub-stage: intra-expression
+    splitting is out of scope for this design."""
+    sub_stages = [[]]
+    cur_cost = 0
+    for s in stmts:
+        c = _block_cost([s], cmap, width_of)
+        if sub_stages[-1] and cur_cost + c > budget:
+            sub_stages.append([])
+            cur_cost = 0
+        sub_stages[-1].append(s)
+        cur_cost += c
+    return sub_stages
+
+
+def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_of):
+    """Refines Phase A's (stages, boundary_forwards) by budget-splitting
+    each non-empty stage. Phase A's empty no-op pass-through stages (one
+    per table, matching its registered-output cycle) are never touched.
+    A flat split never needs a condition-forwarding register -- that
+    machinery exists only for splitting *inside* an IfStatement (see
+    _split_stage), which Phase 2 doesn't do -- so new internal boundaries
+    get an empty forward list; Phase A's own boundary_forwards entries are
+    preserved verbatim on the transition where they belong."""
+    new_stages = []
+    new_bounds = []
+    for i, stg in enumerate(stages):
+        if not stg:
+            new_stages.append(stg)
+        else:
+            subs = _budget_split_flat(stg, budget_levels, cmap, width_of)
+            new_stages.extend(subs)
+            new_bounds.extend([[] for _ in range(len(subs) - 1)])
+        if i < len(boundary_forwards):
+            new_bounds.append(boundary_forwards[i])
+    return new_stages, new_bounds
 
 
 # ============================================================
@@ -714,7 +820,13 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
 # Main emitter
 # ============================================================
 
-def emit_processing(ir, output_path, stage='ingress'):
+def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
+    # budget_levels: None (default) = no budget-splitting, output identical
+    # to before this parameter existed -- every existing call site stays a
+    # no-op. Otherwise (see compiler/timing_model.py and the architecture-
+    # redesign plan): drives table_noop_stages (variable-latency LPM/
+    # ternary tree splitting, see table_tree_stages()) and the top-level
+    # apply-block statement splitter (_budget_split_stages).
 
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
@@ -895,13 +1007,40 @@ def emit_processing(ir, output_path, stage='ingress'):
 
         # ── Pipeline-stage scheduling ────────────────────────────────────
         # Every table type with an actual key (exact hash+BRAM, and
-        # LPM/ternary's registered leaf-level priority tree) has a uniform
-        # 1-cycle lookup latency, so each is a pipeline-stage boundary.
-        # Keyless tables are excluded -- there's no key input to align a
-        # registered output against, so they're plain combinational reads
-        # of a control-plane-writable register (see _emit_keyless_table).
-        exact_names = {tw['table'].name for tw in table_wires if not tw.get('is_keyless')}
-        stages, boundary_forwards = _schedule_stages(ctrl.statements, exact_names)
+        # LPM/ternary's registered leaf-level priority tree) is a
+        # pipeline-stage boundary, with at least a 2-cycle lookup latency
+        # (lookup stage + registered output stage). Exact-match tables are
+        # always exactly 2 cycles (O(1) hash+BRAM lookup, no tree to
+        # split). LPM/ternary tables can take more when budget_levels
+        # splits their internal priority-match tree across several
+        # registers (see timing_model.table_tree_stages() -- the same
+        # function emit_table.py used to decide how many registers it
+        # actually inserted for this table, so the two counts can never
+        # drift apart). Keyless tables are excluded -- there's no key
+        # input to align a registered output against, so they're plain
+        # combinational reads of a control-plane-writable register (see
+        # _emit_keyless_table).
+        table_noop_stages = {
+            tw['table'].name: (
+                1 if tw['is_exact'] else table_tree_stages(tw['depth'], budget_levels)
+            )
+            for tw in table_wires if not tw.get('is_keyless')
+        }
+        stages, boundary_forwards = _schedule_stages(ctrl.statements, table_noop_stages)
+
+        # Phase B (opt-in, default off): refine Phase A's stages against an
+        # estimated per-stage logic-level budget. budget_levels is None
+        # unless --target-freq-mhz was passed on the CLI -- see
+        # timing_model.py and the architecture-redesign plan. This can only
+        # ever add stage boundaries, never remove Phase A's correctness-
+        # mandated table boundaries.
+        if budget_levels is not None:
+            print(f'[INFO] Pipeline delay-budget splitting: {budget_levels} '
+                  f'logic levels/stage (estimate, see timing_model.py -- '
+                  f'not a synthesis measurement)')
+            stages, boundary_forwards = _budget_split_stages(
+                stages, boundary_forwards, budget_levels, cmap, _cost_width_of(fwmap))
+
         n_bounds = len(boundary_forwards)
 
         # A table's `meta.*` key input is only safe to wire straight to the
@@ -1015,9 +1154,10 @@ def emit_processing(ir, output_path, stage='ingress'):
         #     "this cycle's live input"; every later stage needs its own
         #     forwarded copy, never the live input for a different packet)
         #     must stay unsuffixed only in stage 0.
-        # With n_bounds in {0, 1} (enforced above) these two rules only
-        # ever disagree on stage 0 vs stage 1, which is exactly the split
-        # point, so there is no name collision between them.
+        # This holds for any n_bounds, not just 0 or 1: Pool A and Pool B
+        # are disjoint name sets, so "unsuffixed only in the last stage"
+        # (Pool A) and "unsuffixed only in stage 0" (Pool B) never collide
+        # regardless of how many stages there are in between.
         _pool_a = {'drop'}
         for hname, fname, _ in hdr_ports:
             _pool_a.add(f'out_{hname}_{fname}')
