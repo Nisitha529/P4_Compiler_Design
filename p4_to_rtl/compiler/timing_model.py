@@ -107,6 +107,37 @@ def table_tree_stages(depth, budget_levels=None):
     return max(1, math.ceil(tree_levels / budget_levels))
 
 
+def exact_match_tag_compare_stages(key_widths, budget_levels=None):
+    """How many pipeline-register hops an exact-match table's tag-compare
+    (the AND-chain of per-key-field equalities run against the BRAM's
+    registered read output, see emit_table.py's _emit_exact_match_table)
+    needs. Called identically by emit_table.py (whether to insert the
+    extra forwarding register) and emit_processing.py (how many no-op
+    pass-through stages its scheduler must insert for that same table),
+    so the two can never drift apart -- same discipline as
+    table_tree_stages() for LPM/ternary tables.
+
+    budget_levels=None (default) -> 1: today's fixed 2-cycle table latency
+    (BRAM-read register, tag-compare-and-select purely combinational,
+    final output register), unchanged. Otherwise: reuses
+    estimate_expr_delay() itself (not a hand-derived formula) on the real
+    tag-compare expression shape to decide whether it needs its own
+    register between the compare and the select -- 2 hops if so, 1 if the
+    compare already fits the budget."""
+    if budget_levels is None or not key_widths:
+        return 1
+    width_of = {}
+    parts = []
+    for i, w in enumerate(key_widths):
+        a, b = f'k{i}a', f'k{i}b'
+        width_of[a] = w
+        width_of[b] = w
+        parts.append(f'({a} == {b})')
+    expr = ' && '.join(parts)
+    cost = estimate_expr_delay(expr, lambda n: width_of.get(n))
+    return 2 if cost > budget_levels else 1
+
+
 # ============================================================
 # Expression tokenizer
 # ============================================================
@@ -403,4 +434,18 @@ if __name__ == '__main__':
     print(f'table_tree_stages(1024, None)                        = {table_tree_stages(1024, None)}')
     print(f'table_tree_stages(1024, budget_levels(400,"artix7"))  = '
           f'{table_tree_stages(1024, budget_levels(400, "artix7"))} (ESTIMATE-driven, real formula)')
+
+    # exact_match_tag_compare_stages: firewall's real check_ports table,
+    # 2 key fields (ingress_port, egress_spec), both 9 bits -- confirmed
+    # by real Vivado synthesis to need splitting once the LPM tree no
+    # longer dominates (see the architecture-redesign plan, Phase 6).
+    assert exact_match_tag_compare_stages([9, 9], None) == 1, 'None must stay the fixed 2-cycle default'
+    assert exact_match_tag_compare_stages([9, 9], budget_levels(400, 'artix7')) == 2, \
+        'expected a split at 400MHz/artix7 for check_ports-shaped keys'
+    assert exact_match_tag_compare_stages([], 4) == 1, 'no key fields -> nothing to split'
+    assert exact_match_tag_compare_stages([16], 4) == 2, 'single-field key must not crash the parser'
+    print(f'exact_match_tag_compare_stages([9,9], None)                       = '
+          f'{exact_match_tag_compare_stages([9, 9], None)}')
+    print(f'exact_match_tag_compare_stages([9,9], budget_levels(400,"artix7")) = '
+          f'{exact_match_tag_compare_stages([9, 9], budget_levels(400, "artix7"))} (ESTIMATE-driven, real formula)')
     print('OK')

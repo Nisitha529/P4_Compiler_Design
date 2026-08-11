@@ -3,7 +3,7 @@ import os
 import re
 
 from ir import ActionParam
-from timing_model import table_tree_stages
+from timing_model import table_tree_stages, exact_match_tag_compare_stages
 
 _STD_META_WIDTHS = {
     'egress_spec': 9, 'ingress_port': 9, 'egress_port': 9,
@@ -135,7 +135,7 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None):
     depth = table.size if table.size else 1024
 
     if not is_lpm and not is_ternary:
-        _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path)
+        _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path, budget_levels=budget_levels)
         return
 
     with open(output_path, 'w') as f:
@@ -555,7 +555,7 @@ def _emit_keyless_table(table, act_ids, params, act_id_w, output_path):
 # keep collision probability low; a d-way associative version is the
 # natural follow-up if collisions become a problem in practice.
 
-def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path):
+def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path, budget_levels=None):
     idx_w = max(1, math.ceil(math.log2(depth))) if depth > 1 else 1
 
     key_fields = [(_field_basename(k.field), _key_width(k.field, fwmap)) for k in table.keys]
@@ -653,7 +653,18 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
         f.write('    end\n')
         f.write('  end\n\n')
 
-        f.write('  // Registered BRAM read + tag-compare stage (1-cycle lookup latency)\n')
+        # Opt-in tag-compare split (--target-freq-mhz): n_stages/split track
+        # whether the tag-compare needs its own register between "compare"
+        # and "select" instead of both happening combinationally in the
+        # same cycle as the BRAM reads on either side. See
+        # timing_model.exact_match_tag_compare_stages() -- emit_processing.py's
+        # scheduler inserts a matching no-op pass-through stage per hop,
+        # computed from that same shared function so the two files' cycle
+        # counts can never drift apart.
+        n_stages = exact_match_tag_compare_stages([w for _, w in key_fields], budget_levels)
+        split = (n_stages == 2)
+
+        f.write(f'  // Registered BRAM read + tag-compare stage ({n_stages}-cycle lookup latency)\n')
         f.write('  logic        valid_r;\n')
         for fname, w in key_fields:
             f.write(f'  logic [{w-1}:0] key_r_{fname};\n')
@@ -677,29 +688,69 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
         f.write('    end\n')
         f.write('  end\n\n')
 
-        # Registered output (same reasoning as the LPM/ternary tree's final
-        # stage above): keeps the tag-compare + action-select settling in
-        # its own cycle instead of fusing straight into the caller's
-        # action-dispatch mux and arithmetic. 2-cycle total latency
-        # (lookup + this stage); emit_processing.py's scheduler matches it.
         tag_match = ' && '.join(f'(mem_key_r_{fname} == key_r_{fname})' for fname, _ in key_fields) or "1'b1"
         f.write(f'  logic hit_c; assign hit_c = valid_r && {tag_match};\n')
+
+        # mux_sel feeds both the action-select mux below and the final
+        # output register's `hit` input -- always the same value in this
+        # design. Unsplit: straight off hit_c, identical text to before
+        # this parameter existed. Split: register hit_c (and the still-
+        # needed action_id_r/p_r_* payload) one more cycle first, so the
+        # tag-compare settles in its own cycle instead of bridging
+        # directly from one BRAM's registered output into the next
+        # register's control input within a single clock period (this is
+        # exactly the real critical path a Vivado synthesis run found).
+        mux_sel = 'hit_c'
+        act_src = 'action_id_r'
+        p_src   = {pname: f'p_r_{pname}' for pname, _ in params}
+
+        if split:
+            f.write('  logic hit_mid;\n')
+            f.write(f'  logic [{act_id_w-1}:0] action_id_r2;\n')
+            for pname, pw in params:
+                f.write(f'  logic [{pw-1}:0] p_r2_{pname};\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (!rst_n) begin\n')
+            f.write("      hit_mid <= 1'b0;\n")
+            f.write('    end else begin\n')
+            f.write('      hit_mid      <= hit_c;\n')
+            f.write('      action_id_r2 <= action_id_r;\n')
+            for pname, _ in params:
+                # Unconditional every cycle, never hit-gated -- a hit-gated
+                # version would let a stale payload from a previous hit
+                # leak into a later miss cycle.
+                f.write(f'      p_r2_{pname} <= p_r_{pname};\n')
+            f.write('    end\n')
+            f.write('  end\n\n')
+            mux_sel = 'hit_mid'
+            act_src = 'action_id_r2'
+            p_src   = {pname: f'p_r2_{pname}' for pname, _ in params}
+
+        # Registered output (same reasoning as the LPM/ternary tree's final
+        # stage): keeps the action-select settling in its own cycle instead
+        # of fusing straight into the caller's action-dispatch mux and
+        # arithmetic. emit_processing.py's scheduler matches n_stages.
         f.write(f'  logic [{act_id_w-1}:0] action_id_c;\n')
-        f.write(f'  assign action_id_c = hit_c ? action_id_r : {act_id_w}\'d{default_act_id};\n')
+        f.write(f'  assign action_id_c = {mux_sel} ? {act_src} : {act_id_w}\'d{default_act_id};\n')
         for pname, pw in params:
             f.write(f'  logic [{pw-1}:0] p_{pname}_c;\n')
-            f.write(f'  assign p_{pname}_c = hit_c ? p_r_{pname} : {pw}\'b0;\n')
+            f.write(f'  assign p_{pname}_c = {mux_sel} ? {p_src[pname]} : {pw}\'b0;\n')
         f.write('\n')
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) begin\n')
         f.write("      hit <= 1'b0;\n")
         f.write('    end else begin\n')
-        f.write('      hit <= hit_c;\n')
+        f.write(f'      hit <= {mux_sel};\n')
         f.write('      action_id <= action_id_c;\n')
         for pname, _ in params:
             f.write(f'      p_{pname} <= p_{pname}_c;\n')
         f.write('    end\n')
         f.write('  end\n\n')
+
+        assert n_stages == exact_match_tag_compare_stages([w for _, w in key_fields], budget_levels), (
+            f'{table.name}: split={split} but the scheduler will independently '
+            f'compute a different stage count for the same inputs'
+        )
 
         f.write('  // Action ID encoding:\n')
         for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):

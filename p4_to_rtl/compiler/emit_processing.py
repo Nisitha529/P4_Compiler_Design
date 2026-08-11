@@ -3,7 +3,7 @@ import math
 import re
 
 from ir import Assignment, ExternCall, IfStatement, TableApply, ActionParam
-from timing_model import estimate_expr_delay, table_tree_stages
+from timing_model import estimate_expr_delay, table_tree_stages, exact_match_tag_compare_stages
 
 # ============================================================
 # Standard-metadata field widths (v1model definitions)
@@ -1009,20 +1009,23 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
         # Every table type with an actual key (exact hash+BRAM, and
         # LPM/ternary's registered leaf-level priority tree) is a
         # pipeline-stage boundary, with at least a 2-cycle lookup latency
-        # (lookup stage + registered output stage). Exact-match tables are
-        # always exactly 2 cycles (O(1) hash+BRAM lookup, no tree to
-        # split). LPM/ternary tables can take more when budget_levels
-        # splits their internal priority-match tree across several
-        # registers (see timing_model.table_tree_stages() -- the same
-        # function emit_table.py used to decide how many registers it
-        # actually inserted for this table, so the two counts can never
-        # drift apart). Keyless tables are excluded -- there's no key
-        # input to align a registered output against, so they're plain
-        # combinational reads of a control-plane-writable register (see
-        # _emit_keyless_table).
+        # (lookup stage + registered output stage). Both table types can
+        # take more when budget_levels is set: LPM/ternary splits its
+        # internal priority-match tree across several registers (see
+        # timing_model.table_tree_stages()); exact-match splits its
+        # tag-compare out of the same cycle as the BRAM reads on either
+        # side of it when the compare itself doesn't fit the budget (see
+        # timing_model.exact_match_tag_compare_stages()). Both are the
+        # same function emit_table.py used to decide how many registers
+        # it actually inserted for that table, so the two counts can
+        # never drift apart. Keyless tables are excluded -- there's no
+        # key input to align a registered output against, so they're
+        # plain combinational reads of a control-plane-writable register
+        # (see _emit_keyless_table).
         table_noop_stages = {
             tw['table'].name: (
-                1 if tw['is_exact'] else table_tree_stages(tw['depth'], budget_levels)
+                exact_match_tag_compare_stages([kw for _, _, kw in tw['key_sigs']], budget_levels)
+                if tw['is_exact'] else table_tree_stages(tw['depth'], budget_levels)
             )
             for tw in table_wires if not tw.get('is_keyless')
         }
