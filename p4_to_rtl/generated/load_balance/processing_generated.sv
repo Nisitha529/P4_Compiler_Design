@@ -77,7 +77,7 @@ module processing_generated (
 
   // Control-plane write ports for table instances
   input  logic        ecmp_group_cp_wr_en,
-  input  logic [9:0] ecmp_group_cp_wr_idx,
+  input  logic [7:0] ecmp_group_cp_wr_idx,
   input  logic [31:0] ecmp_group_cp_wr_key_dstAddr,
   input  logic [5:0] ecmp_group_cp_wr_pfx_len,
   input  logic [1:0] ecmp_group_cp_wr_action,
@@ -672,7 +672,7 @@ module processing_generated (
   logic [8:0] ecmp_nhop_p_port;
 
   // Table module instantiations
-  ecmp_group_table #(.DEPTH(1024)) u_ecmp_group (
+  ecmp_group_table #(.DEPTH(256)) u_ecmp_group (
     .clk    (clk),
     .rst_n  (rst_n),
     .lkp_dstAddr    (ipv4_dstAddr),

@@ -90,7 +90,7 @@ module processing_generated (
 
   // Control-plane write ports for table instances
   input  logic        ipv4_lpm_cp_wr_en,
-  input  logic [9:0] ipv4_lpm_cp_wr_idx,
+  input  logic [7:0] ipv4_lpm_cp_wr_idx,
   input  logic [31:0] ipv4_lpm_cp_wr_key_dstAddr,
   input  logic [5:0] ipv4_lpm_cp_wr_pfx_len,
   input  logic [1:0] ipv4_lpm_cp_wr_action,
@@ -989,7 +989,7 @@ module processing_generated (
   logic [0:0] check_ports_p_dir;
 
   // Table module instantiations
-  ipv4_lpm_table #(.DEPTH(1024)) u_ipv4_lpm (
+  ipv4_lpm_table #(.DEPTH(256)) u_ipv4_lpm (
     .clk    (clk),
     .rst_n  (rst_n),
     .lkp_dstAddr    (ipv4_dstAddr),

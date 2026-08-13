@@ -165,7 +165,18 @@ control MyIngress(inout headers hdr,
             drop;
             NoAction;
         }
-        size = 1024;
+        // LPM/ternary matching compares the lookup key against every
+        // stored entry in parallel (no single hash address exists for
+        // longest-prefix matching), so this table's storage cannot map to
+        // Block RAM regardless of RTL coding style -- it's backed by
+        // DEPTH flip-flops. size=1024 needs 126,976 FFs alone (more than
+        // this project's target Artix-7 part's entire 126,800-FF budget,
+        // confirmed by a real place_design DRC failure). size=256 (31,744
+        // FFs) was verified by real place-and-route to fit comfortably
+        // (23% LUT / 39% FF) with real Fmax ~150-178MHz depending on
+        // --target-freq-mhz. See the architecture-redesign plan / project
+        // memory for the full investigation.
+        size = 256;
         default_action = drop();
     }
 
