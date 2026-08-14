@@ -123,7 +123,16 @@ control MyIngress(inout headers hdr,
             drop;
             NoAction;
         }
-        size = 1024;
+        // LPM matching compares the lookup key against every stored entry
+        // in parallel, so this table's storage cannot map to Block RAM
+        // regardless of RTL coding style -- it's backed by DEPTH
+        // flip-flops. size=1024 does not fit this project's target
+        // Artix-7 part (confirmed by a real place_design DRC failure on
+        // firewall's identically-shaped ipv4_lpm table). size=256 was
+        // verified by real place-and-route to fit comfortably. See the
+        // architecture-redesign plan / project memory for the full
+        // investigation.
+        size = 256;
         default_action = drop();
     }
 

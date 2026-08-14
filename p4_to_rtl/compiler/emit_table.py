@@ -3,7 +3,7 @@ import os
 import re
 
 from ir import ActionParam
-from timing_model import table_tree_stages, exact_match_tag_compare_stages
+from timing_model import table_tree_stages, exact_match_tag_compare_stages, TREE_LEVEL_REAL_COST
 
 _STD_META_WIDTHS = {
     'egress_spec': 9, 'ingress_port': 9, 'egress_port': 9,
@@ -383,8 +383,15 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None):
             src_hit, src_act, src_p = dst_hit, dst_act, dst_p
 
             is_final_level = (prev_n == 1)
+            # Trigger scaled by TREE_LEVEL_REAL_COST -- table_tree_stages()
+            # budgets each raw tree level at its real measured cost, not
+            # 1:1, so the insertion trigger has to match (see that
+            # function's docstring for the real synthesis data behind
+            # this). Must stay in lockstep with table_tree_stages()'s own
+            # formula or the assert below fires -- exactly the drift this
+            # structural guarantee exists to catch.
             if (budget_levels is not None and not is_final_level
-                    and levels_since_reg >= budget_levels):
+                    and levels_since_reg * TREE_LEVEL_REAL_COST >= budget_levels):
                 reg_hit, reg_act = f'{dst_hit}_r', f'{dst_act}_r'
                 reg_p = {pname: f'{dst_p[pname]}_r' for pname, _ in params}
                 lv = f'_rj_l{level}'

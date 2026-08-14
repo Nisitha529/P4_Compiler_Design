@@ -86,6 +86,23 @@ def budget_levels(target_mhz, device='artix7'):
     return max(1, round(levels))
 
 
+# Real Vivado post-route measurements (Artix-7, this project's LPM
+# real-synthesis validation across firewall/qos/load_balance/basic_tunnel/
+# ecn/mri): a nominal "4 tree-levels" hop -- what table_tree_stages's
+# formula treats as costing 4 logic levels against the budget, i.e. 1
+# tree-level = 1 logic level -- actually measured 7 real logic levels at
+# DEPTH=1024 (firewall, budget=4, the hit_l0->p_dstAddr_l4_r hop) and 5 at
+# DEPTH=256 (firewall AND qos both independently measured this exact
+# case). Ratio observed: 1.25x-1.75x, worse (wider per-level param
+# muxing) near the tree's leaf end where the arrays are widest. This is
+# the dangerous direction to get wrong -- unlike the tag-compare
+# over-count above, under-counting here produces a false "meets budget"
+# claim. Biased conservative per this whole module's philosophy: use the
+# worse observed ratio, rounded up to a clean 2x rather than inventing
+# false depth-dependent precision from two data points.
+TREE_LEVEL_REAL_COST = 2
+
+
 def table_tree_stages(depth, budget_levels=None):
     """How many pipeline-register hops an LPM/ternary table's
     log2(depth)-level balanced priority-match tree needs (see
@@ -97,14 +114,16 @@ def table_tree_stages(depth, budget_levels=None):
     budget_levels=None (default) -> 1: the whole tree builds in a single
     combinational shot, registered only at its output -- today's fixed
     2-cycle table latency (leaf register + this one hop), unchanged.
-    Otherwise: split into ceil(tree_levels / budget_levels) hops so no
-    single hop's combinational depth exceeds the per-stage budget."""
+    Otherwise: split into ceil(tree_levels * TREE_LEVEL_REAL_COST /
+    budget_levels) hops so no single hop's combinational depth exceeds
+    the per-stage budget, scaled by the real measured cost of one tree
+    level rather than assuming 1 tree-level = 1 logic level."""
     if budget_levels is None:
         return 1
     tree_levels = math.ceil(math.log2(depth)) if depth > 1 else 0
     if tree_levels <= 0:
         return 1
-    return max(1, math.ceil(tree_levels / budget_levels))
+    return max(1, math.ceil(tree_levels * TREE_LEVEL_REAL_COST / budget_levels))
 
 
 def exact_match_tag_compare_stages(key_widths, budget_levels=None):
@@ -224,7 +243,21 @@ class _Parser:
             return max(tw, ew), cc + 1 + max(tc, ec)
         return cw, cc
 
-    def _binary_level(self, next_level, ops, weight_fn):
+    def _binary_level(self, next_level, ops, weight_fn, parallel=False):
+        # parallel=False (default): the two operands feed into each other
+        # serially, e.g. `a + b + c` really is a carry chain -- cost(a+b)
+        # completes before cost(+c) can start, so total cost is additive.
+        # parallel=True: the two operands are independent sub-circuits
+        # that only converge at this one operator, e.g. `(a==b) && (c==d)`
+        # -- both comparisons run at the same time, so the real critical
+        # path is whichever operand is slower, not their sum. Getting this
+        # wrong (as an earlier version of this parser did, unconditionally
+        # summing) is what caused a real measured discrepancy: a 2-field
+        # exact-match tag-compare `(k0a==k0b) && (k1a==k1b)` was estimated
+        # at cost 9 (4+4+1, additive) against a real synthesized 3 logic
+        # levels -- a 3x over-estimate. Safe per this module's bias
+        # (over-counting only costs an extra register), but wasteful, and
+        # a structural bug, not just an imprecise constant.
         w, c = next_level()
         while True:
             _, text = self._peek()
@@ -233,32 +266,36 @@ class _Parser:
             self._eat(text)
             rw, rc = next_level()
             rw_combined = max(w, rw)
-            c = c + rc + weight_fn(rw_combined)
+            if parallel:
+                c = max(c, rc) + weight_fn(rw_combined)
+            else:
+                c = c + rc + weight_fn(rw_combined)
             w = rw_combined
 
     def _logic_or(self):
-        return self._binary_level(self._logic_and, {'||'}, lambda w: 1)
+        return self._binary_level(self._logic_and, {'||'}, lambda w: 1, parallel=True)
 
     def _logic_and(self):
-        return self._binary_level(self._bit_or, {'&&'}, lambda w: 1)
+        return self._binary_level(self._bit_or, {'&&'}, lambda w: 1, parallel=True)
 
     def _bit_or(self):
-        return self._binary_level(self._bit_xor, {'|'}, lambda w: 1)
+        return self._binary_level(self._bit_xor, {'|'}, lambda w: 1, parallel=True)
 
     def _bit_xor(self):
-        return self._binary_level(self._bit_and, {'^'}, lambda w: 1)
+        return self._binary_level(self._bit_and, {'^'}, lambda w: 1, parallel=True)
 
     def _bit_and(self):
-        return self._binary_level(self._equality, {'&'}, lambda w: 1)
+        return self._binary_level(self._equality, {'&'}, lambda w: 1, parallel=True)
 
     def _equality(self):
         return self._binary_level(
-            self._relational, {'==', '!='}, lambda w: max(1, math.ceil(math.log2(max(w, 1) + 1))))
+            self._relational, {'==', '!='},
+            lambda w: max(1, math.ceil(math.log2(max(w, 1) + 1))), parallel=True)
 
     def _relational(self):
         return self._binary_level(
             self._shift, {'<', '>', '<=', '>='},
-            lambda w: math.ceil(max(w, 1) / 8) * CARRY_LEVELS_PER_8B)
+            lambda w: math.ceil(max(w, 1) / 8) * CARRY_LEVELS_PER_8B, parallel=True)
 
     def _shift(self):
         # Shift by a constant is pure wiring (0 cost); shift by a variable
@@ -424,10 +461,12 @@ if __name__ == '__main__':
     print(f'budget_levels(400, "versal")          = {budget_levels(400, "versal")} (ESTIMATE, unverified)')
 
     # table_tree_stages: firewall's real ipv4_lpm table, DEPTH=1024,
-    # tree_levels=ceil(log2(1024))=10.
+    # tree_levels=ceil(log2(1024))=10. Expects 5 hops at 400MHz/artix7
+    # (budget=4) post-recalibration: ceil(10 * TREE_LEVEL_REAL_COST / 4)
+    # = ceil(20/4) = 5 (was 3 before the real-data recalibration above).
     assert table_tree_stages(1024, None) == 1, 'None must stay the fixed 2-cycle default'
-    assert table_tree_stages(1024, budget_levels(400, 'artix7')) == 3, \
-        f'expected 3 hops at 400MHz/artix7 (budget={budget_levels(400, "artix7")}), got ' \
+    assert table_tree_stages(1024, budget_levels(400, 'artix7')) == 5, \
+        f'expected 5 hops at 400MHz/artix7 (budget={budget_levels(400, "artix7")}), got ' \
         f'{table_tree_stages(1024, budget_levels(400, "artix7"))}'
     assert table_tree_stages(2, None) == 1
     assert table_tree_stages(1, 4) == 1, 'DEPTH=1 has no tree at all'
