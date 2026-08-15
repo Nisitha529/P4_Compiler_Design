@@ -227,7 +227,30 @@ module egress_processing_generated (
           1'd0: ; // NoAction
           1'd1: begin // add_swtrace
             out_mri_count = ((mri_count + 'h0001) & 'hFFFF);
-            /* UNIMPLEMENTED EXTERN: _bmv2_push(0, 'h1) */
+            out_swtraces_8_valid = swtraces_7_valid;
+            out_swtraces_8_swid = swtraces_7_swid;
+            out_swtraces_8_qdepth = swtraces_7_qdepth;
+            out_swtraces_7_valid = swtraces_6_valid;
+            out_swtraces_7_swid = swtraces_6_swid;
+            out_swtraces_7_qdepth = swtraces_6_qdepth;
+            out_swtraces_6_valid = swtraces_5_valid;
+            out_swtraces_6_swid = swtraces_5_swid;
+            out_swtraces_6_qdepth = swtraces_5_qdepth;
+            out_swtraces_5_valid = swtraces_4_valid;
+            out_swtraces_5_swid = swtraces_4_swid;
+            out_swtraces_5_qdepth = swtraces_4_qdepth;
+            out_swtraces_4_valid = swtraces_3_valid;
+            out_swtraces_4_swid = swtraces_3_swid;
+            out_swtraces_4_qdepth = swtraces_3_qdepth;
+            out_swtraces_3_valid = swtraces_2_valid;
+            out_swtraces_3_swid = swtraces_2_swid;
+            out_swtraces_3_qdepth = swtraces_2_qdepth;
+            out_swtraces_2_valid = swtraces_1_valid;
+            out_swtraces_2_swid = swtraces_1_swid;
+            out_swtraces_2_qdepth = swtraces_1_qdepth;
+            out_swtraces_1_valid = swtraces_0_valid;
+            out_swtraces_1_swid = swtraces_0_swid;
+            out_swtraces_1_qdepth = swtraces_0_qdepth;
             out_swtraces_0_valid = 1'b1;
             out_swtraces_0_swid = swtrace_p_swid;
             out_swtraces_0_qdepth = (std_meta_deq_qdepth & 'hFFFFFFFF);

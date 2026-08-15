@@ -230,6 +230,16 @@ def _prim(primitive, runtime_data, calcs):
     if op == 'drop':
         return ExternCall('mark_to_drop', ['standard_metadata'])
 
+    if op == 'push':
+        # hdr.STACK.push_front(N) -- P4 requires N to be a compile-time
+        # constant, so parse it here rather than carrying a Verilog-style
+        # literal through to the emit layer.
+        stack_name = params[0].get('value', '')
+        count_raw = params[1].get('value', '0x1') if len(params) > 1 else '0x1'
+        count = (int(count_raw, 16) if isinstance(count_raw, str) and count_raw.lower().startswith('0x')
+                 else int(count_raw))
+        return ExternCall(f'hdr.{stack_name}.push_front', [str(count)])
+
     # Unsupported primitives (counter.count, clone, digest, …) become stubs
     # that emit an UNIMPLEMENTED comment in the generated RTL
     args = [p(i) for i in range(len(params))]

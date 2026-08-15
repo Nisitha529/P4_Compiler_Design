@@ -13,15 +13,14 @@
 //     its default; NoAction unless explicitly written), gated on
 //     hdr.mri.isValid(). Its one action, add_swtrace(switchID_t swid):
 //       - hdr.mri.count += 1                                  [WORKS]
-//       - hdr.swtraces.push_front(1)                          [STUB:
-//         UNIMPLEMENTED EXTERN, a documented, deliberate compiler
-//         limitation -- see project memory "push_front... unimplemented
-//         extern stub". This is NOT a bug to fix here; the testbench
-//         verifies the REAL current behavior.]
-//       - hdr.swtraces[0].setValid()/.swid/.qdepth             [WORKS,
-//         but because push_front is a no-op, this always overwrites
-//         slot 0 directly -- it never shifts existing entries down.
-//         swtraces[1..8] pass through completely unchanged.]
+//       - hdr.swtraces.push_front(1)                          [WORKS --
+//         a real shift-register chain: every existing slot shifts back
+//         by 1, the oldest entry falls off the end. Previously an
+//         UNIMPLEMENTED EXTERN stub; now genuinely implemented, since
+//         swtraces_0..8 are individually-named fixed slots that the
+//         emit layer can shift directly. See Section 4 below.]
+//       - hdr.swtraces[0].setValid()/.swid/.qdepth             [WORKS --
+//         populates the newly-opened slot 0 after the shift above.]
 //       - hdr.ipv4.ihl += 2, ipv4_option.optionLength += 8,
 //         hdr.ipv4.totalLen += 8                               [WORKS]
 //
@@ -256,6 +255,8 @@ module tb_mri;
   logic [31:0] eg_o_swt0_swid, eg_o_swt0_qdep;
   logic        eg_o_swt1_valid;
   logic [31:0] eg_o_swt1_swid, eg_o_swt1_qdep;
+  logic        eg_o_swt2_valid;
+  logic [31:0] eg_o_swt2_swid, eg_o_swt2_qdep;
   logic        eg_valid_out, eg_drop;
 
   logic        swt_cp_en   = 0;
@@ -331,7 +332,8 @@ module tb_mri;
     .out_mri_valid                (),
     .out_swtraces_0_valid         (eg_o_swt0_valid),
     .out_swtraces_1_valid         (eg_o_swt1_valid),
-    .out_swtraces_2_valid         (), .out_swtraces_3_valid (), .out_swtraces_4_valid (),
+    .out_swtraces_2_valid         (eg_o_swt2_valid),
+    .out_swtraces_3_valid (), .out_swtraces_4_valid (),
     .out_swtraces_5_valid         (), .out_swtraces_6_valid (), .out_swtraces_7_valid (),
     .out_swtraces_8_valid         (),
     .out_ethernet_dstAddr         (),
@@ -356,7 +358,7 @@ module tb_mri;
     .out_mri_count                (eg_o_mri_count),
     .out_swtraces_0_swid (eg_o_swt0_swid), .out_swtraces_0_qdepth (eg_o_swt0_qdep),
     .out_swtraces_1_swid (eg_o_swt1_swid), .out_swtraces_1_qdepth (eg_o_swt1_qdep),
-    .out_swtraces_2_swid (), .out_swtraces_2_qdepth (),
+    .out_swtraces_2_swid (eg_o_swt2_swid), .out_swtraces_2_qdepth (eg_o_swt2_qdep),
     .out_swtraces_3_swid (), .out_swtraces_3_qdepth (),
     .out_swtraces_4_swid (), .out_swtraces_4_qdepth (),
     .out_swtraces_5_swid (), .out_swtraces_5_qdepth (),
@@ -627,7 +629,7 @@ module tb_mri;
     // ──────────────────────────────────────────────────────────────────────
     // SECTION 4 — EGRESS: swtrace (keyless table, gated on mri.isValid())
     // ──────────────────────────────────────────────────────────────────────
-    $display("\n══ Section 4: Egress swtrace (add_swtrace, slot-0 overwrite) ═════");
+    $display("\n══ Section 4: Egress swtrace (add_swtrace, real push_front shift) ══");
 
     // E1: mri invalid -> table never applies, everything passes through
     eg_mri_valid = 0;
@@ -644,7 +646,11 @@ module tb_mri;
     chk("E2: mri valid, table unconfigured (NoAction) -> mri_count unchanged", eg_o_mri_count === eg_mri_count);
     chk("E2: mri valid, table unconfigured -> ihl unchanged",                  eg_o_ipv4_ihl === eg_ipv4_ihl);
 
-    // E3: CP-configure swtrace's default action to add_swtrace(swid=0xCAFE0001)
+    // E3: CP-configure swtrace's default action to add_swtrace(swid=0xCAFE0001).
+    // push_front is now really implemented (a real shift-register chain,
+    // not a stub) -- verify slot 0 gets the new hop's data AND slot 1
+    // gets what was previously at slot 0 (the actual push, not an
+    // overwrite-in-place).
     swtrace_write(1'd1, 32'hCAFE0001);
     #1;
     chk("E3: mri.count += 1",           eg_o_mri_count === (eg_mri_count + 16'd1));
@@ -654,13 +660,23 @@ module tb_mri;
     chk("E3: swtraces[0].valid set",    eg_o_swt0_valid === 1'b1);
     chk("E3: swtraces[0].swid = configured swid", eg_o_swt0_swid === 32'hCAFE0001);
     chk("E3: swtraces[0].qdepth = deq_qdepth",    eg_o_swt0_qdep === {13'b0, eg_qdepth});
-    // Documents the real, current limitation: push_front is an
-    // unimplemented stub, so slot 1 is NEVER shifted into / touched by
-    // this action -- it passes through whatever was on the input
-    // unchanged, even though real MRI semantics would expect the
-    // previous slot 0 entry to have moved here.
-    chk("E3: swtraces[1] passes through UNCHANGED (push_front is a stub, not a bug in this test)",
-        eg_o_swt1_valid === eg_swt_valid[1] && eg_o_swt1_swid === eg_swt_swid[1] && eg_o_swt1_qdep === eg_swt_qdep[1]);
+    chk("E3: swtraces[1] = shifted-in old slot-0 (real push, not an overwrite)",
+        eg_o_swt1_valid === eg_swt_valid[0] && eg_o_swt1_swid === eg_swt_swid[0] && eg_o_swt1_qdep === eg_swt_qdep[0]);
+
+    // E4: a second push shifts the first push's slot-0 entry into slot 1
+    // -- a genuine two-hop trace, the actual feature this fix is for.
+    // This DUT is driven combinationally (not through a real register
+    // chain), so the "previous cycle's output" is fed forward by hand to
+    // simulate a second hop.
+    eg_swt_valid[0] = eg_o_swt0_valid; eg_swt_swid[0] = eg_o_swt0_swid; eg_swt_qdep[0] = eg_o_swt0_qdep;
+    eg_swt_valid[1] = eg_o_swt1_valid; eg_swt_swid[1] = eg_o_swt1_swid; eg_swt_qdep[1] = eg_o_swt1_qdep;
+    swtrace_write(1'd1, 32'hCAFE0002);
+    #1;
+    chk("E4: 2nd push -> slot0 = new hop's swid", eg_o_swt0_swid === 32'hCAFE0002);
+    chk("E4: 2nd push -> slot1 = 1st push's slot0 (shifted again)",
+        eg_o_swt1_valid === 1'b1 && eg_o_swt1_swid === 32'hCAFE0001);
+    chk("E4: 2nd push -> slot2 = 1st push's slot1",
+        eg_o_swt2_valid === eg_swt_valid[1] && eg_o_swt2_swid === eg_swt_swid[1]);
 
     // ──────────────────────────────────────────────────────────────────────
     // SECTION 5 — Egress valid_out latency (1-cycle, no keyed tables)

@@ -351,7 +351,7 @@ def _inline(action_name, amap, depth=0):
     return result
 
 
-def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
+def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None):
     for stmt in body_stmts:
         if isinstance(stmt, Assignment):
             lhs = _lhs_sig(stmt.lhs)
@@ -360,7 +360,7 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
                 rhs = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, rhs)
             f.write(f'{ind}{lhs} = {_map_expr(rhs, cmap)};\n')
         elif isinstance(stmt, ExternCall):
-            _emit_extern_stub(f, stmt, ind, pmap, cmap)
+            _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info)
         elif isinstance(stmt, IfStatement):
             # A ternary/if-else inside a single action body -- see
             # _translate_primitives() in ingest_bmv2.py for how bmv2's
@@ -369,11 +369,11 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind):
             for pname, psig in pmap.items():
                 cond = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, cond)
             f.write(f'{ind}if ({_map_cond(cond, cmap)}) begin\n')
-            _emit_inlined_body(f, stmt.then_body, pmap, cmap, ind + '  ')
+            _emit_inlined_body(f, stmt.then_body, pmap, cmap, ind + '  ', stack_info)
             f.write(f'{ind}end\n')
             if stmt.else_body:
                 f.write(f'{ind}else begin\n')
-                _emit_inlined_body(f, stmt.else_body, pmap, cmap, ind + '  ')
+                _emit_inlined_body(f, stmt.else_body, pmap, cmap, ind + '  ', stack_info)
                 f.write(f'{ind}end\n')
 
 
@@ -413,9 +413,10 @@ def _collect_reg_reads(ctrl):
     return reads
 
 
-def _emit_extern_stub(f, stmt, ind, pmap, cmap):
+def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
     """Emit RTL for extern calls: setValid/setInvalid, mark_to_drop, hash, register.read/write."""
     name = stmt.name
+    stack_info = stack_info or {}
 
     if name == 'mark_to_drop':
         f.write(f'{ind}drop = 1;\n')
@@ -454,6 +455,26 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap):
             val = "1'b1" if parts[1] == 'setValid' else "1'b0"
             f.write(f'{ind}out_{hdr_name}_valid = {val};\n')
             return
+        # hdr.STACK.push_front(N): shift every existing slot back by N
+        # (the oldest N entries fall off the end -- the range below
+        # naturally emits nothing when N >= size, correctly modeling
+        # "everything falls off"). Slots 0..N-1 are deliberately left
+        # untouched: real P4 push_front semantics leave the newly-opened
+        # slots invalid until the *following* statements in the same
+        # action body (setValid()/field assignments) populate them.
+        if len(parts) == 3 and parts[0] == 'hdr' and parts[2] == 'push_front':
+            stack_name = parts[1]
+            if stack_name in stack_info:
+                size, fields = stack_info[stack_name]
+                count = int(stmt.args[0]) if stmt.args else 1
+                for i in range(size - 1, count - 1, -1):
+                    src = i - count
+                    f.write(f'{ind}out_{stack_name}_{i}_valid = {stack_name}_{src}_valid;\n')
+                    for fname, _ in fields:
+                        f.write(f'{ind}out_{stack_name}_{i}_{fname} = {stack_name}_{src}_{fname};\n')
+            else:
+                f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {name}({", ".join(stmt.args)}) */\n')
+            return
         obj, method = name.split('.', 1)
         if method == 'read' and len(stmt.args) >= 2:
             raw_out = stmt.args[0].strip()
@@ -477,7 +498,7 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap):
 # Table case-statement emitter
 # ============================================================
 
-def _emit_table_case(f, table, amap, ind, cmap):
+def _emit_table_case(f, table, amap, ind, cmap, stack_info=None):
     act_ids      = _table_action_ids(table)
     params       = _table_params(table, amap)
     n_acts       = max(act_ids.values()) + 1 if act_ids else 1
@@ -503,7 +524,7 @@ def _emit_table_case(f, table, amap, ind, cmap):
             pname = p.name if isinstance(p, ActionParam) else str(p)
             pmap[pname] = f'{table.name}_p_{pname}'
         f.write(f'{ind}    {id_w}\'d{aid}: begin // {aname}\n')
-        _emit_inlined_body(f, action.body, pmap, cmap, ind + '      ')
+        _emit_inlined_body(f, action.body, pmap, cmap, ind + '      ', stack_info)
         f.write(f'{ind}    end\n')
 
     f.write(f'{ind}    default: ; // default = {default_name}\n')
@@ -514,7 +535,7 @@ def _emit_table_case(f, table, amap, ind, cmap):
         action = amap.get(default_name)
         f.write(f' else begin // {default_name} on miss\n')
         if action:
-            _emit_inlined_body(f, action.body, {}, cmap, ind + '  ')
+            _emit_inlined_body(f, action.body, {}, cmap, ind + '  ', stack_info)
         f.write(f'{ind}end\n')
     else:
         f.write('\n')
@@ -760,7 +781,7 @@ def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_o
 # Apply-block statement emitter
 # ============================================================
 
-def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
+def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
     for stmt in stmts:
 
         if isinstance(stmt, IfStatement):
@@ -772,19 +793,19 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
                 tname = tm.group(1)
                 tbl   = next((t for t in ctrl_tables if t.name == tname), None)
                 if tbl:
-                    _emit_table_case(f, tbl, amap, ind + '  ', cmap)
+                    _emit_table_case(f, tbl, amap, ind + '  ', cmap, stack_info)
 
-            _emit_stmts(f, stmt.then_body, amap, ind + '  ', cmap, ctrl_tables)
+            _emit_stmts(f, stmt.then_body, amap, ind + '  ', cmap, ctrl_tables, stack_info)
             f.write(f'{ind}end\n')
             if stmt.else_body:
                 f.write(f'{ind}else begin\n')
-                _emit_stmts(f, stmt.else_body, amap, ind + '  ', cmap, ctrl_tables)
+                _emit_stmts(f, stmt.else_body, amap, ind + '  ', cmap, ctrl_tables, stack_info)
                 f.write(f'{ind}end\n')
 
         elif isinstance(stmt, TableApply):
             tbl = next((t for t in ctrl_tables if t.name == stmt.table_name), None)
             if tbl and tbl.actions:
-                _emit_table_case(f, tbl, amap, ind, cmap)
+                _emit_table_case(f, tbl, amap, ind, cmap, stack_info)
             else:
                 f.write(f'{ind}// {stmt.table_name}.apply()  [no actions — stub]\n')
 
@@ -799,16 +820,16 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables):
                     if i < len(stmt.args):
                         pmap[pname] = _map_expr(stmt.args[i], cmap)
                 f.write(f'{ind}// {stmt.name}({", ".join(stmt.args)})\n')
-                _emit_inlined_body(f, action.body, pmap, cmap, ind)
+                _emit_inlined_body(f, action.body, pmap, cmap, ind, stack_info)
             elif action:
                 inlined = _inline(stmt.name, amap)
                 if inlined:
                     f.write(f'{ind}// {stmt.name}()\n')
-                    _emit_inlined_body(f, inlined, {}, cmap, ind)
+                    _emit_inlined_body(f, inlined, {}, cmap, ind, stack_info)
                 else:
                     f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {stmt.name}() */\n')
             else:
-                _emit_extern_stub(f, stmt, ind, {}, cmap)
+                _emit_extern_stub(f, stmt, ind, {}, cmap, stack_info)
 
         elif isinstance(stmt, Assignment):
             lhs = _lhs_sig(stmt.lhs)
@@ -841,6 +862,13 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
     fwmap         = _build_field_width_map(ir)
     std_meta_outs = _collect_std_meta_outputs(ctrl)
     std_meta_ins  = _collect_std_meta_inputs(ctrl)
+    # {stack_name: (size, [(field_name, width), ...])} -- used only by
+    # _emit_extern_stub's push_front handling; empty for apps with no
+    # header stacks, so inert everywhere else.
+    stack_info = {
+        inst.inst_name: (inst.stack_size, [(fld.name, fld.width) for fld in inst.header_type.fields if fld.width])
+        for inst in ir.header_instances if inst.is_stack
+    }
 
     # ── Port lists ─────────────────────────────────────────────────────────
     instances  = ir.header_instances
@@ -1439,7 +1467,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
             if stmts_k:
                 stage_note = f' (stage {k} of {n_bounds})' if n_bounds else ''
                 buf.write(f'\n    // apply block{stage_note}\n')
-                _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables)
+                _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables, stack_info)
 
             buf.write('  end\n')
             f.write(f'  // ---- Pipeline stage {k}'
