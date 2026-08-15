@@ -296,11 +296,14 @@ def debug_ir(ir):
 # Main compiler driver
 # ============================================================
 
-def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None):
+def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
         Otherwise, an int logic-level budget per pipeline stage (see timing_model.py).
+    ways: 1 (default) = today's behavior exactly, direct-mapped exact-match tables.
+        Otherwise, d-way set-associative exact-match tables (see emit_table.py's
+        _emit_exact_match_table_assoc).
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -358,10 +361,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if ir.controls:
         print("[INFO] Generating table RTL...")
-        emit_tables(ir, out_dir, budget_levels=budget_levels)
+        emit_tables(ir, out_dir, budget_levels=budget_levels, ways=ways)
 
         print("[INFO] Generating processing RTL...")
-        emit_processing(ir, out_processing, budget_levels=budget_levels)
+        emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
@@ -374,10 +377,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     if eg is not None and (eg.tables or eg.statements):
         out_egress_processing = os.path.join(out_dir, "egress_processing_generated.sv")
         print("[INFO] Generating egress table RTL...")
-        emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels)
+        emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels, ways=ways)
 
         print("[INFO] Generating egress processing RTL...")
-        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels)
+        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
@@ -456,7 +459,24 @@ def main():
         default='artix7',
         help="Target device family for --target-freq-mhz budget scaling (default: artix7)",
     )
+    parser.add_argument(
+        "--exact-match-ways",
+        metavar="N",
+        type=int,
+        default=1,
+        help=(
+            "Opt-in d-way set-associative storage for exact-match tables. "
+            "Default: 1 (direct-mapped, identical output to not passing this flag at "
+            "all). When N>1, a control-plane write whose key hashes to an "
+            "already-occupied bucket is only a genuine collision (see the table's "
+            "{table}_wr_collision output) once all N ways at that bucket hold "
+            "different keys. LPM/ternary/keyless tables ignore this flag."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.exact_match_ways < 1:
+        parser.error("--exact-match-ways must be >= 1")
 
     levels = None
     if args.target_freq_mhz is not None:
@@ -479,6 +499,7 @@ def main():
         p4test_bin=args.p4test,
         frontend=args.frontend,
         budget_levels=levels,
+        ways=args.exact_match_ways,
     )
 
 

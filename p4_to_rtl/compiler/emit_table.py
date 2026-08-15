@@ -116,7 +116,7 @@ def _collect_params(table, amap):
 # Single table emitter
 # ============================================================
 
-def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None):
+def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None, ways=1):
 
     act_ids   = _action_ids(table)
     params    = _collect_params(table, amap)
@@ -135,7 +135,10 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None):
     depth = table.size if table.size else 1024
 
     if not is_lpm and not is_ternary:
-        _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path, budget_levels=budget_levels)
+        if ways and ways > 1:
+            _emit_exact_match_table_assoc(table, act_ids, params, act_id_w, depth, fwmap, output_path, ways, budget_levels=budget_levels)
+        else:
+            _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, output_path, budget_levels=budget_levels)
         return
 
     with open(output_path, 'w') as f:
@@ -768,13 +771,353 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
 
 
 # ============================================================
+# Exact-match table: d-way set-associative variant
+# ============================================================
+#
+# Only reached when ways > 1 -- ways <= 1 always dispatches to the plain
+# _emit_exact_match_table() above, completely untouched, so default output
+# stays byte-identical by construction. Fixes the direct-mapped table's
+# documented collision gap: a CP write whose key hashes to an
+# already-occupied bucket now only overwrites a DIFFERENT key once all
+# `ways` slots at that bucket are occupied (see `wr_collision` output);
+# until then it lands in a free way, or updates its own way in place if
+# the key is already stored there.
+#
+# Same DEPTH-bucket addressing / hash_key() as the direct-mapped version --
+# associativity multiplies capacity per bucket by `ways`, it does not
+# change the number of buckets or the hash function.
+#
+# CP writes are staged over 2 cycles instead of 1: every mem_* read in this
+# file is a registered (synchronous) BRAM read, so deciding which of the
+# `ways` slots to write into needs a registered read of all of them first
+# -- cycle N latches the write request and issues that read, cycle N+1
+# decides the target way from the now-valid read data and commits. A new
+# write is only accepted once the previous one has fully committed
+# (`cp_wr_en && !wr_pend_valid`), exposed as `cp_wr_busy` -- without this
+# gate, two cp_wr_en pulses on consecutive cycles would double-drive the
+# same way-array's read/write port in the same cycle. This 2-cycle write
+# latency is a real, new contract change from the direct-mapped table
+# (whose write is immediate/single-cycle) but is a non-issue in practice:
+# control-plane writes are software-driven, not per-packet hot-path
+# traffic. Packet-lookup latency is completely unaffected (still exactly
+# exact_match_tag_compare_stages() cycles) -- only the CP-write path grows.
+
+def _emit_exact_match_table_assoc(table, act_ids, params, act_id_w, depth, fwmap,
+                                   output_path, ways, budget_levels=None):
+    idx_w = max(1, math.ceil(math.log2(depth))) if depth > 1 else 1
+    ways_w = max(1, math.ceil(math.log2(ways)))
+
+    key_fields = [(_field_basename(k.field), _key_width(k.field, fwmap)) for k in table.keys]
+    key_w      = sum(w for _, w in key_fields)
+    n_chunks   = max(1, math.ceil(key_w / idx_w))
+    padded_w   = n_chunks * idx_w
+
+    default_act_name = (table.default_action or 'NoAction').rstrip('()')
+    default_act_id   = act_ids.get(default_act_name, 0)
+
+    def _concat(prefix):
+        return ', '.join(f'{prefix}{fname}' for fname, _ in reversed(key_fields))
+
+    with open(output_path, 'w') as f:
+        f.write(f'module {table.name}_table #(\n')
+        f.write(f'  parameter int DEPTH = {depth}\n')
+        f.write(') (\n')
+        f.write('  input  logic clk,\n')
+        f.write('  input  logic rst_n,\n')
+
+        f.write('\n  // Lookup key (combinational)\n')
+        for fname, w in key_fields:
+            f.write(f'  input  logic [{w-1}:0] lkp_{fname},\n')
+
+        f.write('\n  // Lookup result (registered — same latency as the direct-mapped table)\n')
+        f.write('  output logic        hit,\n')
+        f.write(f'  output logic [{act_id_w-1}:0] action_id,\n')
+        for pname, pw in params:
+            f.write(f'  output logic [{pw-1}:0] p_{pname},\n')
+
+        f.write('\n  // Control-plane write port (synchronous, 2-cycle staged allocate+commit)\n')
+        f.write('  input  logic        cp_wr_en,\n')
+        f.write(f'  input  logic [{idx_w-1}:0] cp_wr_idx,  // unused: exact-match tables self-address via hash(key)\n')
+        for fname, w in key_fields:
+            f.write(f'  input  logic [{w-1}:0] cp_wr_key_{fname},\n')
+        f.write(f'  input  logic [{act_id_w-1}:0] cp_wr_action,\n')
+        for pname, pw in params:
+            f.write(f'  input  logic [{pw-1}:0] cp_wr_p_{pname},\n')
+
+        f.write('\n  // Control-plane write status outputs\n')
+        f.write('  output logic        wr_collision,\n')
+        f.write('  output logic        cp_wr_busy\n')
+        f.write(');\n\n')
+
+        f.write(f'  // Entry storage, {ways} ways per bucket (synthesizes to {ways} parallel\n')
+        f.write('  // block RAMs -- port A below = continuous packet-lookup reads, port B =\n')
+        f.write('  // staged control-plane write allocate+commit)\n')
+        for w in range(ways):
+            f.write(f'  logic        mem_valid_w{w}  [0:DEPTH-1];\n')
+            for fname, kw in key_fields:
+                f.write(f'  logic [{kw-1}:0] mem_key_w{w}_{fname}[0:DEPTH-1];\n')
+            f.write(f'  logic [{act_id_w-1}:0] mem_action_w{w}[0:DEPTH-1];\n')
+            for pname, pw in params:
+                f.write(f'  logic [{pw-1}:0] mem_p_w{w}_{pname}[0:DEPTH-1];\n')
+        f.write('\n')
+
+        f.write('  integer _i;\n')
+        f.write('  initial begin\n')
+        f.write('    for (_i = 0; _i < DEPTH; _i = _i + 1) begin\n')
+        for w in range(ways):
+            f.write(f'      mem_valid_w{w}[_i] = 1\'b0;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        f.write(f'  // XOR-fold hash: {key_w}-bit key -> {idx_w}-bit BRAM address (same as the\n')
+        f.write('  // direct-mapped table -- ways multiplies capacity per bucket, not bucket count)\n')
+        f.write(f'  function automatic logic [{idx_w-1}:0] hash_key(input logic [{padded_w-1}:0] k);\n')
+        f.write(f'    logic [{idx_w-1}:0] h;\n')
+        f.write('    integer c;\n')
+        f.write('    begin\n')
+        f.write("      h = '0;\n")
+        f.write(f'      for (c = 0; c < {n_chunks}; c = c + 1)\n')
+        f.write(f'        h = h ^ k[c*{idx_w} +: {idx_w}];\n')
+        f.write('      hash_key = h;\n')
+        f.write('    end\n')
+        f.write('  endfunction\n\n')
+
+        f.write(f'  logic [{padded_w-1}:0] wr_key_concat;\n')
+        f.write(f'  assign wr_key_concat = {{{padded_w - key_w}\'d0, {_concat("cp_wr_key_")}}};\n' if padded_w > key_w
+                else f'  assign wr_key_concat = {{{_concat("cp_wr_key_")}}};\n')
+        f.write(f'  logic [{idx_w-1}:0] wr_addr;\n')
+        f.write('  assign wr_addr = hash_key(wr_key_concat);\n\n')
+
+        f.write(f'  logic [{padded_w-1}:0] lkp_key_concat;\n')
+        f.write(f'  assign lkp_key_concat = {{{padded_w - key_w}\'d0, {_concat("lkp_")}}};\n' if padded_w > key_w
+                else f'  assign lkp_key_concat = {{{_concat("lkp_")}}};\n')
+        f.write(f'  logic [{idx_w-1}:0] lkp_addr;\n')
+        f.write('  assign lkp_addr = hash_key(lkp_key_concat);\n\n')
+
+        # ---- CP-write pipeline: cycle N latch + allocation-read, cycle N+1 decide + commit ----
+        f.write('  // Control-plane write pipeline, stage 1: latch the incoming request and\n')
+        f.write('  // issue a registered per-way read at wr_addr to see what is already there.\n')
+        f.write('  // Gated on !wr_pend_valid -- a new write is only accepted once the previous\n')
+        f.write('  // one has fully committed (see cp_wr_busy).\n')
+        f.write('  logic wr_pend_valid;\n')
+        f.write(f'  logic [{idx_w-1}:0] wr_pend_addr;\n')
+        for fname, kw in key_fields:
+            f.write(f'  logic [{kw-1}:0] wr_pend_key_{fname};\n')
+        f.write(f'  logic [{act_id_w-1}:0] wr_pend_action;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] wr_pend_p_{pname};\n')
+        f.write('\n')
+        for w in range(ways):
+            f.write(f'  logic alloc_rd_valid_w{w};\n')
+            for fname, kw in key_fields:
+                f.write(f'  logic [{kw-1}:0] alloc_rd_key_w{w}_{fname};\n')
+        f.write('\n')
+
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      wr_pend_valid <= 1'b0;\n")
+        f.write('    end else if (cp_wr_en && !wr_pend_valid) begin\n')
+        f.write("      wr_pend_valid   <= 1'b1;\n")
+        f.write('      wr_pend_addr    <= wr_addr;\n')
+        for fname, _ in key_fields:
+            f.write(f'      wr_pend_key_{fname} <= cp_wr_key_{fname};\n')
+        f.write('      wr_pend_action  <= cp_wr_action;\n')
+        for pname, _ in params:
+            f.write(f'      wr_pend_p_{pname} <= cp_wr_p_{pname};\n')
+        for w in range(ways):
+            f.write(f'      alloc_rd_valid_w{w} <= mem_valid_w{w}[wr_addr];\n')
+            for fname, _ in key_fields:
+                f.write(f'      alloc_rd_key_w{w}_{fname} <= mem_key_w{w}_{fname}[wr_addr];\n')
+        f.write('    end else begin\n')
+        f.write("      wr_pend_valid <= 1'b0;\n")
+        f.write('    end\n')
+        f.write('  end\n\n')
+        f.write('  assign cp_wr_busy = wr_pend_valid;\n\n')
+
+        f.write('  // Control-plane write pipeline, stage 2: decide which way to write into\n')
+        f.write('  // from stage 1\'s now-valid read, and commit.\n')
+        for w in range(ways):
+            match_terms = ' && '.join(
+                f'(alloc_rd_key_w{w}_{fname} == wr_pend_key_{fname})' for fname, _ in key_fields
+            ) or "1'b1"
+            f.write(f'  logic key_match_w{w}; assign key_match_w{w} = alloc_rd_valid_w{w} && {match_terms};\n')
+            f.write(f'  logic free_w{w}; assign free_w{w} = !alloc_rd_valid_w{w};\n')
+        f.write('\n')
+        has_match = ' | '.join(f'key_match_w{w}' for w in range(ways))
+        has_free  = ' | '.join(f'free_w{w}' for w in range(ways))
+        f.write(f'  logic alloc_has_match; assign alloc_has_match = {has_match};\n')
+        f.write(f'  logic alloc_has_free;  assign alloc_has_free  = {has_free};\n\n')
+
+        f.write(f'  logic [{ways_w-1}:0] alloc_way;\n')
+        f.write('  always_comb begin\n')
+        f.write(f"    alloc_way = '0;  // default -- avoids inferring a latch; way 0 also the\n")
+        f.write('                      // genuine-collision fallback (flagged by wr_collision)\n')
+        for w in range(ways):
+            kw = 'if' if w == 0 else 'else if'
+            f.write(f'    {kw} (key_match_w{w}) alloc_way = {w};\n')
+        for w in range(ways):
+            f.write(f'    else if (free_w{w}) alloc_way = {w};\n')
+        f.write('  end\n\n')
+
+        f.write('  assign wr_collision = wr_pend_valid && !alloc_has_match && !alloc_has_free;\n\n')
+
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (wr_pend_valid) begin\n')
+        f.write('      case (alloc_way)\n')
+        for w in range(ways):
+            f.write(f'        {w}: begin\n')
+            f.write(f"          mem_valid_w{w}[wr_pend_addr]  <= 1'b1;\n")
+            for fname, _ in key_fields:
+                f.write(f'          mem_key_w{w}_{fname}[wr_pend_addr] <= wr_pend_key_{fname};\n')
+            f.write(f'          mem_action_w{w}[wr_pend_addr] <= wr_pend_action;\n')
+            for pname, _ in params:
+                f.write(f'          mem_p_w{w}_{pname}[wr_pend_addr] <= wr_pend_p_{pname};\n')
+            f.write('        end\n')
+        f.write('        default: ;\n')
+        f.write('      endcase\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        # ---- Packet-lookup path: per-way registered read + tag compare + mux ----
+        n_stages = exact_match_tag_compare_stages([w for _, w in key_fields], budget_levels)
+        split = (n_stages == 2)
+
+        f.write(f'  // Registered per-way BRAM read + tag-compare stage ({n_stages}-cycle lookup\n')
+        f.write('  // latency, unaffected by associativity -- packet-lookup port A of each way,\n')
+        f.write('  // completely independent of the CP-write pipeline\'s port B above)\n')
+        for fname, w in key_fields:
+            f.write(f'  logic [{w-1}:0] key_r_{fname};\n')
+        for w in range(ways):
+            f.write(f'  logic        valid_r_w{w};\n')
+            for fname, kw in key_fields:
+                f.write(f'  logic [{kw-1}:0] mem_key_r_w{w}_{fname};\n')
+            f.write(f'  logic [{act_id_w-1}:0] action_id_r_w{w};\n')
+            for pname, pw in params:
+                f.write(f'  logic [{pw-1}:0] p_r_w{w}_{pname};\n')
+        f.write('\n')
+
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        for w in range(ways):
+            f.write(f"      valid_r_w{w} <= 1'b0;\n")
+        f.write('    end else begin\n')
+        for fname, _ in key_fields:
+            f.write(f'      key_r_{fname} <= lkp_{fname};\n')
+        for w in range(ways):
+            f.write(f'      valid_r_w{w}     <= mem_valid_w{w}[lkp_addr];\n')
+            for fname, _ in key_fields:
+                f.write(f'      mem_key_r_w{w}_{fname} <= mem_key_w{w}_{fname}[lkp_addr];\n')
+            f.write(f'      action_id_r_w{w} <= mem_action_w{w}[lkp_addr];\n')
+            for pname, _ in params:
+                f.write(f'      p_r_w{w}_{pname} <= mem_p_w{w}_{pname}[lkp_addr];\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        f.write('  // Per-way tag compare, OR-reduce, and a defaulted priority mux (default\n')
+        f.write('  // assignment first, then if/else-if with no bare else needed -- avoids\n')
+        f.write('  // inferring a latch). Keys are unique across ways at a given bucket by\n')
+        f.write('  // construction, so at most one way should ever hit; priority order only\n')
+        f.write('  // matters as a defined tie-break.\n')
+        for w in range(ways):
+            tag_match = ' && '.join(
+                f'(mem_key_r_w{w}_{fname} == key_r_{fname})' for fname, _ in key_fields
+            ) or "1'b1"
+            f.write(f'  logic hit_way_w{w}; assign hit_way_w{w} = valid_r_w{w} && {tag_match};\n')
+        f.write('\n')
+        hit_or = ' | '.join(f'hit_way_w{w}' for w in range(ways))
+        f.write(f'  logic hit_c; assign hit_c = {hit_or};\n\n')
+
+        f.write(f'  logic [{act_id_w-1}:0] action_id_sel;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] p_{pname}_sel;\n')
+        f.write('  always_comb begin\n')
+        f.write('    action_id_sel = action_id_r_w0;\n')
+        for pname, _ in params:
+            f.write(f'    p_{pname}_sel = p_r_w0_{pname};\n')
+        for w in range(ways):
+            kw = 'if' if w == 0 else 'else if'
+            f.write(f'    {kw} (hit_way_w{w}) begin\n')
+            f.write(f'      action_id_sel = action_id_r_w{w};\n')
+            for pname, _ in params:
+                f.write(f'      p_{pname}_sel = p_r_w{w}_{pname};\n')
+            f.write('    end\n')
+        f.write('  end\n\n')
+
+        f.write('  // synthesis translate_off\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (rst_n) begin\n')
+        hit_sum = ' + '.join(f'hit_way_w{w}' for w in range(ways))
+        f.write(f'      if (({hit_sum}) > 1)\n')
+        f.write(f'        $error("%m: key present in more than one way at the same bucket -- CP-write allocator bug");\n')
+        f.write('    end\n')
+        f.write('  end\n')
+        f.write('  // synthesis translate_on\n\n')
+
+        # ---- Phase 6 tag-compare split, reused unchanged, retargeted onto hit_c/action_id_sel/p_*_sel ----
+        mux_sel = 'hit_c'
+        act_src = 'action_id_sel'
+        p_src   = {pname: f'p_{pname}_sel' for pname, _ in params}
+
+        if split:
+            f.write('  logic hit_mid;\n')
+            f.write(f'  logic [{act_id_w-1}:0] action_id_r2;\n')
+            for pname, pw in params:
+                f.write(f'  logic [{pw-1}:0] p_r2_{pname};\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (!rst_n) begin\n')
+            f.write("      hit_mid <= 1'b0;\n")
+            f.write('    end else begin\n')
+            f.write('      hit_mid      <= hit_c;\n')
+            f.write('      action_id_r2 <= action_id_sel;\n')
+            for pname, _ in params:
+                f.write(f'      p_r2_{pname} <= p_{pname}_sel;\n')
+            f.write('    end\n')
+            f.write('  end\n\n')
+            mux_sel = 'hit_mid'
+            act_src = 'action_id_r2'
+            p_src   = {pname: f'p_r2_{pname}' for pname, _ in params}
+
+        f.write(f'  logic [{act_id_w-1}:0] action_id_c;\n')
+        f.write(f'  assign action_id_c = {mux_sel} ? {act_src} : {act_id_w}\'d{default_act_id};\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] p_{pname}_c;\n')
+            f.write(f'  assign p_{pname}_c = {mux_sel} ? {p_src[pname]} : {pw}\'b0;\n')
+        f.write('\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      hit <= 1'b0;\n")
+        f.write('    end else begin\n')
+        f.write(f'      hit <= {mux_sel};\n')
+        f.write('      action_id <= action_id_c;\n')
+        for pname, _ in params:
+            f.write(f'      p_{pname} <= p_{pname}_c;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+
+        assert n_stages == exact_match_tag_compare_stages([w for _, w in key_fields], budget_levels), (
+            f'{table.name}: split={split} but the scheduler will independently '
+            f'compute a different stage count for the same inputs'
+        )
+
+        f.write('  // Action ID encoding:\n')
+        for aname, aid in sorted(act_ids.items(), key=lambda x: x[1]):
+            f.write(f'  //   {aid} = {aname}\n')
+        f.write('\n')
+
+        f.write('endmodule\n')
+
+
+# ============================================================
 # Public entry point
 # ============================================================
 
-def emit_tables(ir, out_dir, stage='ingress', budget_levels=None):
+def emit_tables(ir, out_dir, stage='ingress', budget_levels=None, ways=1):
     """Generate one _table.sv per table in the processing control block.
     budget_levels: None (default) = no mid-tree pipeline splitting, output
-    identical to before this parameter existed. See table_tree_stages()."""
+    identical to before this parameter existed. See table_tree_stages().
+    ways: 1 (default) = direct-mapped exact-match tables, output identical
+    to before this parameter existed. >1 = d-way set-associative exact-match
+    tables (LPM/ternary/keyless tables ignore this)."""
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
         return
@@ -784,5 +1127,5 @@ def emit_tables(ir, out_dir, stage='ingress', budget_levels=None):
         if not tbl.actions:
             continue
         out_path = os.path.join(out_dir, f'{tbl.name}_table.sv')
-        _emit_one_table(ir, tbl, amap, fwmap, out_path, budget_levels=budget_levels)
+        _emit_one_table(ir, tbl, amap, fwmap, out_path, budget_levels=budget_levels, ways=ways)
         print(f'[SUCCESS] Table RTL      -> {out_path}')

@@ -841,13 +841,17 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
 # Main emitter
 # ============================================================
 
-def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
+def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1):
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
     # redesign plan): drives table_noop_stages (variable-latency LPM/
     # ternary tree splitting, see table_tree_stages()) and the top-level
     # apply-block statement splitter (_budget_split_stages).
+    # ways: 1 (default) = direct-mapped exact-match tables, output identical
+    # to before this parameter existed. >1 = d-way set-associative
+    # exact-match tables (see emit_table.py's _emit_exact_match_table_assoc);
+    # LPM/ternary/keyless tables ignore this regardless of value.
 
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
@@ -913,7 +917,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
                 'table': tbl, 'hit_sig': f'{tbl.name}_hit',
                 'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
                 'params': params, 'key_sigs': [],
-                'depth': None, 'is_exact': False, 'is_keyless': True,
+                'depth': None, 'is_exact': False, 'is_keyless': True, 'ways': 1,
             })
             continue
 
@@ -929,12 +933,14 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
                 kw = fwmap[f'meta_{mfn}']
             fixed_key_sigs.append((fname, ksig, kw))
         mt = tbl.keys[0].match_type if tbl.keys else 'exact'
+        is_exact_mt = mt not in ('lpm', 'ternary')
         table_wires.append({
             'table': tbl, 'hit_sig': f'{tbl.name}_hit',
             'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
             'params': params, 'key_sigs': fixed_key_sigs,
             'depth': tbl.size if tbl.size else 1024,
-            'is_exact': mt not in ('lpm', 'ternary'), 'is_keyless': False,
+            'is_exact': is_exact_mt, 'is_keyless': False,
+            'ways': ways if is_exact_mt else 1,
         })
 
     tbl_wire_names = set()
@@ -1028,6 +1034,17 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
             f.write('\n  // Table hit outputs\n')
             for tw in table_wires:
                 f.write(f'  output logic        {tw["table"].name}_hit_out,\n')
+
+        # d-way associative exact-match tables (--exact-match-ways > 1) also
+        # expose their CP-write status -- absent entirely at ways<=1, so the
+        # port list is unchanged for every other table.
+        if any(tw['is_exact'] and tw['ways'] > 1 for tw in table_wires):
+            f.write('\n  // Control-plane write status (d-way associative exact-match tables)\n')
+            for tw in table_wires:
+                if tw['is_exact'] and tw['ways'] > 1:
+                    tname = tw['table'].name
+                    f.write(f'  output logic        {tname}_wr_collision,\n')
+                    f.write(f'  output logic        {tname}_cp_wr_busy,\n')
 
         f.write('\n  output logic        valid_out,\n')
         f.write('  output logic        drop\n')
@@ -1389,14 +1406,21 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None):
                 elif is_ternary:
                     for fname, _, _ in tw['key_sigs']:
                         f.write(f'    .cp_wr_mask_{fname} ({tname}_cp_wr_mask_{fname}),\n')
+                has_assoc = tw['is_exact'] and tw['ways'] > 1
                 f.write(f'    .cp_wr_action ({tname}_cp_wr_action)')
                 if tw['params']:
                     f.write(',\n')
                     for i, (pname, _) in enumerate(tw['params']):
-                        comma = ',' if i < len(tw['params']) - 1 else ''
+                        last = (i == len(tw['params']) - 1)
+                        comma = ',' if (not last or has_assoc) else ''
                         f.write(f'    .cp_wr_p_{pname} ({tname}_cp_wr_p_{pname}){comma}\n')
+                elif has_assoc:
+                    f.write(',\n')
                 else:
                     f.write('\n')
+                if has_assoc:
+                    f.write(f'    .wr_collision ({tname}_wr_collision),\n')
+                    f.write(f'    .cp_wr_busy   ({tname}_cp_wr_busy)\n')
                 f.write('  );\n\n')
 
         # ── Table hit output assignments ───────────────────────────────
