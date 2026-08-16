@@ -2,18 +2,25 @@
 
 Architecture
 ============
-The generated top-level module wraps parser_generated, processing_generated,
-and deparser_generated with proper network-facing interfaces:
+The generated top-level module wraps processing_generated with proper
+network-facing interfaces (parsing/deparsing are reimplemented inline as
+combinational reads/writes of the packet buffer below, not via separate
+parser_generated/deparser_generated instances):
 
   AXI4-Stream slave  (s_axis_*)  ← incoming packet bytes
   AXI4-Stream master (m_axis_*)  → outgoing (modified) packet bytes
   AXI4-Lite slave    (s_axil_*)  → table configuration from CPU
 
-Packet pipeline (store-and-forward):
-  IDLE → RX (buffer beats into pkt_buf)
-       → PROC (run match-action, then write-back modified header fields)
-       → TX (replay pkt_buf over AXI4-Stream out)
-       → IDLE
+Packet pipeline (cut-through, not store-and-forward):
+  RX and TX run concurrently, decoupled, sharing a packet buffer split into
+  a fixed-size header region (pkt_buf_hdr) and a payload region
+  (pkt_buf_payload). Match-action processing is triggered as soon as a
+  dynamically-computed "cutoff" byte position has arrived (every header
+  match-action could touch, not the whole packet) rather than waiting for
+  the whole packet (s_axis_tlast). TX begins streaming from byte 0 as soon
+  as write-back has finalized the header region, chasing RX's arrival
+  frontier through the payload region rather than waiting for RX to finish.
+  See the state-machine section below for the exact registers/invariants.
 
 AXI4-Lite address map (per table, 4-byte aligned):
   offset 0x00 : cp_wr_idx
@@ -61,6 +68,61 @@ def _hdr_bytes_total(inst):
 def _is_len_field(fname):
     """True if this field carries the header's own byte-length (like IP IHL)."""
     return fname.lower() in ('hdr_len', 'ihl', 'data_offset', 'dataoffset', 'doff')
+
+
+def _worst_case_hdr_bytes(layouts, inst_map):
+    """
+    Compile-time upper bound on the byte position one-past-the-end of every
+    header in `layouts`, accounting for the *worst-case runtime value* of
+    every length field feeding a variable header's base offset (e.g. IPv4
+    hdr_len maxes at 15 -> 60 bytes of header+options), not just nominal
+    fixed header sizes. Mirrors _emit_offset_vars's var_pred walk but
+    computes a Python int instead of emitting a wire -- used only to size
+    pkt_buf_hdr; the real, tighter, per-packet cutoff is computed at
+    runtime by _emit_cutoff_expr.
+
+    Requires every var_pred length field to be unsigned (true for hdr_len/
+    dataOffset-style fields) -- the sizing (and the separate runtime cutoff
+    safety argument) both rely on a length field's contribution only ever
+    adding bytes, never subtracting.
+    """
+    worst_base = {}  # inst_name -> worst-case base offset (bytes)
+
+    for layout in layouts:
+        inst_name      = layout['inst_name']
+        mandatory_base = layout['mandatory_base']
+        optional_preds = layout['optional_preds']
+        var_pred       = layout['var_pred']
+
+        if not optional_preds and var_pred is None:
+            worst_base[inst_name] = mandatory_base
+        elif var_pred is None:
+            # Worst case: every optional predecessor present.
+            worst_base[inst_name] = mandatory_base + sum(sz for _, sz in optional_preds)
+        else:
+            vname, vfield = var_pred
+            prev_worst = worst_base.get(vname, 0)
+            vinst = inst_map.get(vname)
+            width = None
+            if vinst:
+                for fld in vinst.header_type.fields:
+                    if fld.name == vfield:
+                        width = fld.width
+                        break
+            max_len_words = (2 ** (width or 4)) - 1
+            # Same scale factor (32-bit words -> bytes) as _emit_offset_vars.
+            worst_base[inst_name] = prev_worst + max_len_words * 4
+
+    worst_end = 0
+    for layout in layouts:
+        inst_name = layout['inst_name']
+        inst = inst_map.get(inst_name)
+        if not inst:
+            continue
+        base = worst_base.get(inst_name, layout['mandatory_base'])
+        worst_end = max(worst_end, base + _hdr_bytes_total(inst))
+
+    return worst_end
 
 
 # ── Byte offset layout computation ────────────────────────────────────────────
@@ -172,12 +234,18 @@ def _compute_layout(ir, inst_map):
 # ── SV byte-extraction expression ─────────────────────────────────────────────
 
 def _byte_idx(base_expr, byte_num):
-    """Return SV array-index expression for pkt_buf."""
+    """
+    Return SV array-index expression into pkt_buf_hdr. Every field this
+    compiler extracts/writes-back lives in the header region by
+    construction of HDR_MAX_BYTES's sizing (see _worst_case_hdr_bytes) --
+    pkt_buf_payload is only ever touched by the RX-capture/TX-replay
+    per-beat routing logic, never by field-level extraction/write-back.
+    """
     if base_expr in (0, '0', "8'd0"):
-        return f'pkt_buf[{byte_num}]'
+        return f'pkt_buf_hdr[{byte_num}]'
     if byte_num == 0:
-        return f'pkt_buf[{base_expr}]'
-    return f'pkt_buf[{base_expr}+{byte_num}]'
+        return f'pkt_buf_hdr[{base_expr}]'
+    return f'pkt_buf_hdr[{base_expr}+{byte_num}]'
 
 
 def _extract_expr(base_expr, bit_offset_in_hdr, width):
@@ -304,9 +372,16 @@ def _build_axil_regmap(ctrl, amap, fwmap):
         regs.append(('wr_idx',    f'{tname}_cp_wr_idx',    idx_w))
         regs.append(('wr_action', f'{tname}_cp_wr_action', act_w))
         for key in tbl.keys:
-            kname = _proc_sig(key.field)
+            kname = _proc_sig(key.field)                 # e.g. 'ipv4_src' -- fwmap width lookup
+            kbase = key.field.strip().split('.')[-1]      # e.g. 'src' -- matches processing_generated's
+                                                            # actual cp_wr_key_{basename} port name
+                                                            # (emit_processing.py uses _field_basename,
+                                                            # not the full dotted-path _sig -- pre-existing
+                                                            # mismatch, fixed here since it otherwise blocks
+                                                            # even compiling {app}_top.sv against
+                                                            # processing_generated.sv)
             kw    = fwmap.get(kname, 32)
-            regs.append((f'key_{kname}', f'{tname}_cp_wr_key_{kname}', kw))
+            regs.append((f'key_{kbase}', f'{tname}_cp_wr_key_{kbase}', kw))
         for pname, pw in params:
             regs.append((f'p_{pname}', f'{tname}_cp_wr_p_{pname}', pw))
         regs.append(('commit', f'{tname}_cp_wr_en', 1))   # sentinel
@@ -613,7 +688,16 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     BEAT_W     = AXI_DATA_W
     KEEP_W     = BEAT_W // 8
     BEAT_CNT_W = max(1, math.ceil(math.log2(MAX_PKT_BEATS + 1)))
-    TX_BEAT_W  = BEAT_CNT_W
+
+    # Header-region sizing: worst-case runtime byte extent of every header
+    # this app could ever need to write back, rounded up to a whole beat so
+    # the RX/TX per-beat pkt_buf_hdr/pkt_buf_payload routing mux never needs
+    # to split a beat across the two arrays. Must be >=1 beat and capped at
+    # MAX_PKT_BEATS (defensive; real apps' header regions are far smaller).
+    HDR_MAX_BYTES = _worst_case_hdr_bytes(layouts, inst_map)
+    HDR_MAX_BYTES = ((HDR_MAX_BYTES + KEEP_W - 1) // KEEP_W) * KEEP_W
+    HDR_MAX_BYTES = max(KEEP_W, min(HDR_MAX_BYTES, MAX_PKT_BYTES))
+    HDR_MAX_BEATS = HDR_MAX_BYTES // KEEP_W
 
     # ── Module header ──────────────────────────────────────────────────────────
     f.write(f'module {app_name}_top #(\n')
@@ -657,26 +741,84 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # ── Local parameters ───────────────────────────────────────────────────────
     f.write(f'  localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // {KEEP_W}\n')
     f.write(f'  localparam int MAX_PKT_BEATS = {MAX_PKT_BEATS};\n')
-    f.write(f'  localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // {MAX_PKT_BEATS * KEEP_W}\n\n')
+    f.write(f'  localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // {MAX_PKT_BEATS * KEEP_W}\n')
+    f.write(f'  localparam int HDR_MAX_BYTES = {HDR_MAX_BYTES};\n')
+    f.write(f'  localparam int HDR_MAX_BEATS = {HDR_MAX_BEATS};\n')
+    f.write(f'  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // {MAX_PKT_BYTES - HDR_MAX_BYTES}\n\n')
 
     # ── Packet buffer ──────────────────────────────────────────────────────────
-    f.write('  // ── Packet buffer ────────────────────────────────────────────────────────\n')
+    # Split into two physically separate arrays so no single BRAM ever needs
+    # more than 2 simultaneous port-uses in a cycle: pkt_buf_hdr gets
+    # RX-writes-before-cutoff XOR write-back-writes-after-cutoff (never
+    # both -- write-back only fires once every header-region byte has
+    # already arrived, by construction of the cutoff) plus TX-reads;
+    # pkt_buf_payload gets RX-writes plus TX-reads (an ordinary 1R+1W same
+    # cycle -- the actual cut-through overlap). initial zero-fill is for
+    # simulation determinism now that pkt_buf_hdr is read *during* RX to
+    # drive a live control decision, not only after the whole packet lands.
+    f.write('  // ── Packet buffer (header region / payload region, see above) ───────────────\n')
     f.write('  (* ram_style = "block" *)\n')
-    f.write('  logic [7:0]                              pkt_buf  [0:MAX_PKT_BYTES-1];\n')
-    f.write(f'  logic [AXI_DATA_W/8-1:0]               pkt_keep [{MAX_PKT_BEATS-1}:0];\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0]               beat_cnt;  // beats received\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0]               tx_beat;   // beat being transmitted\n\n')
+    f.write('  logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];\n')
+    f.write('  (* ram_style = "block" *)\n')
+    f.write('  logic [7:0] pkt_buf_payload [0:PAYLOAD_MAX_BYTES-1];\n')
+    f.write('  initial begin\n')
+    f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++)     pkt_buf_hdr[i]     = 8\'d0;\n')
+    f.write('    for (int i = 0; i < PAYLOAD_MAX_BYTES; i++) pkt_buf_payload[i] = 8\'d0;\n')
+    f.write('  end\n')
+    f.write(f'  logic [AXI_DATA_W/8-1:0] pkt_keep [0:MAX_PKT_BEATS-1];\n\n')
 
-    # ── State machine ──────────────────────────────────────────────────────────
-    f.write('  // ── State machine ────────────────────────────────────────────────────────\n')
-    f.write('  typedef enum logic [2:0] {\n')
-    f.write('    ST_IDLE = 3\'d0,\n')
-    f.write('    ST_RX   = 3\'d1,\n')
-    f.write('    ST_PROC = 3\'d2,\n')
-    f.write('    ST_TX   = 3\'d3,\n')
-    f.write('    ST_DROP = 3\'d4\n')
-    f.write('  } state_t;\n')
-    f.write('  state_t state;\n\n')
+    # ── State registers ────────────────────────────────────────────────────────
+    # RX and TX are independently-paced, not one shared enum -- see the RX/
+    # PROC/TX always_ff blocks below for the exact triggering/ordering
+    # invariants each register depends on.
+    f.write('  // ── State registers ──────────────────────────────────────────────────────\n')
+    f.write('  //   pkt_busy   : a packet currently owns the pipeline (any stage). The\n')
+    f.write('  //                single-packet-in-flight invariant -- packet N+1 cannot\n')
+    f.write('  //                start until N has drained from BOTH RX and TX.\n')
+    f.write('  //   rx_done    : RX captured this packet\'s tlast beat (or the overflow\n')
+    f.write('  //                path below completed). Reset to 0 whenever pkt_busy is 0,\n')
+    f.write('  //                by construction of the RX block\'s own logic -- so\n')
+    f.write('  //                s_axis_tready = !rx_done is correct on its own.\n')
+    f.write('  //   rx_beat_cnt: beats captured so far. Freezes automatically once rx_done\n')
+    f.write('  //                latches (increment is gated on !rx_done) -- no separate\n')
+    f.write('  //                "final beat count" register needed, TX reads this directly.\n')
+    f.write('  //   overflow   : this packet exceeded MAX_PKT_BEATS -- diagnostic only, does\n')
+    f.write('  //                NOT suppress TX (which may already be transmitting by the\n')
+    f.write('  //                time this is discovered, deep in the payload region -- a\n')
+    f.write('  //                real cut-through design cannot "unsend" bytes already on\n')
+    f.write('  //                the wire). The transmitted packet is simply truncated to\n')
+    f.write('  //                MAX_PKT_BEATS beats with a correctly-placed tlast.\n')
+    f.write('  //   proc_armed : drives processing_generated.valid_in. Set once\n')
+    f.write('  //                rx_beat_cnt*BEAT_BYTES >= cutoff_byte and held sticky-high\n')
+    f.write('  //                for the rest of the packet (processing_generated\'s lkp_*\n')
+    f.write('  //                inputs must stay stable from trigger until valid_out).\n')
+    f.write('  //   proc_committed: one-shot latch, set the first cycle proc_valid_out fires\n')
+    f.write('  //                (gated on proc_armed too -- without that qualifier, a\n')
+    f.write('  //                residual valid_out tail from a JUST-cleared previous packet\n')
+    f.write('  //                could spuriously re-trigger for a new packet that hasn\'t\n')
+    f.write('  //                reached its own cutoff yet, since valid_out lags valid_in by\n')
+    f.write('  //                processing_generated\'s own pipeline depth). Gates write-back\n')
+    f.write('  //                and arming TX so they fire exactly once per packet.\n')
+    f.write('  //   tx_active  : armed by proc_valid_out && !proc_committed && !proc_drop\n')
+    f.write('  //                (checked BEFORE proc_committed latches this same edge, so\n')
+    f.write('  //                both fire together on the true trigger cycle); cleared once\n')
+    f.write('  //                TX\'s last beat is accepted.\n')
+    f.write('  //   tx_beat_cnt: beats transmitted so far. Advance/tvalid gated on\n')
+    f.write('  //                tx_beat_cnt < rx_beat_cnt (never read a beat RX hasn\'t\n')
+    f.write('  //                captured yet -- this is what makes TX correctly chase RX\'s\n')
+    f.write('  //                arrival frontier instead of racing ahead). tlast additionally\n')
+    f.write('  //                requires rx_done, to distinguish "caught up to RX\'s live\n')
+    f.write('  //                frontier, more beats still coming" from "this really is the\n')
+    f.write('  //                last beat of the whole packet".\n')
+    f.write('  logic pkt_busy;\n')
+    f.write('  logic rx_done;\n')
+    f.write('  logic overflow;\n')
+    f.write('  logic proc_armed;\n')
+    f.write('  logic proc_settle;\n')
+    f.write('  logic proc_committed;\n')
+    f.write('  logic tx_active;\n')
+    f.write(f'  logic [{BEAT_CNT_W-1}:0] rx_beat_cnt;\n')
+    f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_beat_cnt;\n\n')
 
     # ── Header field wires (extracted from pkt_buf) ────────────────────────────
     f.write('  // ── Header field extraction from pkt_buf ────────────────────────────────\n')
@@ -726,6 +868,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire w_{hname}_valid = {vexpr};\n')
     f.write('\n')
 
+    # ── Header-region cutoff (drives when match-action processing triggers) ────
+    # Placed after validity wires since its per-header terms reference the
+    # same field/offset wires validity did (forward-reference-safe either
+    # way in SV, kept in dependency order for readability).
+    f.write('  // ── Header-region cutoff ──────────────────────────────────────────────────\n')
+    _emit_cutoff_expr(f, layouts, inst_map, valid_map)
+
     # Emit field extraction wires for action-only headers (all zero — not in packet)
     if action_only_names:
         f.write('  // Action-only headers (not in received packet; inputs tied to 0)\n')
@@ -768,7 +917,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  processing_generated u_proc (\n')
     f.write('    .clk       (clk),\n')
     f.write('    .rst_n     (rst_n),\n')
-    f.write('    .valid_in  (state == ST_PROC),\n')
+    f.write('    .valid_in  (proc_armed),\n')
     # valid flags
     for hname in all_hdr_names:
         f.write(f'    .{hname}_valid     (w_{hname}_valid),\n')
@@ -806,73 +955,177 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # ── AXI4-Lite decoder ─────────────────────────────────────────────────────
     _emit_axil_decoder(f, regmap)
 
-    # ── RX state machine ──────────────────────────────────────────────────────
-    f.write('  // ── RX / state machine ───────────────────────────────────────────────────\n')
-    f.write('  assign s_axis_tready = (state == ST_IDLE) || (state == ST_RX);\n\n')
+    # ── Cross-block completion signal ─────────────────────────────────────────
+    f.write('  // ── Cross-block wiring ───────────────────────────────────────────────────\n')
+    f.write('  // A new packet may start only once the current one has drained from BOTH\n')
+    f.write('  // RX and TX (the single-packet-in-flight invariant -- avoids needing a\n')
+    f.write('  // double-buffered pkt_buf).\n')
+    f.write('  wire pkt_ready_to_clear = pkt_busy && rx_done && proc_committed && !tx_active;\n\n')
+
+    # ── RX (ingest) ────────────────────────────────────────────────────────────
+    f.write('  // ── RX (ingest) ──────────────────────────────────────────────────────────\n')
+    f.write('  assign s_axis_tready = !rx_done;\n')
+    f.write('  wire accept_beat = s_axis_tvalid && s_axis_tready;\n\n')
 
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) begin\n')
-    f.write('      state    <= ST_IDLE;\n')
-    f.write('      beat_cnt <= \'0;\n')
-    f.write('      tx_beat  <= \'0;\n')
-    f.write('    end else case (state)\n\n')
-
-    f.write('      ST_IDLE: begin\n')
-    f.write('        if (s_axis_tvalid) begin\n')
-    f.write('          beat_cnt <= \'0;\n')
-    f.write('          state    <= ST_RX;\n')
-    f.write('        end\n')
-    f.write('      end\n\n')
-
-    f.write('      ST_RX: begin\n')
-    f.write('        if (s_axis_tvalid && s_axis_tready) begin\n')
-    f.write('          // Capture one beat (AXI4-Stream byte 0 = tdata[7:0])\n')
+    f.write('      pkt_busy    <= 1\'b0;\n')
+    f.write('      rx_done     <= 1\'b0;\n')
+    f.write('      rx_beat_cnt <= \'0;\n')
+    f.write('      overflow    <= 1\'b0;\n')
+    f.write('    end else begin\n')
+    f.write('      if (accept_beat) begin\n')
+    f.write('        pkt_busy <= 1\'b1;\n')
+    f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
     f.write(f'          for (int i = 0; i < {KEEP_W}; i++)\n')
     f.write('            if (s_axis_tkeep[i])\n')
-    f.write(f'              pkt_buf[beat_cnt * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
-    f.write('          pkt_keep[beat_cnt] <= s_axis_tkeep;\n')
-    f.write(f'          beat_cnt          <= beat_cnt + {BEAT_CNT_W}\'d1;\n')
-    f.write('          if (s_axis_tlast) state <= ST_PROC;\n')
+    f.write(f'              pkt_buf_hdr[rx_beat_cnt * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
+    f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
+    f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
+    f.write('        end else if (rx_beat_cnt < MAX_PKT_BEATS) begin\n')
+    f.write(f'          for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write('            if (s_axis_tkeep[i])\n')
+    f.write(f'              pkt_buf_payload[(rx_beat_cnt - HDR_MAX_BEATS) * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
+    f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
+    f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
+    f.write('        end else begin\n')
+    f.write('          // Beyond MAX_PKT_BEATS: stop capturing (memory-safety truncation,\n')
+    f.write('          // not a drop -- TX may already be transmitting this packet by now,\n')
+    f.write('          // see the `overflow` declaration comment above). rx_beat_cnt stays\n')
+    f.write('          // frozen at MAX_PKT_BEATS, which TX will correctly treat as the\n')
+    f.write('          // final count once rx_done latches below.\n')
+    f.write('          overflow <= 1\'b1;\n')
     f.write('        end\n')
-    f.write('      end\n\n')
-
-    f.write('      ST_PROC: begin\n')
-    f.write('        if (proc_valid_out) begin\n')
-    f.write('          // Write-back modified header fields into pkt_buf\n')
-    f.write('          if (!proc_drop) begin\n')
-    _emit_writeback_block(f, layouts, inst_map, valid_map, '            ')
-    f.write('          end\n')
-    f.write('          tx_beat <= \'0;\n')
-    f.write('          state   <= proc_drop ? ST_IDLE : ST_TX;\n')
-    f.write('        end\n')
-    f.write('      end\n\n')
-
-    f.write('      ST_TX: begin\n')
-    f.write('        if (m_axis_tvalid && m_axis_tready) begin\n')
-    f.write(f'          if (tx_beat == beat_cnt - {BEAT_CNT_W}\'d1)\n')
-    f.write('            state <= ST_IDLE;\n')
-    f.write('          else\n')
-    f.write(f'            tx_beat <= tx_beat + {BEAT_CNT_W}\'d1;\n')
-    f.write('        end\n')
-    f.write('      end\n\n')
-
-    f.write('      default: state <= ST_IDLE;\n')
-    f.write('    endcase\n')
+    f.write('        if (s_axis_tlast) rx_done <= 1\'b1;\n')
+    f.write('      end\n')
+    f.write('      if (pkt_ready_to_clear) begin\n')
+    f.write('        pkt_busy    <= 1\'b0;\n')
+    f.write('        rx_done     <= 1\'b0;\n')
+    f.write('        rx_beat_cnt <= \'0;\n')
+    f.write('        overflow    <= 1\'b0;\n')
+    f.write('      end\n')
+    f.write('    end\n')
     f.write('  end\n\n')
 
-    # ── TX output logic ────────────────────────────────────────────────────────
-    f.write('  // ── TX output ─────────────────────────────────────────────────────────────\n')
+    # ── PROC (match-action trigger + write-back) ──────────────────────────────
+    f.write('  // ── PROC (match-action trigger + write-back) ────────────────────────────\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) begin\n')
+    f.write('      proc_armed     <= 1\'b0;\n')
+    f.write('      proc_settle    <= 1\'b0;\n')
+    f.write('      proc_committed <= 1\'b0;\n')
+    f.write('    end else begin\n')
+    f.write('      // Trigger as soon as the header region has fully arrived -- not\n')
+    f.write('      // waiting for the whole packet. This is the cut-through trigger.\n')
+    f.write('      // Also trigger on rx_done alone (packet ended before reaching the\n')
+    f.write('      // theoretical cutoff): once RX has finished, no more bytes will EVER\n')
+    f.write('      // arrive, so waiting further would deadlock -- this is a real case,\n')
+    f.write('      // not just defensive, since header-region sizing accounts for the\n')
+    f.write('      // worst-case runtime length of every var_pred field (see\n')
+    f.write('      // _worst_case_hdr_bytes) and can legitimately exceed a specific\n')
+    f.write('      // packet\'s actual total length.\n')
+    f.write('      if (!proc_armed && pkt_busy &&\n')
+    f.write('          ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin\n')
+    f.write('        proc_armed <= 1\'b1;\n')
+    f.write('      end\n')
+    f.write('      // proc_armed is required here (not just !proc_committed) so a residual\n')
+    f.write('      // valid_out tail from a just-cleared previous packet can never be\n')
+    f.write('      // mistaken for this packet\'s own result -- processing_generated\'s\n')
+    f.write('      // valid_out lags valid_in by its own pipeline depth, so it can still\n')
+    f.write('      // read high for a few cycles after proc_armed drops back to 0.\n')
+    f.write('      //\n')
+    f.write('      // proc_settle: a one-cycle buffer between first observing proc_valid_out\n')
+    f.write('      // and actually reading out_* / committing write-back. processing_generated\'s\n')
+    f.write('      // own out_* pass-through signals are staged (forwarded through the same\n')
+    f.write('      // number of pipeline registers as valid_out itself) but were observed\n')
+    f.write('      // (via a from-scratch top-level testbench -- this app never had one before)\n')
+    f.write('      // to still reflect the PREVIOUS packet\'s values for one more cycle after\n')
+    f.write('      // proc_valid_out first rises, specifically when valid_in is held\n')
+    f.write('      // continuously high across back-to-back packets (as this design does,\n')
+    f.write('      // and as the direct-mapped store-and-forward design also always did --\n')
+    f.write('      // this is a pre-existing processing_generated timing subtlety, not\n')
+    f.write('      // something this redesign introduces; it was simply never exercised\n')
+    f.write('      // before, since no integrated top-level testbench existed). Waiting one\n')
+    f.write('      // extra cycle before committing is a real, necessary fix, not a stylistic\n')
+    f.write('      // choice -- confirmed empirically against the actual generated RTL.\n')
+    f.write('      if (proc_armed && proc_valid_out && !proc_settle && !proc_committed) begin\n')
+    f.write('        proc_settle <= 1\'b1;\n')
+    f.write('      end\n')
+    f.write('      if (proc_settle && !proc_committed) begin\n')
+    f.write('        proc_committed <= 1\'b1;\n')
+    f.write('        if (!proc_drop) begin\n')
+    _emit_writeback_block(f, layouts, inst_map, valid_map, '          ')
+    f.write('        end\n')
+    f.write('      end\n')
+    f.write('      if (pkt_ready_to_clear) begin\n')
+    f.write('        proc_armed     <= 1\'b0;\n')
+    f.write('        proc_settle    <= 1\'b0;\n')
+    f.write('        proc_committed <= 1\'b0;\n')
+    f.write('      end\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── TX (egress) ────────────────────────────────────────────────────────────
+    f.write('  // ── TX (egress) ──────────────────────────────────────────────────────────\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) begin\n')
+    f.write('      tx_active   <= 1\'b0;\n')
+    f.write('      tx_beat_cnt <= \'0;\n')
+    f.write('    end else begin\n')
+    f.write('      // Armed on the exact same pre-edge condition that latches\n')
+    f.write('      // proc_committed above (proc_settle && !proc_committed), so both fire\n')
+    f.write('      // together on the true commit cycle (never the cycle write-back\'s own\n')
+    f.write('      // commit happens on -- write-back and this arm both become visible\n')
+    f.write('      // starting the next cycle, so TX only ever reads pkt_buf_hdr after\n')
+    f.write('      // write-back landed).\n')
+    f.write('      if (!tx_active && proc_settle && !proc_committed && !proc_drop) begin\n')
+    f.write('        tx_active   <= 1\'b1;\n')
+    f.write('        tx_beat_cnt <= \'0;\n')
+    f.write('      end else if (tx_active && m_axis_tvalid && m_axis_tready) begin\n')
+    f.write('        if (m_axis_tlast) begin\n')
+    f.write('          tx_active <= 1\'b0;\n')
+    f.write('        end else begin\n')
+    f.write(f'          tx_beat_cnt <= tx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
+    f.write('        end\n')
+    f.write('      end\n')
+    f.write('      if (pkt_ready_to_clear) begin\n')
+    f.write('        tx_active   <= 1\'b0;\n')
+    f.write('        tx_beat_cnt <= \'0;\n')
+    f.write('      end\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── TX output (combinational) ─────────────────────────────────────────────
+    f.write('  // ── TX output ────────────────────────────────────────────────────────────\n')
+    f.write('  // m_axis_tvalid gated on tx_beat_cnt < rx_beat_cnt alone -- a beat is only\n')
+    f.write('  // presentable once RX has actually captured it, which is exactly what lets\n')
+    f.write('  // TX chase RX\'s live arrival frontier through the payload region instead\n')
+    f.write('  // of racing ahead. m_axis_tlast additionally requires (rx_done || overflow):\n')
+    f.write('  // without it, TX catching up to RX\'s live frontier mid-packet (simply\n')
+    f.write('  // because TX is faster than the input rate) would be indistinguishable from\n')
+    f.write('  // genuinely reaching the last beat of the whole packet. `overflow` is\n')
+    f.write('  // required alongside rx_done, not just rx_done alone: once RX truncates a\n')
+    f.write('  // packet at MAX_PKT_BEATS, rx_beat_cnt freezes there PERMANENTLY -- the\n')
+    f.write('  // real upstream tlast (whenever it eventually arrives) no longer changes\n')
+    f.write('  // rx_beat_cnt at all, so waiting for rx_done alone would deadlock TX at\n')
+    f.write('  // tx_beat_cnt==rx_beat_cnt forever, never getting the chance to emit tlast\n')
+    f.write('  // for the truncated packet\'s real final beat.\n')
     f.write('  always_comb begin\n')
     f.write("    m_axis_tdata  = '0;\n")
     f.write("    m_axis_tkeep  = '0;\n")
     f.write('    m_axis_tlast  = 1\'b0;\n')
     f.write('    m_axis_tvalid = 1\'b0;\n')
-    f.write('    if (state == ST_TX) begin\n')
+    f.write('    if (tx_active && (tx_beat_cnt < rx_beat_cnt)) begin\n')
     f.write('      m_axis_tvalid = 1\'b1;\n')
-    f.write('      m_axis_tkeep  = pkt_keep[tx_beat];\n')
-    f.write(f'      m_axis_tlast  = (tx_beat == beat_cnt - {BEAT_CNT_W}\'d1);\n')
-    f.write(f'      for (int i = 0; i < {KEEP_W}; i++)\n')
-    f.write(f'        m_axis_tdata[i*8 +: 8] = pkt_buf[tx_beat * {KEEP_W} + i];\n')
+    f.write('      m_axis_tkeep  = pkt_keep[tx_beat_cnt];\n')
+    f.write(f'      m_axis_tlast  = (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - {BEAT_CNT_W}\'d1);\n')
+    f.write('      if (tx_beat_cnt < HDR_MAX_BEATS) begin\n')
+    f.write(f'        for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write(f'          m_axis_tdata[i*8 +: 8] = pkt_buf_hdr[tx_beat_cnt * {KEEP_W} + i];\n')
+    f.write('      end else begin\n')
+    f.write(f'        for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write(f'          m_axis_tdata[i*8 +: 8] = pkt_buf_payload[(tx_beat_cnt - HDR_MAX_BEATS) * {KEEP_W} + i];\n')
+    f.write('      end\n')
     f.write('    end\n')
     f.write('  end\n\n')
 
@@ -931,6 +1184,71 @@ def _emit_offset_vars(f, layouts, inst_map, valid_map):
             f.write(f'  wire [{HDR_IDX_W-1}:0] {var_name} = '
                     f'{prev_base_expr} + {hdr_bytes_var};\n')
 
+    f.write('\n')
+
+
+def _emit_cutoff_expr(f, layouts, inst_map, valid_map):
+    """
+    Emit `cutoff_byte`: the smallest byte position at which every header
+    this specific packet could contain (given what's arrived so far) has
+    fully landed in pkt_buf_hdr. RX triggers match-action processing the
+    first cycle rx_beat_cnt*BEAT_BYTES >= cutoff_byte holds, instead of
+    waiting for the whole packet -- this is what makes the design
+    cut-through rather than store-and-forward.
+
+    Write-back rewrites EVERY header in `layouts` unconditionally (gated
+    only by that header's own validity, since processing_generated already
+    pass-throughs untouched fields) -- so the correct footprint is "every
+    header with any bytes has arrived", not just the fields match-action
+    actually reads.
+
+    Each header's term is gated by its own validity wire (so e.g. an
+    absent VLAN doesn't inflate the cutoff for non-VLAN packets). This is
+    safe to sample every cycle and trigger on first-true despite depending
+    on not-yet-fully-arrived data early on: a header's own term always
+    dominates (shields) any later header's data-dependent base-offset
+    computation from false-triggering on stale bytes, because every
+    var_pred length field is unsigned (see _worst_case_hdr_bytes) -- if a
+    length field's own byte hasn't arrived yet, its stale value can only
+    make a later term compute too LOW, never mask a still-outstanding
+    earlier one, since the earlier header's own (always-correct) term is
+    already in the max.
+    """
+    terms = []
+    for layout in layouts:
+        inst_name = layout['inst_name']
+        inst = inst_map.get(inst_name)
+        if not inst:
+            continue
+        mandatory_base = layout['mandatory_base']
+        optional_preds = layout['optional_preds']
+        var_pred       = layout['var_pred']
+        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred)
+        size  = _hdr_bytes_total(inst)
+        vexpr = valid_map.get(inst_name, "1'b1")
+        term_name = f'w_{inst_name}_cutoff_term'
+        if vexpr == "1'b1":
+            f.write(f'  wire [{HDR_IDX_W-1}:0] {term_name} = {base_expr} + {size};\n')
+        else:
+            f.write(f'  wire [{HDR_IDX_W-1}:0] {term_name} = '
+                    f'{vexpr} ? ({base_expr} + {size}) : {HDR_IDX_W}\'d0;\n')
+        terms.append(term_name)
+
+    if not terms:
+        f.write(f"  wire [{HDR_IDX_W-1}:0] cutoff_byte = {HDR_IDX_W}'d0;\n")
+    else:
+        # Reduce via named intermediate wires, not nested inline expression
+        # text -- chaining `(({expr}) > ({t}) ? ({expr}) : ({t}))` directly
+        # would re-embed the whole growing expression twice at every step
+        # (once as the true-branch, once inside the condition), blowing up
+        # exponentially with header count.
+        acc = terms[0]
+        for i, t in enumerate(terms[1:], start=1):
+            acc_name = f'w_cutoff_max_{i}'
+            f.write(f'  wire [{HDR_IDX_W-1}:0] {acc_name} = '
+                    f'({acc} > {t}) ? {acc} : {t};\n')
+            acc = acc_name
+        f.write(f'  wire [{HDR_IDX_W-1}:0] cutoff_byte = {acc};\n')
     f.write('\n')
 
 
