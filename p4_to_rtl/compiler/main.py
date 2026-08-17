@@ -14,7 +14,7 @@ from emit_table import emit_tables
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
-from emit_top import emit_top
+from emit_top import emit_top, DEFAULT_AXI_DATA_W, MAX_AXI_DATA_W
 from timing_model import budget_levels as _budget_levels, DEVICE_FACTOR
 
 
@@ -296,7 +296,8 @@ def debug_ir(ir):
 # Main compiler driver
 # ============================================================
 
-def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1):
+def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
+                  axi_data_width=DEFAULT_AXI_DATA_W):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -304,6 +305,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     ways: 1 (default) = today's behavior exactly, direct-mapped exact-match tables.
         Otherwise, d-way set-associative exact-match tables (see emit_table.py's
         _emit_exact_match_table_assoc).
+    axi_data_width: AXI4-Stream TDATA width in bits for the p4test/XSA frontend's
+        top-level (default 256; ignored for the bmv2 frontend, which has no
+        byte-stream I/O). See emit_top.py's MAX_AXI_DATA_W for the ceiling's
+        rationale.
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -392,7 +397,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
-        emit_top(ir, app_name, out_top)
+        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
 
 
@@ -473,10 +478,41 @@ def main():
             "different keys. LPM/ternary/keyless tables ignore this flag."
         ),
     )
+    parser.add_argument(
+        "--axi-data-width",
+        metavar="BITS",
+        type=int,
+        default=DEFAULT_AXI_DATA_W,
+        help=(
+            f"AXI4-Stream TDATA width, in bits, for the p4test/XSA frontend's "
+            f"top-level (default: {DEFAULT_AXI_DATA_W}; ignored for the bmv2 "
+            f"frontend, which has no byte-stream I/O). Must be a power of 2, "
+            f">=8, and <={MAX_AXI_DATA_W}. Field extraction/write-back index the "
+            f"packet buffer by byte position, not beat position, so this is the "
+            f"only thing that needs to change to retarget the datapath width -- "
+            f"but every doubling doubles the per-cycle byte-lane write/mux fan-out "
+            f"into the packet buffer, so wider is a real area/routing cost, not "
+            f"free throughput. {MAX_AXI_DATA_W} is a hard ceiling: nothing wider "
+            f"has been synthesized or measured on this project's only validated "
+            f"target (a WebPACK-tier Artix-7 part)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.exact_match_ways < 1:
         parser.error("--exact-match-ways must be >= 1")
+
+    if (args.axi_data_width < 8
+            or (args.axi_data_width & (args.axi_data_width - 1)) != 0):
+        parser.error(
+            f"--axi-data-width must be a power of 2, >=8 (got {args.axi_data_width})"
+        )
+    if args.axi_data_width > MAX_AXI_DATA_W:
+        parser.error(
+            f"--axi-data-width={args.axi_data_width} exceeds the maximum "
+            f"supported width ({MAX_AXI_DATA_W}) -- see --help for why this "
+            f"ceiling exists."
+        )
 
     levels = None
     if args.target_freq_mhz is not None:
@@ -500,6 +536,7 @@ def main():
         frontend=args.frontend,
         budget_levels=levels,
         ways=args.exact_match_ways,
+        axi_data_width=args.axi_data_width,
     )
 
 

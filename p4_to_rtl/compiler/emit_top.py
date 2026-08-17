@@ -43,16 +43,34 @@ from emit_processing import (
 )
 
 # ── Module-level constants ─────────────────────────────────────────────────────
+#
+# AXI4-Stream datapath width is a real, user-facing choice (--axi-data-width on
+# main.py, threaded through emit_top()'s axi_data_width parameter below) rather
+# than a fixed constant -- field extraction/write-back index pkt_buf_hdr/payload
+# by byte position, not beat position, so widening the datapath is just a
+# matter of re-deriving BEAT_BYTES/MAX_PKT_BYTES/HDR_IDX_W from a different
+# axi_data_width and regenerating; no other logic depends on a specific width.
+#
+# MAX_AXI_DATA_W is a real ceiling, not an arbitrary one: every additional
+# doubling of the datapath doubles the per-cycle byte-lane write/mux fan-out
+# into pkt_buf_hdr/pkt_buf_payload (each lane is an independent byte-enabled
+# write into the same array at a computed offset -- real BRAM primitives are
+# only a few bytes wide per port, so a wide logical write synthesizes as
+# several parallel banked BRAMs, and area/routing congestion grows with it).
+# 512 bits (64 bytes/cycle) matches real high-throughput (100G+-class)
+# streaming datapaths and is already generous for this project's only
+# synthesis-validated target (a WebPACK-tier Artix-7 part, `xc7a100tcsg324-1`)
+# -- going wider than this has not been synthesized or measured on anything in
+# this project, so treat it as a hard, unvalidated wall, not a soft suggestion.
+DEFAULT_AXI_DATA_W = 256
+MAX_AXI_DATA_W     = 512
 
-AXI_DATA_W    = 64      # AXI4-Stream bus width (bits)
-MAX_PKT_BEATS = 256     # max packet size in AXI4-Stream beats (256 * 8 = 2048 bytes)
+MAX_PKT_BEATS = 256     # max packet size in AXI4-Stream beats (beat count is
+                        # independent of datapath width; MAX_PKT_BYTES below
+                        # scales with whichever width a given run selects)
 AXIL_DATA_W   = 32      # AXI4-Lite data width
 AXIL_ADDR_W   = 16      # AXI4-Lite address width
 TABLE_AXIL_SZ = 0x100   # bytes of AXI4-Lite address space allocated per table
-
-BEAT_BYTES = AXI_DATA_W // 8   # 8 bytes per beat
-MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES  # 2048
-HDR_IDX_W  = max(1, math.ceil(math.log2(MAX_PKT_BYTES + 1)))  # 11 bits
 
 
 # ── Header size helpers ────────────────────────────────────────────────────────
@@ -630,8 +648,30 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
-def emit_top(ir, app_name, output_path):
-    """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces."""
+def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W):
+    """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
+
+    axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
+    power of 2, >=8, and <= MAX_AXI_DATA_W -- see the ceiling's rationale
+    above. Re-validated here (not just in main.py's CLI parsing) since
+    emit_top() can be called directly/programmatically, not only via the CLI.
+    """
+    if axi_data_width < 8 or (axi_data_width & (axi_data_width - 1)) != 0:
+        raise ValueError(
+            f'axi_data_width must be a power of 2, >=8 (got {axi_data_width})'
+        )
+    if axi_data_width > MAX_AXI_DATA_W:
+        raise ValueError(
+            f'axi_data_width={axi_data_width} exceeds MAX_AXI_DATA_W='
+            f'{MAX_AXI_DATA_W} -- see the ceiling\'s rationale in this file\'s '
+            f'module-level constants section (BRAM byte-lane fan-out grows '
+            f'with width, and nothing wider than this has been synthesized '
+            f'or measured on this project\'s only validated target)'
+        )
+
+    beat_bytes    = axi_data_width // 8
+    max_pkt_bytes = MAX_PKT_BEATS * beat_bytes
+    hdr_idx_w     = max(1, math.ceil(math.log2(max_pkt_bytes + 1)))
 
     inst_map = {inst.inst_name: inst for inst in ir.header_instances
                 if not inst.is_stack}
@@ -660,7 +700,8 @@ def emit_top(ir, app_name, output_path):
     with open(output_path, 'w') as f:
         _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                       ctrl, amap, fwmap, regmap,
-                      emit_insts, total_hdr_bytes)
+                      emit_insts, total_hdr_bytes,
+                      axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w)
 
 
 def _build_fwmap(ir):
@@ -683,10 +724,13 @@ def _build_fwmap(ir):
 # ── Module body writer ────────────────────────────────────────────────────────
 
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
-                  ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes):
+                  ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
+                  axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w):
 
-    BEAT_W     = AXI_DATA_W
-    KEEP_W     = BEAT_W // 8
+    BEAT_W     = axi_data_width
+    KEEP_W     = beat_bytes
+    MAX_PKT_BYTES = max_pkt_bytes
+    HDR_IDX_W  = hdr_idx_w
     BEAT_CNT_W = max(1, math.ceil(math.log2(MAX_PKT_BEATS + 1)))
 
     # Header-region sizing: worst-case runtime byte extent of every header
@@ -697,6 +741,18 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     HDR_MAX_BYTES = _worst_case_hdr_bytes(layouts, inst_map)
     HDR_MAX_BYTES = ((HDR_MAX_BYTES + KEEP_W - 1) // KEEP_W) * KEEP_W
     HDR_MAX_BYTES = max(KEEP_W, min(HDR_MAX_BYTES, MAX_PKT_BYTES))
+    # Structurally guaranteed while MAX_PKT_BEATS stays >=2 (MAX_PKT_BYTES is
+    # MAX_PKT_BEATS*KEEP_W, so it only approaches KEEP_W -- and PAYLOAD_MAX_BYTES
+    # only approaches 0 -- if MAX_PKT_BEATS itself were reduced to ~1). Asserted
+    # explicitly rather than left implicit, since axi_data_width is now a real
+    # user-facing choice (--axi-data-width) and a future edit to MAX_PKT_BEATS
+    # could otherwise silently produce a malformed pkt_buf_payload array bound.
+    if HDR_MAX_BYTES >= MAX_PKT_BYTES:
+        raise ValueError(
+            f'{app_name}: header region ({HDR_MAX_BYTES} bytes) leaves no room '
+            f'for a payload region within MAX_PKT_BYTES ({MAX_PKT_BYTES} bytes) '
+            f'-- increase MAX_PKT_BEATS or reduce axi_data_width'
+        )
     HDR_MAX_BEATS = HDR_MAX_BYTES // KEEP_W
 
     # ── Module header ──────────────────────────────────────────────────────────
@@ -792,17 +848,25 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  //                rx_beat_cnt*BEAT_BYTES >= cutoff_byte and held sticky-high\n')
     f.write('  //                for the rest of the packet (processing_generated\'s lkp_*\n')
     f.write('  //                inputs must stay stable from trigger until valid_out).\n')
-    f.write('  //   proc_committed: one-shot latch, set the first cycle proc_valid_out fires\n')
+    f.write('  //   proc_settle: one-cycle buffer set the first cycle proc_valid_out fires\n')
     f.write('  //                (gated on proc_armed too -- without that qualifier, a\n')
     f.write('  //                residual valid_out tail from a JUST-cleared previous packet\n')
     f.write('  //                could spuriously re-trigger for a new packet that hasn\'t\n')
     f.write('  //                reached its own cutoff yet, since valid_out lags valid_in by\n')
-    f.write('  //                processing_generated\'s own pipeline depth). Gates write-back\n')
-    f.write('  //                and arming TX so they fire exactly once per packet.\n')
-    f.write('  //   tx_active  : armed by proc_valid_out && !proc_committed && !proc_drop\n')
-    f.write('  //                (checked BEFORE proc_committed latches this same edge, so\n')
-    f.write('  //                both fire together on the true trigger cycle); cleared once\n')
-    f.write('  //                TX\'s last beat is accepted.\n')
+    f.write('  //                processing_generated\'s own pipeline depth). Exists because\n')
+    f.write('  //                processing_generated\'s own out_* pass-through signals were\n')
+    f.write('  //                observed (via this app\'s from-scratch top-level testbench --\n')
+    f.write('  //                none existed before) to still reflect the PREVIOUS packet\'s\n')
+    f.write('  //                values for one more cycle after proc_valid_out first rises,\n')
+    f.write('  //                a pre-existing processing_generated timing subtlety never\n')
+    f.write('  //                exercised until now.\n')
+    f.write('  //   proc_committed: one-shot latch, set the cycle AFTER proc_settle -- gates\n')
+    f.write('  //                write-back and arming TX so they fire exactly once per packet,\n')
+    f.write('  //                using out_* only once it has genuinely settled.\n')
+    f.write('  //   tx_active  : armed by proc_settle && !proc_committed && !proc_drop (the\n')
+    f.write('  //                exact same pre-edge condition proc_committed itself latches\n')
+    f.write('  //                on, so both fire together); cleared once TX\'s last beat is\n')
+    f.write('  //                accepted.\n')
     f.write('  //   tx_beat_cnt: beats transmitted so far. Advance/tvalid gated on\n')
     f.write('  //                tx_beat_cnt < rx_beat_cnt (never read a beat RX hasn\'t\n')
     f.write('  //                captured yet -- this is what makes TX correctly chase RX\'s\n')
@@ -826,7 +890,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
     # First pass: generate offset variable declarations (ordered by dependency)
     # We need to generate offset vars BEFORE the field wires that depend on them.
-    _emit_offset_vars(f, layouts, inst_map, valid_map)
+    _emit_offset_vars(f, layouts, inst_map, valid_map, HDR_IDX_W)
 
     # Second pass: generate field extraction wires
     for layout in layouts:
@@ -873,7 +937,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # same field/offset wires validity did (forward-reference-safe either
     # way in SV, kept in dependency order for readability).
     f.write('  // ── Header-region cutoff ──────────────────────────────────────────────────\n')
-    _emit_cutoff_expr(f, layouts, inst_map, valid_map)
+    _emit_cutoff_expr(f, layouts, inst_map, valid_map, HDR_IDX_W)
 
     # Emit field extraction wires for action-only headers (all zero — not in packet)
     if action_only_names:
@@ -1134,7 +1198,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
 # ── Offset variable emitter ────────────────────────────────────────────────────
 
-def _emit_offset_vars(f, layouts, inst_map, valid_map):
+def _emit_offset_vars(f, layouts, inst_map, valid_map, hdr_idx_w):
     """
     Emit wire declarations for runtime-computed header byte offsets.
     Headers with only mandatory predecessors (fixed offset) need no variable.
@@ -1164,7 +1228,7 @@ def _emit_offset_vars(f, layouts, inst_map, valid_map):
                 vexpr = valid_map.get(opt_name, "1'b0")
                 terms.append(f'({vexpr} ? {opt_size} : 0)')
             expr = ' + '.join(terms)
-            f.write(f'  wire [{HDR_IDX_W-1}:0] {var_name} = {expr};\n')
+            f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = {expr};\n')
 
         elif var_pred is not None:
             vname, vfield = var_pred
@@ -1179,15 +1243,15 @@ def _emit_offset_vars(f, layouts, inst_map, valid_map):
             hdr_bytes_var = f'w_{vname}_hdr_bytes'
             if hdr_bytes_var not in emitted:
                 emitted.add(hdr_bytes_var)
-                f.write(f'  wire [{HDR_IDX_W-1}:0] {hdr_bytes_var} = '
-                        f'{{{HDR_IDX_W-4}\'b0, w_{vname}_{vfield}}} << 2;\n')
-            f.write(f'  wire [{HDR_IDX_W-1}:0] {var_name} = '
+                f.write(f'  wire [{hdr_idx_w-1}:0] {hdr_bytes_var} = '
+                        f'{{{hdr_idx_w-4}\'b0, w_{vname}_{vfield}}} << 2;\n')
+            f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = '
                     f'{prev_base_expr} + {hdr_bytes_var};\n')
 
     f.write('\n')
 
 
-def _emit_cutoff_expr(f, layouts, inst_map, valid_map):
+def _emit_cutoff_expr(f, layouts, inst_map, valid_map, hdr_idx_w):
     """
     Emit `cutoff_byte`: the smallest byte position at which every header
     this specific packet could contain (given what's arrived so far) has
@@ -1228,14 +1292,14 @@ def _emit_cutoff_expr(f, layouts, inst_map, valid_map):
         vexpr = valid_map.get(inst_name, "1'b1")
         term_name = f'w_{inst_name}_cutoff_term'
         if vexpr == "1'b1":
-            f.write(f'  wire [{HDR_IDX_W-1}:0] {term_name} = {base_expr} + {size};\n')
+            f.write(f'  wire [{hdr_idx_w-1}:0] {term_name} = {base_expr} + {size};\n')
         else:
-            f.write(f'  wire [{HDR_IDX_W-1}:0] {term_name} = '
-                    f'{vexpr} ? ({base_expr} + {size}) : {HDR_IDX_W}\'d0;\n')
+            f.write(f'  wire [{hdr_idx_w-1}:0] {term_name} = '
+                    f'{vexpr} ? ({base_expr} + {size}) : {hdr_idx_w}\'d0;\n')
         terms.append(term_name)
 
     if not terms:
-        f.write(f"  wire [{HDR_IDX_W-1}:0] cutoff_byte = {HDR_IDX_W}'d0;\n")
+        f.write(f"  wire [{hdr_idx_w-1}:0] cutoff_byte = {hdr_idx_w}'d0;\n")
     else:
         # Reduce via named intermediate wires, not nested inline expression
         # text -- chaining `(({expr}) > ({t}) ? ({expr}) : ({t}))` directly
@@ -1245,10 +1309,10 @@ def _emit_cutoff_expr(f, layouts, inst_map, valid_map):
         acc = terms[0]
         for i, t in enumerate(terms[1:], start=1):
             acc_name = f'w_cutoff_max_{i}'
-            f.write(f'  wire [{HDR_IDX_W-1}:0] {acc_name} = '
+            f.write(f'  wire [{hdr_idx_w-1}:0] {acc_name} = '
                     f'({acc} > {t}) ? {acc} : {t};\n')
             acc = acc_name
-        f.write(f'  wire [{HDR_IDX_W-1}:0] cutoff_byte = {acc};\n')
+        f.write(f'  wire [{hdr_idx_w-1}:0] cutoff_byte = {acc};\n')
     f.write('\n')
 
 

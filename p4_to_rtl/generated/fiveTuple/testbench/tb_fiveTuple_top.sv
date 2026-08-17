@@ -55,15 +55,22 @@ module tb_fiveTuple_top;
   longint cycle_count = 0;
   always @(posedge clk) cycle_count <= cycle_count + 1;
 
+  // Must match emit_top.py's AXI_DATA_W for the DUT this testbench is
+  // compiled against (see generated/fiveTuple/fiveTuple_top.sv's own
+  // AXI_DATA_W parameter) -- every beat-indexed loop below derives its
+  // bound from this instead of a hardcoded byte count.
+  localparam int TB_BEAT_BYTES = 32;
+  localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+
   // ── AXI4-Stream ────────────────────────────────────────────────────────────
-  logic [63:0] s_axis_tdata;
-  logic [7:0]  s_axis_tkeep;
+  logic [TB_AXI_DATA_W-1:0]   s_axis_tdata;
+  logic [TB_BEAT_BYTES-1:0]   s_axis_tkeep;
   logic        s_axis_tvalid = 0;
   logic        s_axis_tready;
   logic        s_axis_tlast = 0;
 
-  logic [63:0] m_axis_tdata;
-  logic [7:0]  m_axis_tkeep;
+  logic [TB_AXI_DATA_W-1:0]   m_axis_tdata;
+  logic [TB_BEAT_BYTES-1:0]   m_axis_tkeep;
   logic        m_axis_tvalid;
   logic        m_axis_tready = 1'b1;
   logic        m_axis_tlast;
@@ -163,13 +170,13 @@ module tb_fiveTuple_top;
   task automatic send_packet(input byte data[]);
     int nbytes, nbeats;
     nbytes = data.size();
-    nbeats = (nbytes + 7) / 8;
+    nbeats = (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
     for (int b = 0; b < nbeats; b++) begin
-      logic [63:0] beat_data;
-      logic [7:0]  beat_keep;
+      logic [TB_AXI_DATA_W-1:0] beat_data;
+      logic [TB_BEAT_BYTES-1:0] beat_keep;
       int base, valid_bytes;
-      base = b * 8;
-      valid_bytes = ((base + 8) <= nbytes) ? 8 : (nbytes - base);
+      base = b * TB_BEAT_BYTES;
+      valid_bytes = ((base + TB_BEAT_BYTES) <= nbytes) ? TB_BEAT_BYTES : (nbytes - base);
       beat_data = '0;
       beat_keep = '0;
       for (int i = 0; i < valid_bytes; i++) begin
@@ -209,7 +216,7 @@ module tb_fiveTuple_top;
       #1;
       if (m_axis_tvalid && m_axis_tready) begin
         if (rx_first_valid_cycle == -1) rx_first_valid_cycle = cycle_count;
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < TB_BEAT_BYTES; i++)
           if (m_axis_tkeep[i]) rx_bytes.push_back(m_axis_tdata[i*8 +: 8]);
         if (m_axis_tlast) begin
           rx_tlast_cycle = cycle_count;
@@ -523,7 +530,7 @@ module tb_fiveTuple_top;
     begin
       byte pkt_arr[];
       pb.delete();
-      for (int i = 0; i < 8; i++) pb.push_back(8'hE0 + i[7:0]);
+      for (int i = 0; i < TB_BEAT_BYTES; i++) pb.push_back(8'hE0 + i[7:0]);
       pkt_arr = pb;
       fork
         send_packet(pkt_arr);
@@ -545,20 +552,20 @@ module tb_fiveTuple_top;
       append_eth(16'h0800);
       append_ipv4(4'd5, 8'd17, 32'hC0A8000D, 32'hC0A8000E);
       append_udp(16'd1, 16'd2);
-      // MAX_PKT_BEATS=256 -> 2048 bytes; push well past that.
-      append_payload(2200, 8'h55);
+      // MAX_PKT_BEATS=256 -> 8192 bytes (256 * TB_BEAT_BYTES); push well past that.
+      append_payload(8300, 8'h55);
       pkt_arr = pb;
       // Build the expected (truncated) array with a plain loop -- iverilog's
       // `new[N](src)` sized-copy constructor hit an internal assertion
-      // failure (vvp_darray.cc shallow_copy) on this size, so avoid it.
-      expect_arr = new[2048];
-      for (int i = 0; i < 2048; i++) expect_arr[i] = pkt_arr[i];
+      // failure (vvp_darray.cc shallow_copy) on large sizes, so avoid it.
+      expect_arr = new[8192];
+      for (int i = 0; i < 8192; i++) expect_arr[i] = pkt_arr[i];
       fork
         send_packet(pkt_arr);
         capture_response();
       join
-      chk("T9: output truncated to MAX_PKT_BEATS*8 bytes", rx_bytes.size() == 2048);
-      chk("T9: truncated content matches the first 2048 input bytes",
+      chk("T9: output truncated to MAX_PKT_BEATS*BEAT_BYTES bytes", rx_bytes.size() == 8192);
+      chk("T9: truncated content matches the first 8192 input bytes",
           bytes_equal(rx_bytes, expect_arr));
       chk("T9: output correctly terminated with tlast", rx_tlast_cycle != -1);
     end
