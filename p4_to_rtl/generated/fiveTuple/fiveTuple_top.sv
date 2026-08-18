@@ -1,5 +1,5 @@
 module fiveTuple_top #(
-    parameter int AXI_DATA_W  = 512,
+    parameter int AXI_DATA_W  = 256,
     parameter int AXIL_ADDR_W = 16
 ) (
     input  logic clk,
@@ -39,12 +39,12 @@ module fiveTuple_top #(
     input  logic                      s_axil_rready
 );
 
-  localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 64
+  localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BEATS = 256;
-  localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 16384
+  localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 8192
   localparam int HDR_MAX_BYTES = 128;
-  localparam int HDR_MAX_BEATS = 2;
-  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 16256
+  localparam int HDR_MAX_BEATS = 4;
+  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8064
 
   // ── Packet buffer (header region / payload region, see above) ───────────────
   (* ram_style = "block" *)
@@ -117,12 +117,12 @@ module fiveTuple_top #(
   // ── Header field extraction from pkt_buf ────────────────────────────────
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
-  wire [14:0] w_ipv4_base = 14 + ((w_eth_type == 16'h8100) ? 4 : 0);
-  wire [14:0] w_ipv4_hdr_bytes = {11'b0, w_ipv4_hdr_len} << 2;
-  wire [14:0] w_ipv4opt_base = w_ipv4_base + w_ipv4_hdr_bytes;
-  wire [14:0] w_tcp_base = w_ipv4_base + w_ipv4_hdr_bytes;
-  wire [14:0] w_tcpopt_base = w_ipv4_base + w_ipv4_hdr_bytes;
-  wire [14:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_ipv4_base = 14 + ((w_eth_type == 16'h8100) ? 4 : 0);
+  wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_hdr_len} << 2;
+  wire [13:0] w_ipv4opt_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_tcp_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_tcpopt_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
 
   // eth — base: 0
   wire [47:0] w_eth_dmac = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
@@ -184,20 +184,20 @@ module fiveTuple_top #(
   wire w_new_vlan_valid = 1'b0;
 
   // ── Header-region cutoff ──────────────────────────────────────────────────
-  wire [14:0] w_eth_cutoff_term = 0 + 14;
-  wire [14:0] w_vlan_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 15'd0;
-  wire [14:0] w_ipv4_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 15'd0;
-  wire [14:0] w_ipv4opt_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 15'd0;
-  wire [14:0] w_tcp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcp_base + 20) : 15'd0;
-  wire [14:0] w_tcpopt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcpopt_base + 40) : 15'd0;
-  wire [14:0] w_udp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) ? (w_udp_base + 8) : 15'd0;
-  wire [14:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_cutoff_term) ? w_eth_cutoff_term : w_vlan_cutoff_term;
-  wire [14:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_ipv4_cutoff_term) ? w_cutoff_max_1 : w_ipv4_cutoff_term;
-  wire [14:0] w_cutoff_max_3 = (w_cutoff_max_2 > w_ipv4opt_cutoff_term) ? w_cutoff_max_2 : w_ipv4opt_cutoff_term;
-  wire [14:0] w_cutoff_max_4 = (w_cutoff_max_3 > w_tcp_cutoff_term) ? w_cutoff_max_3 : w_tcp_cutoff_term;
-  wire [14:0] w_cutoff_max_5 = (w_cutoff_max_4 > w_tcpopt_cutoff_term) ? w_cutoff_max_4 : w_tcpopt_cutoff_term;
-  wire [14:0] w_cutoff_max_6 = (w_cutoff_max_5 > w_udp_cutoff_term) ? w_cutoff_max_5 : w_udp_cutoff_term;
-  wire [14:0] cutoff_byte = w_cutoff_max_6;
+  wire [13:0] w_eth_cutoff_term = 0 + 14;
+  wire [13:0] w_vlan_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 14'd0;
+  wire [13:0] w_ipv4_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
+  wire [13:0] w_ipv4opt_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
+  wire [13:0] w_tcp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcp_base + 20) : 14'd0;
+  wire [13:0] w_tcpopt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcpopt_base + 40) : 14'd0;
+  wire [13:0] w_udp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) ? (w_udp_base + 8) : 14'd0;
+  wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_cutoff_term) ? w_eth_cutoff_term : w_vlan_cutoff_term;
+  wire [13:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_ipv4_cutoff_term) ? w_cutoff_max_1 : w_ipv4_cutoff_term;
+  wire [13:0] w_cutoff_max_3 = (w_cutoff_max_2 > w_ipv4opt_cutoff_term) ? w_cutoff_max_2 : w_ipv4opt_cutoff_term;
+  wire [13:0] w_cutoff_max_4 = (w_cutoff_max_3 > w_tcp_cutoff_term) ? w_cutoff_max_3 : w_tcp_cutoff_term;
+  wire [13:0] w_cutoff_max_5 = (w_cutoff_max_4 > w_tcpopt_cutoff_term) ? w_cutoff_max_4 : w_tcpopt_cutoff_term;
+  wire [13:0] w_cutoff_max_6 = (w_cutoff_max_5 > w_udp_cutoff_term) ? w_cutoff_max_5 : w_udp_cutoff_term;
+  wire [13:0] cutoff_byte = w_cutoff_max_6;
 
   // Action-only headers (not in received packet; inputs tied to 0)
   wire [2:0] w_new_vlan_pcp = '0;
@@ -484,15 +484,15 @@ module fiveTuple_top #(
       if (accept_beat) begin
         pkt_busy <= 1'b1;
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
-          for (int i = 0; i < 64; i++)
+          for (int i = 0; i < 32; i++)
             if (s_axis_tkeep[i])
-              pkt_buf_hdr[rx_beat_cnt * 64 + i] <= s_axis_tdata[i*8 +: 8];
+              pkt_buf_hdr[rx_beat_cnt * 32 + i] <= s_axis_tdata[i*8 +: 8];
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
         end else if (rx_beat_cnt < MAX_PKT_BEATS) begin
-          for (int i = 0; i < 64; i++)
+          for (int i = 0; i < 32; i++)
             if (s_axis_tkeep[i])
-              pkt_buf_payload[(rx_beat_cnt - HDR_MAX_BEATS) * 64 + i] <= s_axis_tdata[i*8 +: 8];
+              pkt_buf_payload[(rx_beat_cnt - HDR_MAX_BEATS) * 32 + i] <= s_axis_tdata[i*8 +: 8];
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
         end else begin
@@ -781,11 +781,11 @@ module fiveTuple_top #(
       m_axis_tkeep  = pkt_keep[tx_beat_cnt];
       m_axis_tlast  = (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - 9'd1);
       if (tx_beat_cnt < HDR_MAX_BEATS) begin
-        for (int i = 0; i < 64; i++)
-          m_axis_tdata[i*8 +: 8] = pkt_buf_hdr[tx_beat_cnt * 64 + i];
+        for (int i = 0; i < 32; i++)
+          m_axis_tdata[i*8 +: 8] = pkt_buf_hdr[tx_beat_cnt * 32 + i];
       end else begin
-        for (int i = 0; i < 64; i++)
-          m_axis_tdata[i*8 +: 8] = pkt_buf_payload[(tx_beat_cnt - HDR_MAX_BEATS) * 64 + i];
+        for (int i = 0; i < 32; i++)
+          m_axis_tdata[i*8 +: 8] = pkt_buf_payload[(tx_beat_cnt - HDR_MAX_BEATS) * 32 + i];
       end
     end
   end
