@@ -122,6 +122,22 @@ module processing_generated (
   // Table hit outputs
   output logic        FiveTuple_hit_out,
 
+  // Control-plane query/delete ports (plain exact-match tables)
+  input  logic        FiveTuple_cp_query_en,
+  input  logic        FiveTuple_cp_query_del,
+  input  logic [31:0] FiveTuple_cp_query_key_src,
+  input  logic [31:0] FiveTuple_cp_query_key_dst,
+  input  logic [7:0] FiveTuple_cp_query_key_protocol,
+  input  logic [15:0] FiveTuple_cp_query_key_table_key_sport,
+  input  logic [15:0] FiveTuple_cp_query_key_table_key_dport,
+  output logic        FiveTuple_cp_query_busy,
+  output logic        FiveTuple_cp_query_hit,
+  output logic [0:0] FiveTuple_cp_query_action_id,
+  output logic [12:0] FiveTuple_cp_query_p_counter_index,
+  output logic [2:0] FiveTuple_cp_query_p_pcp,
+  output logic [0:0] FiveTuple_cp_query_p_cfi,
+  output logic [11:0] FiveTuple_cp_query_p_vid,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -569,7 +585,21 @@ module processing_generated (
     .cp_wr_p_counter_index (FiveTuple_cp_wr_p_counter_index),
     .cp_wr_p_pcp (FiveTuple_cp_wr_p_pcp),
     .cp_wr_p_cfi (FiveTuple_cp_wr_p_cfi),
-    .cp_wr_p_vid (FiveTuple_cp_wr_p_vid)
+    .cp_wr_p_vid (FiveTuple_cp_wr_p_vid),
+    .cp_query_en  (FiveTuple_cp_query_en),
+    .cp_query_del (FiveTuple_cp_query_del),
+    .cp_query_key_src (FiveTuple_cp_query_key_src),
+    .cp_query_key_dst (FiveTuple_cp_query_key_dst),
+    .cp_query_key_protocol (FiveTuple_cp_query_key_protocol),
+    .cp_query_key_table_key_sport (FiveTuple_cp_query_key_table_key_sport),
+    .cp_query_key_table_key_dport (FiveTuple_cp_query_key_table_key_dport),
+    .cp_query_busy (FiveTuple_cp_query_busy),
+    .cp_query_hit  (FiveTuple_cp_query_hit),
+    .cp_query_action_id (FiveTuple_cp_query_action_id),
+    .cp_query_p_counter_index (FiveTuple_cp_query_p_counter_index),
+    .cp_query_p_pcp (FiveTuple_cp_query_p_pcp),
+    .cp_query_p_cfi (FiveTuple_cp_query_p_cfi),
+    .cp_query_p_vid (FiveTuple_cp_query_p_vid)
   );
 
   // Table hit outputs

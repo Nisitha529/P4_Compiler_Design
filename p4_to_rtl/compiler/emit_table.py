@@ -602,12 +602,28 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
         f.write(f'  input  logic [{idx_w-1}:0] cp_wr_idx,  // unused: exact-match tables self-address via hash(key)\n')
         for fname, w in key_fields:
             f.write(f'  input  logic [{w-1}:0] cp_wr_key_{fname},\n')
-        f.write(f'  input  logic [{act_id_w-1}:0] cp_wr_action')
+        f.write(f'  input  logic [{act_id_w-1}:0] cp_wr_action,\n')
+        for pname, pw in params:
+            f.write(f'  input  logic [{pw-1}:0] cp_wr_p_{pname},\n')
+
+        f.write('\n  // Control-plane query/delete port (synchronous, 2-cycle staged --\n')
+        f.write('  // shares the write port\'s memory access, time-multiplexed, rather\n')
+        f.write('  // than adding a 3rd BRAM port). cp_query_del=0: read-only lookup by\n')
+        f.write('  // key. cp_query_del=1: lookup, and if found, delete it. Results are\n')
+        f.write('  // sticky (held until the next query) so a polling driver can check\n')
+        f.write('  // !cp_query_busy then read at leisure, no single-cycle window.\n')
+        f.write('  input  logic        cp_query_en,\n')
+        f.write('  input  logic        cp_query_del,\n')
+        for fname, w in key_fields:
+            f.write(f'  input  logic [{w-1}:0] cp_query_key_{fname},\n')
+        f.write('  output logic        cp_query_busy,\n')
+        f.write('  output logic        cp_query_hit,\n')
+        f.write(f'  output logic [{act_id_w-1}:0] cp_query_action_id')
         if params:
             f.write(',\n')
             for i, (pname, pw) in enumerate(params):
                 comma = ',' if i < len(params) - 1 else ''
-                f.write(f'  input  logic [{pw-1}:0] cp_wr_p_{pname}{comma}\n')
+                f.write(f'  output logic [{pw-1}:0] cp_query_p_{pname}{comma}\n')
         else:
             f.write('\n')
         f.write(');\n\n')
@@ -651,15 +667,99 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
         f.write(f'  logic [{idx_w-1}:0] lkp_addr;\n')
         f.write('  assign lkp_addr = hash_key(lkp_key_concat);\n\n')
 
-        f.write('  // Synchronous write (control plane)\n')
+        f.write(f'  logic [{padded_w-1}:0] q_key_concat;\n')
+        f.write(f'  assign q_key_concat = {{{padded_w - key_w}\'d0, {_concat("cp_query_key_")}}};\n' if padded_w > key_w
+                else f'  assign q_key_concat = {{{_concat("cp_query_key_")}}};\n')
+        f.write(f'  logic [{idx_w-1}:0] q_addr;\n')
+        f.write('  assign q_addr = hash_key(q_key_concat);\n\n')
+
+        f.write('  // Control-plane query/delete pipeline, stage 1: latch the request\n')
+        f.write('  // and issue a registered port-B read at q_addr to see what\'s there.\n')
+        f.write('  // Gated on !q_pend_valid (a new query is only accepted once the\n')
+        f.write('  // previous one has resolved) and !cp_wr_en (never start a query the\n')
+        f.write('  // same cycle a plain write is committing).\n')
+        f.write('  logic q_pend_valid, q_pend_del;\n')
+        f.write(f'  logic [{idx_w-1}:0] q_pend_addr;\n')
+        for fname, w in key_fields:
+            f.write(f'  logic [{w-1}:0] q_pend_key_{fname};\n')
+        f.write('  logic q_rd_valid;\n')
+        for fname, w in key_fields:
+            f.write(f'  logic [{w-1}:0] q_rd_key_{fname};\n')
+        f.write(f'  logic [{act_id_w-1}:0] q_rd_action;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] q_rd_p_{pname};\n')
+        f.write('\n')
+
         f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (cp_wr_en) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      q_pend_valid <= 1'b0;\n")
+        f.write('    end else if (cp_query_en && !q_pend_valid && !cp_wr_en) begin\n')
+        f.write("      q_pend_valid <= 1'b1;\n")
+        f.write('      q_pend_del   <= cp_query_del;\n')
+        f.write('      q_pend_addr  <= q_addr;\n')
+        for fname, _ in key_fields:
+            f.write(f'      q_pend_key_{fname} <= cp_query_key_{fname};\n')
+        f.write('      q_rd_valid   <= mem_valid[q_addr];\n')
+        for fname, _ in key_fields:
+            f.write(f'      q_rd_key_{fname} <= mem_key_{fname}[q_addr];\n')
+        f.write('      q_rd_action  <= mem_action[q_addr];\n')
+        for pname, _ in params:
+            f.write(f'      q_rd_p_{pname} <= mem_p_{pname}[q_addr];\n')
+        f.write('    end else begin\n')
+        f.write("      q_pend_valid <= 1'b0;\n")
+        f.write('    end\n')
+        f.write('  end\n')
+        f.write('  assign cp_query_busy = q_pend_valid;\n\n')
+
+        f.write('  // Stage 2: resolve against the now-valid read (fires the cycle\n')
+        f.write('  // right after accept, since stage 1\'s own else-branch clears\n')
+        f.write('  // q_pend_valid one cycle later -- same timing relationship the\n')
+        f.write('  // write path already has between its own accept and commit).\n')
+        q_tag_match = ' && '.join(f'(q_rd_key_{fname} == q_pend_key_{fname})' for fname, _ in key_fields) or "1'b1"
+        f.write(f'  logic q_match; assign q_match = q_rd_valid && {q_tag_match};\n\n')
+
+        f.write('  logic        q_hit_r;\n')
+        f.write(f'  logic [{act_id_w-1}:0] q_action_id_r;\n')
+        for pname, pw in params:
+            f.write(f'  logic [{pw-1}:0] q_p_{pname}_r;\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write("      q_hit_r       <= 1'b0;\n")
+        f.write(f"      q_action_id_r <= {act_id_w}'d0;\n")
+        for pname, pw in params:
+            f.write(f"      q_p_{pname}_r <= {pw}'d0;\n")
+        f.write('    end else if (q_pend_valid) begin\n')
+        f.write('      q_hit_r       <= q_match;\n')
+        f.write(f"      q_action_id_r <= q_match ? q_rd_action : {act_id_w}'d0;\n")
+        for pname, pw in params:
+            f.write(f"      q_p_{pname}_r <= q_match ? q_rd_p_{pname} : {pw}'d0;\n")
+        f.write('    end\n')
+        f.write('  end\n')
+        f.write('  assign cp_query_hit = q_hit_r;\n')
+        f.write('  assign cp_query_action_id = q_action_id_r;\n')
+        for pname, _ in params:
+            f.write(f'  assign cp_query_p_{pname} = q_p_{pname}_r;\n')
+        f.write('\n')
+
+        f.write('  // Synchronous write (control plane) -- extended, not duplicated, to\n')
+        f.write('  // add the delete-commit branch: this is the one place mem_valid needs\n')
+        f.write('  // two possible writers, and it must stay a single always_ff with\n')
+        f.write('  // if/else-if so at most one branch can ever drive the array per cycle.\n')
+        f.write('  // The plain write is additionally gated !q_pend_valid so a write\n')
+        f.write('  // colliding with an in-flight query/delete is dropped here rather\n')
+        f.write('  // than corrupting anything -- the AXI4-Lite decoder is responsible\n')
+        f.write('  // for never letting that collision reach this port in the first\n')
+        f.write('  // place (see cp_query_busy-gated backpressure on the write channel).\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (cp_wr_en && !q_pend_valid) begin\n')
         f.write('      mem_valid[wr_addr]  <= 1\'b1;\n')
         for fname, _ in key_fields:
             f.write(f'      mem_key_{fname}[wr_addr] <= cp_wr_key_{fname};\n')
         f.write('      mem_action[wr_addr] <= cp_wr_action;\n')
         for pname, _ in params:
             f.write(f'      mem_p_{pname}[wr_addr] <= cp_wr_p_{pname};\n')
+        f.write('    end else if (q_pend_valid && q_pend_del && q_match) begin\n')
+        f.write("      mem_valid[q_pend_addr] <= 1'b0;\n")
         f.write('    end\n')
         f.write('  end\n\n')
 

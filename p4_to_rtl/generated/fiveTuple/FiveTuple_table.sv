@@ -31,7 +31,28 @@ module FiveTuple_table #(
   input  logic [12:0] cp_wr_p_counter_index,
   input  logic [2:0] cp_wr_p_pcp,
   input  logic [0:0] cp_wr_p_cfi,
-  input  logic [11:0] cp_wr_p_vid
+  input  logic [11:0] cp_wr_p_vid,
+
+  // Control-plane query/delete port (synchronous, 2-cycle staged --
+  // shares the write port's memory access, time-multiplexed, rather
+  // than adding a 3rd BRAM port). cp_query_del=0: read-only lookup by
+  // key. cp_query_del=1: lookup, and if found, delete it. Results are
+  // sticky (held until the next query) so a polling driver can check
+  // !cp_query_busy then read at leisure, no single-cycle window.
+  input  logic        cp_query_en,
+  input  logic        cp_query_del,
+  input  logic [31:0] cp_query_key_src,
+  input  logic [31:0] cp_query_key_dst,
+  input  logic [7:0] cp_query_key_protocol,
+  input  logic [15:0] cp_query_key_table_key_sport,
+  input  logic [15:0] cp_query_key_table_key_dport,
+  output logic        cp_query_busy,
+  output logic        cp_query_hit,
+  output logic [0:0] cp_query_action_id,
+  output logic [12:0] cp_query_p_counter_index,
+  output logic [2:0] cp_query_p_pcp,
+  output logic [0:0] cp_query_p_cfi,
+  output logic [11:0] cp_query_p_vid
 );
 
   // Entry storage (synthesizes to block RAM)
@@ -75,9 +96,111 @@ module FiveTuple_table #(
   logic [12:0] lkp_addr;
   assign lkp_addr = hash_key(lkp_key_concat);
 
-  // Synchronous write (control plane)
+  logic [103:0] q_key_concat;
+  assign q_key_concat = {cp_query_key_table_key_dport, cp_query_key_table_key_sport, cp_query_key_protocol, cp_query_key_dst, cp_query_key_src};
+  logic [12:0] q_addr;
+  assign q_addr = hash_key(q_key_concat);
+
+  // Control-plane query/delete pipeline, stage 1: latch the request
+  // and issue a registered port-B read at q_addr to see what's there.
+  // Gated on !q_pend_valid (a new query is only accepted once the
+  // previous one has resolved) and !cp_wr_en (never start a query the
+  // same cycle a plain write is committing).
+  logic q_pend_valid, q_pend_del;
+  logic [12:0] q_pend_addr;
+  logic [31:0] q_pend_key_src;
+  logic [31:0] q_pend_key_dst;
+  logic [7:0] q_pend_key_protocol;
+  logic [15:0] q_pend_key_table_key_sport;
+  logic [15:0] q_pend_key_table_key_dport;
+  logic q_rd_valid;
+  logic [31:0] q_rd_key_src;
+  logic [31:0] q_rd_key_dst;
+  logic [7:0] q_rd_key_protocol;
+  logic [15:0] q_rd_key_table_key_sport;
+  logic [15:0] q_rd_key_table_key_dport;
+  logic [0:0] q_rd_action;
+  logic [12:0] q_rd_p_counter_index;
+  logic [2:0] q_rd_p_pcp;
+  logic [0:0] q_rd_p_cfi;
+  logic [11:0] q_rd_p_vid;
+
   always_ff @(posedge clk) begin
-    if (cp_wr_en) begin
+    if (!rst_n) begin
+      q_pend_valid <= 1'b0;
+    end else if (cp_query_en && !q_pend_valid && !cp_wr_en) begin
+      q_pend_valid <= 1'b1;
+      q_pend_del   <= cp_query_del;
+      q_pend_addr  <= q_addr;
+      q_pend_key_src <= cp_query_key_src;
+      q_pend_key_dst <= cp_query_key_dst;
+      q_pend_key_protocol <= cp_query_key_protocol;
+      q_pend_key_table_key_sport <= cp_query_key_table_key_sport;
+      q_pend_key_table_key_dport <= cp_query_key_table_key_dport;
+      q_rd_valid   <= mem_valid[q_addr];
+      q_rd_key_src <= mem_key_src[q_addr];
+      q_rd_key_dst <= mem_key_dst[q_addr];
+      q_rd_key_protocol <= mem_key_protocol[q_addr];
+      q_rd_key_table_key_sport <= mem_key_table_key_sport[q_addr];
+      q_rd_key_table_key_dport <= mem_key_table_key_dport[q_addr];
+      q_rd_action  <= mem_action[q_addr];
+      q_rd_p_counter_index <= mem_p_counter_index[q_addr];
+      q_rd_p_pcp <= mem_p_pcp[q_addr];
+      q_rd_p_cfi <= mem_p_cfi[q_addr];
+      q_rd_p_vid <= mem_p_vid[q_addr];
+    end else begin
+      q_pend_valid <= 1'b0;
+    end
+  end
+  assign cp_query_busy = q_pend_valid;
+
+  // Stage 2: resolve against the now-valid read (fires the cycle
+  // right after accept, since stage 1's own else-branch clears
+  // q_pend_valid one cycle later -- same timing relationship the
+  // write path already has between its own accept and commit).
+  logic q_match; assign q_match = q_rd_valid && (q_rd_key_src == q_pend_key_src) && (q_rd_key_dst == q_pend_key_dst) && (q_rd_key_protocol == q_pend_key_protocol) && (q_rd_key_table_key_sport == q_pend_key_table_key_sport) && (q_rd_key_table_key_dport == q_pend_key_table_key_dport);
+
+  logic        q_hit_r;
+  logic [0:0] q_action_id_r;
+  logic [12:0] q_p_counter_index_r;
+  logic [2:0] q_p_pcp_r;
+  logic [0:0] q_p_cfi_r;
+  logic [11:0] q_p_vid_r;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      q_hit_r       <= 1'b0;
+      q_action_id_r <= 1'd0;
+      q_p_counter_index_r <= 13'd0;
+      q_p_pcp_r <= 3'd0;
+      q_p_cfi_r <= 1'd0;
+      q_p_vid_r <= 12'd0;
+    end else if (q_pend_valid) begin
+      q_hit_r       <= q_match;
+      q_action_id_r <= q_match ? q_rd_action : 1'd0;
+      q_p_counter_index_r <= q_match ? q_rd_p_counter_index : 13'd0;
+      q_p_pcp_r <= q_match ? q_rd_p_pcp : 3'd0;
+      q_p_cfi_r <= q_match ? q_rd_p_cfi : 1'd0;
+      q_p_vid_r <= q_match ? q_rd_p_vid : 12'd0;
+    end
+  end
+  assign cp_query_hit = q_hit_r;
+  assign cp_query_action_id = q_action_id_r;
+  assign cp_query_p_counter_index = q_p_counter_index_r;
+  assign cp_query_p_pcp = q_p_pcp_r;
+  assign cp_query_p_cfi = q_p_cfi_r;
+  assign cp_query_p_vid = q_p_vid_r;
+
+  // Synchronous write (control plane) -- extended, not duplicated, to
+  // add the delete-commit branch: this is the one place mem_valid needs
+  // two possible writers, and it must stay a single always_ff with
+  // if/else-if so at most one branch can ever drive the array per cycle.
+  // The plain write is additionally gated !q_pend_valid so a write
+  // colliding with an in-flight query/delete is dropped here rather
+  // than corrupting anything -- the AXI4-Lite decoder is responsible
+  // for never letting that collision reach this port in the first
+  // place (see cp_query_busy-gated backpressure on the write channel).
+  always_ff @(posedge clk) begin
+    if (cp_wr_en && !q_pend_valid) begin
       mem_valid[wr_addr]  <= 1'b1;
       mem_key_src[wr_addr] <= cp_wr_key_src;
       mem_key_dst[wr_addr] <= cp_wr_key_dst;
@@ -89,6 +212,8 @@ module FiveTuple_table #(
       mem_p_pcp[wr_addr] <= cp_wr_p_pcp;
       mem_p_cfi[wr_addr] <= cp_wr_p_cfi;
       mem_p_vid[wr_addr] <= cp_wr_p_vid;
+    end else if (q_pend_valid && q_pend_del && q_match) begin
+      mem_valid[q_pend_addr] <= 1'b0;
     end
   end
 

@@ -1046,6 +1046,27 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     f.write(f'  output logic        {tname}_wr_collision,\n')
                     f.write(f'  output logic        {tname}_cp_wr_busy,\n')
 
+        # Plain (ways<=1) exact-match tables get a control-plane query/delete
+        # port: read-only lookup by key, or lookup-and-delete-if-found. Not
+        # offered for LPM/ternary/keyless tables (no hash-addressed single-
+        # entry-per-key concept) or the d-way associative variant (a
+        # separate, not-yet-built follow-up -- see emit_table.py's
+        # _emit_exact_match_table_assoc).
+        if any(tw['is_exact'] and tw['ways'] <= 1 for tw in table_wires):
+            f.write('\n  // Control-plane query/delete ports (plain exact-match tables)\n')
+            for tw in table_wires:
+                if tw['is_exact'] and tw['ways'] <= 1:
+                    tname = tw['table'].name
+                    f.write(f'  input  logic        {tname}_cp_query_en,\n')
+                    f.write(f'  input  logic        {tname}_cp_query_del,\n')
+                    for fname, _, kw in tw['key_sigs']:
+                        f.write(f'  input  logic [{kw-1}:0] {tname}_cp_query_key_{fname},\n')
+                    f.write(f'  output logic        {tname}_cp_query_busy,\n')
+                    f.write(f'  output logic        {tname}_cp_query_hit,\n')
+                    f.write(f'  output logic [{tw["id_w"]-1}:0] {tname}_cp_query_action_id,\n')
+                    for pname, pw in tw['params']:
+                        f.write(f'  output logic [{pw-1}:0] {tname}_cp_query_p_{pname},\n')
+
         f.write('\n  output logic        valid_out,\n')
         f.write('  output logic        drop\n')
         f.write(');\n\n')
@@ -1407,20 +1428,37 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     for fname, _, _ in tw['key_sigs']:
                         f.write(f'    .cp_wr_mask_{fname} ({tname}_cp_wr_mask_{fname}),\n')
                 has_assoc = tw['is_exact'] and tw['ways'] > 1
+                has_query = tw['is_exact'] and tw['ways'] <= 1
+                trailer   = has_assoc or has_query
                 f.write(f'    .cp_wr_action ({tname}_cp_wr_action)')
                 if tw['params']:
                     f.write(',\n')
                     for i, (pname, _) in enumerate(tw['params']):
                         last = (i == len(tw['params']) - 1)
-                        comma = ',' if (not last or has_assoc) else ''
+                        comma = ',' if (not last or trailer) else ''
                         f.write(f'    .cp_wr_p_{pname} ({tname}_cp_wr_p_{pname}){comma}\n')
-                elif has_assoc:
+                elif trailer:
                     f.write(',\n')
                 else:
                     f.write('\n')
                 if has_assoc:
                     f.write(f'    .wr_collision ({tname}_wr_collision),\n')
                     f.write(f'    .cp_wr_busy   ({tname}_cp_wr_busy)\n')
+                elif has_query:
+                    f.write(f'    .cp_query_en  ({tname}_cp_query_en),\n')
+                    f.write(f'    .cp_query_del ({tname}_cp_query_del),\n')
+                    for fname, _, _ in tw['key_sigs']:
+                        f.write(f'    .cp_query_key_{fname} ({tname}_cp_query_key_{fname}),\n')
+                    f.write(f'    .cp_query_busy ({tname}_cp_query_busy),\n')
+                    f.write(f'    .cp_query_hit  ({tname}_cp_query_hit),\n')
+                    f.write(f'    .cp_query_action_id ({tname}_cp_query_action_id)')
+                    if tw['params']:
+                        f.write(',\n')
+                        for i, (pname, _) in enumerate(tw['params']):
+                            comma = ',' if i < len(tw['params']) - 1 else ''
+                            f.write(f'    .cp_query_p_{pname} ({tname}_cp_query_p_{pname}){comma}\n')
+                    else:
+                        f.write('\n')
                 f.write('  );\n\n')
 
         # ── Table hit output assignments ───────────────────────────────

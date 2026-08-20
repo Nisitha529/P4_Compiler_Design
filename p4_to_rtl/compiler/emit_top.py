@@ -368,11 +368,22 @@ def _build_axil_regmap(ctrl, amap, fwmap):
       {
         'tname': str,
         'base':  int,   # byte offset in AXI4-Lite address space
-        'regs':  [(reg_name, cp_sig_name, width_bits)],  # in order; last = commit
+        'regs':  [(reg_name, cp_sig_name, width_bits)],  # WRITABLE words, in order
+        'read_regs': [(reg_name, cp_sig_name_or_None, width_bits)],  # READ-ONLY words
         'idx_w': int,
         'act_w': int,
+        'params': [(pname, pw), ...],
+        'supports_query': bool,  # True only for real-keyed exact-match tables --
+            # see _emit_exact_match_table's cp_query_* ports. LPM/ternary/keyless
+            # tables (and, if ever reached here, the d-way associative exact-match
+            # variant -- emit_top.py never threads --exact-match-ways today, so
+            # every table this file generates is ways=1) don't get query/delete.
       }, ...
     ]
+
+    `regs` is iterated verbatim by the write-decode case in _emit_axil_decoder --
+    anything placed there becomes writable, so read-only registers must only ever
+    go in `read_regs`, never `regs`.
     """
     result = []
     base   = 0
@@ -386,9 +397,13 @@ def _build_axil_regmap(ctrl, amap, fwmap):
         act_w   = max(1, math.ceil(math.log2(max(n_acts, 2))))
         params  = _table_params(tbl, amap)
 
+        mt = tbl.keys[0].match_type if tbl.keys else 'exact'
+        supports_query = bool(tbl.keys) and mt not in ('lpm', 'ternary')
+
         regs = []
         regs.append(('wr_idx',    f'{tname}_cp_wr_idx',    idx_w))
         regs.append(('wr_action', f'{tname}_cp_wr_action', act_w))
+        key_regs = []  # (kbase, kw) -- reused below for query_key_*
         for key in tbl.keys:
             kname = _proc_sig(key.field)                 # e.g. 'ipv4_src' -- fwmap width lookup
             kbase = key.field.strip().split('.')[-1]      # e.g. 'src' -- matches processing_generated's
@@ -399,17 +414,40 @@ def _build_axil_regmap(ctrl, amap, fwmap):
                                                             # even compiling {app}_top.sv against
                                                             # processing_generated.sv)
             kw    = fwmap.get(kname, 32)
+            key_regs.append((kbase, kw))
             regs.append((f'key_{kbase}', f'{tname}_cp_wr_key_{kbase}', kw))
         for pname, pw in params:
             regs.append((f'p_{pname}', f'{tname}_cp_wr_p_{pname}', pw))
         regs.append(('commit', f'{tname}_cp_wr_en', 1))   # sentinel
 
+        read_regs = []
+        if supports_query:
+            for kbase, kw in key_regs:
+                regs.append((f'query_key_{kbase}', f'{tname}_cp_query_key_{kbase}', kw))
+            # Two separate trigger words (not one word with a mode bit) --
+            # clearer verbs for a driver. Both ultimately pulse the same
+            # cp_query_en; _emit_axil_decoder sets cp_query_del from which
+            # one was written.
+            regs.append(('query_commit',  f'{tname}_cp_query_en', 1))
+            regs.append(('delete_commit', f'{tname}_cp_query_en', 1))
+
+            # cp_sig=None for query_status: it's a composite (busy@bit0,
+            # hit@bit1), not a single existing port -- _emit_axil_decoder
+            # special-cases it rather than reading a wire directly.
+            read_regs.append(('query_status', None, 32))
+            read_regs.append(('query_action_id', f'{tname}_cp_query_action_id', act_w))
+            for pname, pw in params:
+                read_regs.append((f'query_p_{pname}', f'{tname}_cp_query_p_{pname}', pw))
+
         result.append({
             'tname': tname,
             'base':  base,
             'regs':  regs,
+            'read_regs': read_regs,
             'idx_w': idx_w,
             'act_w': act_w,
+            'params': params,
+            'supports_query': supports_query,
         })
         base += TABLE_AXIL_SZ
 
@@ -419,7 +457,7 @@ def _build_axil_regmap(ctrl, amap, fwmap):
 # ── AXI4-Lite decoder SV emission ─────────────────────────────────────────────
 
 def _emit_axil_decoder(f, regmap):
-    """Emit AXI4-Lite staging registers and write-channel state machine."""
+    """Emit AXI4-Lite staging registers and write/read channel state machines."""
     if not regmap:
         return
 
@@ -428,13 +466,17 @@ def _emit_axil_decoder(f, regmap):
     for ti in regmap:
         tname = ti['tname']
         for rname, cp_sig, width in ti['regs']:
-            if rname == 'commit':
+            if rname in ('commit', 'query_commit', 'delete_commit'):
                 continue
             f.write(f'  logic [{width-1}:0] r_{cp_sig};\n')
+        if ti['supports_query']:
+            f.write(f'  logic r_{tname}_cp_query_del;\n')
 
-    # cp_wr_en per-table
+    # cp_wr_en / cp_query_en per-table
     for ti in regmap:
         f.write(f'  logic r_{ti["tname"]}_cp_wr_en;\n')
+        if ti['supports_query']:
+            f.write(f'  logic r_{ti["tname"]}_cp_query_en;\n')
 
     f.write('''
   // AXI4-Lite write channel state machine
@@ -448,27 +490,57 @@ def _emit_axil_decoder(f, regmap):
   logic [AXIL_ADDR_W-1:0] axil_awaddr_r;
 
   assign s_axil_awready = (axil_st == AXIL_IDLE);
-  assign s_axil_wready  = (axil_st == AXIL_WDATA);
   assign s_axil_bvalid  = (axil_st == AXIL_BRESP);
   assign s_axil_bresp   = 2\'b00;
 
-  // AXI4-Lite read channel — tables are write-only; always acknowledge with 0
-  assign s_axil_arready = 1\'b1;
-  assign s_axil_rdata   = \'0;
-  assign s_axil_rresp   = 2\'b00;
-  assign s_axil_rvalid  = s_axil_arvalid;
-
 ''')
+
+    # Real AXI4-Lite backpressure: a commit-type word (commit/query_commit/
+    # delete_commit) for a table that's currently mid-query/delete must not
+    # be accepted -- wready itself stays low (the master, per protocol,
+    # keeps wvalid/wdata stable) until the table is free, rather than
+    # accepting-then-silently-dropping the write. Only tables with
+    # supports_query have a busy concept at all; every other commit-type
+    # word is never stalled (unconditional commit, same as before this
+    # feature existed).
+    f.write('  // Commit-type words for a busy table stall wready instead of silently\n')
+    f.write('  // dropping the write (see cp_query_busy on the query/delete pipeline).\n')
+    f.write('  logic pending_commit_busy;\n')
+    f.write('  always_comb begin\n')
+    f.write("    pending_commit_busy = 1'b0;\n")
+    f.write('    case (axil_awaddr_r[AXIL_ADDR_W-1:2])\n')
+    for ti in regmap:
+        if not ti['supports_query']:
+            continue
+        tname = ti['tname']
+        base  = ti['base']
+        commit_words = []
+        for idx, (rname, cp_sig, width) in enumerate(ti['regs']):
+            if rname in ('commit', 'query_commit', 'delete_commit'):
+                commit_words.append((base + idx * 4) >> 2)
+        # One case arm per address (not a comma-joined multi-value label --
+        # iverilog doesn't reliably handle those inside always_comb: "sorry:
+        # constant selects in always_* processes are not currently supported").
+        for w in commit_words:
+            f.write(f"      {AXIL_ADDR_W-2}'d{w}: pending_commit_busy = {tname}_cp_query_busy;\n")
+    f.write('      default: pending_commit_busy = 1\'b0;\n')
+    f.write('    endcase\n')
+    f.write('  end\n')
+    f.write('  assign s_axil_wready = (axil_st == AXIL_WDATA) && !pending_commit_busy;\n\n')
 
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) begin\n')
     f.write('      axil_st <= AXIL_IDLE;\n')
     for ti in regmap:
         f.write(f'      r_{ti["tname"]}_cp_wr_en <= 1\'b0;\n')
+        if ti['supports_query']:
+            f.write(f'      r_{ti["tname"]}_cp_query_en <= 1\'b0;\n')
     f.write('    end else begin\n')
-    # Default: de-assert all cp_wr_en each cycle
+    # Default: de-assert all commit-type pulses each cycle
     for ti in regmap:
         f.write(f'      r_{ti["tname"]}_cp_wr_en <= 1\'b0;\n')
+        if ti['supports_query']:
+            f.write(f'      r_{ti["tname"]}_cp_query_en <= 1\'b0;\n')
     f.write('      case (axil_st)\n')
     f.write('        AXIL_IDLE: begin\n')
     f.write('          if (s_axil_awvalid) begin\n')
@@ -477,7 +549,7 @@ def _emit_axil_decoder(f, regmap):
     f.write('          end\n')
     f.write('        end\n')
     f.write('        AXIL_WDATA: begin\n')
-    f.write('          if (s_axil_wvalid) begin\n')
+    f.write('          if (s_axil_wvalid && s_axil_wready) begin\n')
     f.write('            case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address\n')
 
     for ti in regmap:
@@ -488,6 +560,14 @@ def _emit_axil_decoder(f, regmap):
             if rname == 'commit':
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
                         f"r_{tname}_cp_wr_en <= 1'b1; // {tname} commit\n")
+            elif rname == 'query_commit':
+                f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
+                        f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b0; "
+                        f"end // {tname} query\n")
+            elif rname == 'delete_commit':
+                f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
+                        f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b1; "
+                        f"end // {tname} delete\n")
             else:
                 take = min(width, AXIL_DATA_W)
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
@@ -502,6 +582,61 @@ def _emit_axil_decoder(f, regmap):
     f.write('          if (s_axil_bready) axil_st <= AXIL_IDLE;\n')
     f.write('        end\n')
     f.write('        default: axil_st <= AXIL_IDLE;\n')
+    f.write('      endcase\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # AXI4-Lite read channel: a real 2-state FSM (AR/R are the only two
+    # channels here, unlike the write side's AW/W/B, so 2 states is the
+    # structurally correct analog of the write side's 3 -- not a shortcut).
+    # arready must be state-gated (not unconditionally 1) so a second
+    # ARVALID can't be wrongly accepted while a prior RDATA is still
+    # pending RREADY.
+    f.write('  // AXI4-Lite read channel\n')
+    f.write('  typedef enum logic {\n')
+    f.write("    AXIL_R_IDLE = 1'd0,\n")
+    f.write("    AXIL_R_DATA = 1'd1\n")
+    f.write('  } axil_rst_t;\n\n')
+    f.write('  axil_rst_t   axil_rst;\n')
+    f.write('  logic [31:0] r_rdata;\n\n')
+    f.write('  assign s_axil_arready = (axil_rst == AXIL_R_IDLE);\n')
+    f.write('  assign s_axil_rdata   = r_rdata;\n')
+    f.write('  assign s_axil_rresp   = 2\'b00;\n')
+    f.write('  assign s_axil_rvalid  = (axil_rst == AXIL_R_DATA);\n\n')
+
+    def _rdata_expr(cp_sig, width):
+        if width >= 32:
+            return cp_sig
+        return f"{{{32-width}'d0, {cp_sig}}}"
+
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) begin\n')
+    f.write('      axil_rst <= AXIL_R_IDLE;\n')
+    f.write('    end else begin\n')
+    f.write('      case (axil_rst)\n')
+    f.write('        AXIL_R_IDLE: begin\n')
+    f.write('          if (s_axil_arvalid) begin\n')
+    f.write('            case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address\n')
+    for ti in regmap:
+        tname = ti['tname']
+        base  = ti['base']
+        n_write_words = len(ti['regs'])
+        for idx, (rname, cp_sig, width) in enumerate(ti['read_regs']):
+            word_addr = (base + (n_write_words + idx) * 4) >> 2
+            if rname == 'query_status':
+                expr = f'{{30\'d0, {tname}_cp_query_hit, {tname}_cp_query_busy}}'
+            else:
+                expr = _rdata_expr(cp_sig, width)
+            f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: r_rdata <= {expr}; // {tname} {rname}\n")
+    f.write("              default: r_rdata <= 32'd0;\n")
+    f.write('            endcase\n')
+    f.write('            axil_rst <= AXIL_R_DATA;\n')
+    f.write('          end\n')
+    f.write('        end\n')
+    f.write('        AXIL_R_DATA: begin\n')
+    f.write('          if (s_axil_rready) axil_rst <= AXIL_R_IDLE;\n')
+    f.write('        end\n')
+    f.write('        default: axil_rst <= AXIL_R_IDLE;\n')
     f.write('      endcase\n')
     f.write('    end\n')
     f.write('  end\n\n')
@@ -973,8 +1108,18 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for rname, cp_sig, width in ti['regs']:
             if rname == 'commit':
                 f.write(f'  wire {tname}_cp_wr_en = r_{tname}_cp_wr_en;\n')
+            elif rname in ('query_commit', 'delete_commit'):
+                continue  # cp_query_en/del declared once, explicitly, below
             else:
                 f.write(f'  wire [{width-1}:0] {cp_sig} = r_{cp_sig};\n')
+        if ti['supports_query']:
+            f.write(f'  wire {tname}_cp_query_en  = r_{tname}_cp_query_en;\n')
+            f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
+            f.write(f'  wire {tname}_cp_query_busy;\n')
+            f.write(f'  wire {tname}_cp_query_hit;\n')
+            f.write(f'  wire [{ti["act_w"]-1}:0] {tname}_cp_query_action_id;\n')
+            for pname, pw in ti['params']:
+                f.write(f'  wire [{pw-1}:0] {tname}_cp_query_p_{pname};\n')
         f.write(f'  wire {tname}_hit_out;\n')
 
     f.write('\n')
@@ -1009,8 +1154,16 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
         for rname, cp_sig, width in ti['regs']:
-            if rname != 'commit':
+            if rname not in ('commit', 'query_commit', 'delete_commit'):
                 f.write(f'    .{cp_sig} ({cp_sig}),\n')
+        if ti['supports_query']:
+            f.write(f'    .{tname}_cp_query_en  ({tname}_cp_query_en),\n')
+            f.write(f'    .{tname}_cp_query_del ({tname}_cp_query_del),\n')
+            f.write(f'    .{tname}_cp_query_busy ({tname}_cp_query_busy),\n')
+            f.write(f'    .{tname}_cp_query_hit  ({tname}_cp_query_hit),\n')
+            f.write(f'    .{tname}_cp_query_action_id ({tname}_cp_query_action_id),\n')
+            for pname, pw in ti['params']:
+                f.write(f'    .{tname}_cp_query_p_{pname} ({tname}_cp_query_p_{pname}),\n')
         f.write(f'    .{tname}_hit_out  ({tname}_hit_out),\n')
     f.write('    .valid_out (proc_valid_out),\n')
     f.write('    .drop      (proc_drop)\n')

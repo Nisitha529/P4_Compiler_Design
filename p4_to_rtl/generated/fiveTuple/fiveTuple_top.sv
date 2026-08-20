@@ -270,6 +270,20 @@ module fiveTuple_top #(
   wire [0:0] FiveTuple_cp_wr_p_cfi = r_FiveTuple_cp_wr_p_cfi;
   wire [11:0] FiveTuple_cp_wr_p_vid = r_FiveTuple_cp_wr_p_vid;
   wire FiveTuple_cp_wr_en = r_FiveTuple_cp_wr_en;
+  wire [31:0] FiveTuple_cp_query_key_src = r_FiveTuple_cp_query_key_src;
+  wire [31:0] FiveTuple_cp_query_key_dst = r_FiveTuple_cp_query_key_dst;
+  wire [7:0] FiveTuple_cp_query_key_protocol = r_FiveTuple_cp_query_key_protocol;
+  wire [15:0] FiveTuple_cp_query_key_table_key_sport = r_FiveTuple_cp_query_key_table_key_sport;
+  wire [15:0] FiveTuple_cp_query_key_table_key_dport = r_FiveTuple_cp_query_key_table_key_dport;
+  wire FiveTuple_cp_query_en  = r_FiveTuple_cp_query_en;
+  wire FiveTuple_cp_query_del = r_FiveTuple_cp_query_del;
+  wire FiveTuple_cp_query_busy;
+  wire FiveTuple_cp_query_hit;
+  wire [0:0] FiveTuple_cp_query_action_id;
+  wire [12:0] FiveTuple_cp_query_p_counter_index;
+  wire [2:0] FiveTuple_cp_query_p_pcp;
+  wire [0:0] FiveTuple_cp_query_p_cfi;
+  wire [11:0] FiveTuple_cp_query_p_vid;
   wire FiveTuple_hit_out;
 
   processing_generated u_proc (
@@ -382,6 +396,20 @@ module fiveTuple_top #(
     .FiveTuple_cp_wr_p_pcp (FiveTuple_cp_wr_p_pcp),
     .FiveTuple_cp_wr_p_cfi (FiveTuple_cp_wr_p_cfi),
     .FiveTuple_cp_wr_p_vid (FiveTuple_cp_wr_p_vid),
+    .FiveTuple_cp_query_key_src (FiveTuple_cp_query_key_src),
+    .FiveTuple_cp_query_key_dst (FiveTuple_cp_query_key_dst),
+    .FiveTuple_cp_query_key_protocol (FiveTuple_cp_query_key_protocol),
+    .FiveTuple_cp_query_key_table_key_sport (FiveTuple_cp_query_key_table_key_sport),
+    .FiveTuple_cp_query_key_table_key_dport (FiveTuple_cp_query_key_table_key_dport),
+    .FiveTuple_cp_query_en  (FiveTuple_cp_query_en),
+    .FiveTuple_cp_query_del (FiveTuple_cp_query_del),
+    .FiveTuple_cp_query_busy (FiveTuple_cp_query_busy),
+    .FiveTuple_cp_query_hit  (FiveTuple_cp_query_hit),
+    .FiveTuple_cp_query_action_id (FiveTuple_cp_query_action_id),
+    .FiveTuple_cp_query_p_counter_index (FiveTuple_cp_query_p_counter_index),
+    .FiveTuple_cp_query_p_pcp (FiveTuple_cp_query_p_pcp),
+    .FiveTuple_cp_query_p_cfi (FiveTuple_cp_query_p_cfi),
+    .FiveTuple_cp_query_p_vid (FiveTuple_cp_query_p_vid),
     .FiveTuple_hit_out  (FiveTuple_hit_out),
     .valid_out (proc_valid_out),
     .drop      (proc_drop)
@@ -400,7 +428,14 @@ module fiveTuple_top #(
   logic [2:0] r_FiveTuple_cp_wr_p_pcp;
   logic [0:0] r_FiveTuple_cp_wr_p_cfi;
   logic [11:0] r_FiveTuple_cp_wr_p_vid;
+  logic [31:0] r_FiveTuple_cp_query_key_src;
+  logic [31:0] r_FiveTuple_cp_query_key_dst;
+  logic [7:0] r_FiveTuple_cp_query_key_protocol;
+  logic [15:0] r_FiveTuple_cp_query_key_table_key_sport;
+  logic [15:0] r_FiveTuple_cp_query_key_table_key_dport;
+  logic r_FiveTuple_cp_query_del;
   logic r_FiveTuple_cp_wr_en;
+  logic r_FiveTuple_cp_query_en;
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -413,22 +448,31 @@ module fiveTuple_top #(
   logic [AXIL_ADDR_W-1:0] axil_awaddr_r;
 
   assign s_axil_awready = (axil_st == AXIL_IDLE);
-  assign s_axil_wready  = (axil_st == AXIL_WDATA);
   assign s_axil_bvalid  = (axil_st == AXIL_BRESP);
   assign s_axil_bresp   = 2'b00;
 
-  // AXI4-Lite read channel — tables are write-only; always acknowledge with 0
-  assign s_axil_arready = 1'b1;
-  assign s_axil_rdata   = '0;
-  assign s_axil_rresp   = 2'b00;
-  assign s_axil_rvalid  = s_axil_arvalid;
+  // Commit-type words for a busy table stall wready instead of silently
+  // dropping the write (see cp_query_busy on the query/delete pipeline).
+  logic pending_commit_busy;
+  always_comb begin
+    pending_commit_busy = 1'b0;
+    case (axil_awaddr_r[AXIL_ADDR_W-1:2])
+      14'd11: pending_commit_busy = FiveTuple_cp_query_busy;
+      14'd17: pending_commit_busy = FiveTuple_cp_query_busy;
+      14'd18: pending_commit_busy = FiveTuple_cp_query_busy;
+      default: pending_commit_busy = 1'b0;
+    endcase
+  end
+  assign s_axil_wready = (axil_st == AXIL_WDATA) && !pending_commit_busy;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       axil_st <= AXIL_IDLE;
       r_FiveTuple_cp_wr_en <= 1'b0;
+      r_FiveTuple_cp_query_en <= 1'b0;
     end else begin
       r_FiveTuple_cp_wr_en <= 1'b0;
+      r_FiveTuple_cp_query_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -437,7 +481,7 @@ module fiveTuple_top #(
           end
         end
         AXIL_WDATA: begin
-          if (s_axil_wvalid) begin
+          if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
               14'd0: r_FiveTuple_cp_wr_idx <= s_axil_wdata[12:0]; // wr_idx
               14'd1: r_FiveTuple_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
@@ -451,6 +495,13 @@ module fiveTuple_top #(
               14'd9: r_FiveTuple_cp_wr_p_cfi <= s_axil_wdata[0:0]; // p_cfi
               14'd10: r_FiveTuple_cp_wr_p_vid <= s_axil_wdata[11:0]; // p_vid
               14'd11: r_FiveTuple_cp_wr_en <= 1'b1; // FiveTuple commit
+              14'd12: r_FiveTuple_cp_query_key_src <= s_axil_wdata[31:0]; // query_key_src
+              14'd13: r_FiveTuple_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst
+              14'd14: r_FiveTuple_cp_query_key_protocol <= s_axil_wdata[7:0]; // query_key_protocol
+              14'd15: r_FiveTuple_cp_query_key_table_key_sport <= s_axil_wdata[15:0]; // query_key_table_key_sport
+              14'd16: r_FiveTuple_cp_query_key_table_key_dport <= s_axil_wdata[15:0]; // query_key_table_key_dport
+              14'd17: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b0; end // FiveTuple query
+              14'd18: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b1; end // FiveTuple delete
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -460,6 +511,47 @@ module fiveTuple_top #(
           if (s_axil_bready) axil_st <= AXIL_IDLE;
         end
         default: axil_st <= AXIL_IDLE;
+      endcase
+    end
+  end
+
+  // AXI4-Lite read channel
+  typedef enum logic {
+    AXIL_R_IDLE = 1'd0,
+    AXIL_R_DATA = 1'd1
+  } axil_rst_t;
+
+  axil_rst_t   axil_rst;
+  logic [31:0] r_rdata;
+
+  assign s_axil_arready = (axil_rst == AXIL_R_IDLE);
+  assign s_axil_rdata   = r_rdata;
+  assign s_axil_rresp   = 2'b00;
+  assign s_axil_rvalid  = (axil_rst == AXIL_R_DATA);
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      axil_rst <= AXIL_R_IDLE;
+    end else begin
+      case (axil_rst)
+        AXIL_R_IDLE: begin
+          if (s_axil_arvalid) begin
+            case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
+              14'd19: r_rdata <= {30'd0, FiveTuple_cp_query_hit, FiveTuple_cp_query_busy}; // FiveTuple query_status
+              14'd20: r_rdata <= {31'd0, FiveTuple_cp_query_action_id}; // FiveTuple query_action_id
+              14'd21: r_rdata <= {19'd0, FiveTuple_cp_query_p_counter_index}; // FiveTuple query_p_counter_index
+              14'd22: r_rdata <= {29'd0, FiveTuple_cp_query_p_pcp}; // FiveTuple query_p_pcp
+              14'd23: r_rdata <= {31'd0, FiveTuple_cp_query_p_cfi}; // FiveTuple query_p_cfi
+              14'd24: r_rdata <= {20'd0, FiveTuple_cp_query_p_vid}; // FiveTuple query_p_vid
+              default: r_rdata <= 32'd0;
+            endcase
+            axil_rst <= AXIL_R_DATA;
+          end
+        end
+        AXIL_R_DATA: begin
+          if (s_axil_rready) axil_rst <= AXIL_R_IDLE;
+        end
+        default: axil_rst <= AXIL_R_IDLE;
       endcase
     end
   end
