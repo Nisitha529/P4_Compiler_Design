@@ -454,7 +454,7 @@ module fiveTuple_top #(
   // Commit-type words for a busy table stall wready instead of silently
   // dropping the write (see cp_query_busy on the query/delete pipeline).
   logic pending_commit_busy;
-  always_comb begin
+  always @(*) begin
     pending_commit_busy = 1'b0;
     case (axil_awaddr_r[AXIL_ADDR_W-1:2])
       14'd11: pending_commit_busy = FiveTuple_cp_query_busy;

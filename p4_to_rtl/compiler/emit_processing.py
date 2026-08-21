@@ -841,7 +841,7 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
 # Main emitter
 # ============================================================
 
-def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1):
+def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False):
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
@@ -852,6 +852,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # to before this parameter existed. >1 = d-way set-associative
     # exact-match tables (see emit_table.py's _emit_exact_match_table_assoc);
     # LPM/ternary/keyless tables ignore this regardless of value.
+    # enable_query: False (default) = today's behavior exactly, no CP query/
+    # delete port threaded through. Only ever True for the p4test/XSA
+    # frontend (see main.py) -- the bmv2 frontend has no bus wrapper to
+    # drive these ports, so its output must stay byte-identical regardless
+    # of table shape.
 
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
@@ -918,6 +923,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 'aid_sig': f'{tbl.name}_act_id', 'id_w': id_w,
                 'params': params, 'key_sigs': [],
                 'depth': None, 'is_exact': False, 'is_keyless': True, 'ways': 1,
+                'enable_query': False,
             })
             continue
 
@@ -941,6 +947,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             'depth': tbl.size if tbl.size else 1024,
             'is_exact': is_exact_mt, 'is_keyless': False,
             'ways': ways if is_exact_mt else 1,
+            'enable_query': enable_query if is_exact_mt else False,
         })
 
     tbl_wire_names = set()
@@ -1052,10 +1059,10 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         # entry-per-key concept) or the d-way associative variant (a
         # separate, not-yet-built follow-up -- see emit_table.py's
         # _emit_exact_match_table_assoc).
-        if any(tw['is_exact'] and tw['ways'] <= 1 for tw in table_wires):
+        if any(tw['is_exact'] and tw['ways'] <= 1 and tw['enable_query'] for tw in table_wires):
             f.write('\n  // Control-plane query/delete ports (plain exact-match tables)\n')
             for tw in table_wires:
-                if tw['is_exact'] and tw['ways'] <= 1:
+                if tw['is_exact'] and tw['ways'] <= 1 and tw['enable_query']:
                     tname = tw['table'].name
                     f.write(f'  input  logic        {tname}_cp_query_en,\n')
                     f.write(f'  input  logic        {tname}_cp_query_del,\n')
@@ -1428,7 +1435,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     for fname, _, _ in tw['key_sigs']:
                         f.write(f'    .cp_wr_mask_{fname} ({tname}_cp_wr_mask_{fname}),\n')
                 has_assoc = tw['is_exact'] and tw['ways'] > 1
-                has_query = tw['is_exact'] and tw['ways'] <= 1
+                has_query = tw['is_exact'] and tw['ways'] <= 1 and tw['enable_query']
                 trailer   = has_assoc or has_query
                 f.write(f'    .cp_wr_action ({tname}_cp_wr_action)')
                 if tw['params']:

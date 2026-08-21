@@ -146,11 +146,44 @@ module tb_fiveTuple_top;
     s_axil_wvalid  = 1'b0;
   endtask
 
+  // ── AXI4-Lite read (word-addressed) ────────────────────────────────────────
+  // Note on sampling style, deliberately different from axil_write() above:
+  // this design's read channel ties s_axil_rready permanently high, so its
+  // R_DATA state resolves in a single edge-to-edge window -- the same edge
+  // that makes rvalid visible also (via the DUT's own NBA, since rready is
+  // already high) schedules the return to idle. A #1-delayed sample (the
+  // convention axil_write uses, correct there because AW/W stay busy for an
+  // observable duration) always lands one edge too late here and can even
+  // misread the FSM settling back to idle as a second AR acceptance. rvalid/
+  // rdata are registered outputs of the accept edge -- reading them
+  // undelayed, exactly at the edge, is what actually catches them (proven
+  // by direct waveform inspection while debugging this task).
+  task automatic axil_read(input int word_addr, output logic [31:0] data);
+    bit accepted;
+    @(negedge clk);
+    s_axil_araddr  = word_addr * 4;
+    s_axil_arvalid = 1'b1;
+    accepted = 1'b0;
+    while (!accepted) begin
+      @(posedge clk);
+      if (s_axil_arready) accepted = 1'b1;
+    end
+    @(negedge clk);
+    s_axil_arvalid = 1'b0;
+    @(posedge clk);
+    data = s_axil_rdata;
+  endtask
+
   // Register map (see main.py --p4test path / emit_top.py's
   // _build_axil_regmap for FiveTuple, the only table in this app):
   //   0=wr_idx 1=wr_action 2=key_src 3=key_dst 4=key_protocol
   //   5=key_table_key_sport 6=key_table_key_dport
   //   7=p_counter_index 8=p_pcp 9=p_cfi 10=p_vid 11=commit
+  //   12=query_key_src 13=query_key_dst 14=query_key_protocol
+  //   15=query_key_table_key_sport 16=query_key_table_key_dport
+  //   17=query_commit 18=delete_commit
+  //   19=query_status (bit0=busy, bit1=hit) 20=query_action_id
+  //   21=query_p_counter_index 22=query_p_pcp 23=query_p_cfi 24=query_p_vid
   task automatic cp_write_entry(input [12:0] idx, input [31:0] src, input [31:0] dst,
                                  input [7:0] proto, input [15:0] sport, input [15:0] dport);
     axil_write(0, idx);
@@ -161,6 +194,55 @@ module tb_fiveTuple_top;
     axil_write(5, {16'd0, sport});
     axil_write(6, {16'd0, dport});
     axil_write(11, 32'd0); // commit
+  endtask
+
+  // Query/delete a table entry entirely over AXI4-Lite. The commit (word 17
+  // or 18) kicks off the table's own 2-stage query/delete pipeline through
+  // the AXIL_BRESP state -- cp_query_busy is only ever asserted for a single
+  // clock cycle (proven in the standalone table-level testbench), too narrow
+  // a window to reliably catch via repeated multi-cycle AXI4-Lite READ
+  // transactions. Rather than race that window, wait a small, fixed,
+  // generously-bounded number of cycles (comfortably above the known,
+  // fixed BRESP-entry + 2-stage-pipeline latency) before reading back
+  // query_status/results, matching this codebase's existing generous-wait
+  // idiom (see WAIT_CYCLES elsewhere in this file). By the time the wait
+  // elapses, busy has always already resolved.
+  localparam int QUERY_SETTLE_CYCLES = 10;
+  task automatic cp_query_entry(input [31:0] src, input [31:0] dst, input [7:0] proto,
+                                 input [15:0] sport, input [15:0] dport,
+                                 output logic q_hit, output logic [31:0] q_action_id,
+                                 output logic [31:0] q_cidx, output logic [31:0] q_pcp,
+                                 output logic [31:0] q_cfi, output logic [31:0] q_vid);
+    logic [31:0] status;
+    axil_write(12, src);
+    axil_write(13, dst);
+    axil_write(14, {24'd0, proto});
+    axil_write(15, {16'd0, sport});
+    axil_write(16, {16'd0, dport});
+    axil_write(17, 32'd0);  // query_commit (read-only, del=0)
+    repeat (QUERY_SETTLE_CYCLES) @(posedge clk);
+    axil_read(19, status);
+    q_hit = status[1];
+    axil_read(20, q_action_id);
+    axil_read(21, q_cidx);
+    axil_read(22, q_pcp);
+    axil_read(23, q_cfi);
+    axil_read(24, q_vid);
+  endtask
+
+  task automatic cp_delete_entry(input [31:0] src, input [31:0] dst, input [7:0] proto,
+                                  input [15:0] sport, input [15:0] dport,
+                                  output logic q_hit);
+    logic [31:0] status;
+    axil_write(12, src);
+    axil_write(13, dst);
+    axil_write(14, {24'd0, proto});
+    axil_write(15, {16'd0, sport});
+    axil_write(16, {16'd0, dport});
+    axil_write(18, 32'd0);  // delete_commit (del=1)
+    repeat (QUERY_SETTLE_CYCLES) @(posedge clk);
+    axil_read(19, status);
+    q_hit = status[1];
   endtask
 
   // ── Packet senders / receiver ──────────────────────────────────────────────
@@ -568,6 +650,83 @@ module tb_fiveTuple_top;
       chk("T9: truncated content matches the first 8192 input bytes",
           bytes_equal(rx_bytes, expect_arr));
       chk("T9: output correctly terminated with tlast", rx_tlast_cycle != -1);
+    end
+
+    // ──────────────────────────────────────────────────────────────────────
+    $display("\n══ T10: end-to-end AXI write -> query -> delete -> query ══════");
+    do_reset();
+    begin
+      logic q_hit;
+      logic [31:0] q_act, q_cidx, q_pcp, q_cfi, q_vid;
+      cp_write_entry(13'd0, 32'hC0A80020, 32'hC0A80021, 8'd17, 16'd7000, 16'd8000);
+      // cp_write_entry doesn't stage params (words 7-10) -- write them
+      // explicitly and re-commit (same key -> same hash address, so this
+      // is an update-in-place, not a second entry) so the query read-back
+      // below has non-zero values to actually check.
+      axil_write(0, 13'd0);
+      axil_write(7, 32'd77);   // p_counter_index
+      axil_write(8, 32'd5);    // p_pcp
+      axil_write(9, 32'd1);    // p_cfi
+      axil_write(10, 32'd42);  // p_vid
+      axil_write(11, 32'd0);   // re-commit with params included
+
+      cp_query_entry(32'hC0A80020, 32'hC0A80021, 8'd17, 16'd7000, 16'd8000,
+                      q_hit, q_act, q_cidx, q_pcp, q_cfi, q_vid);
+      chk("T10: query via AXI -> hit", q_hit);
+      chk("T10: query action_id correct", q_act === 32'd0);
+      chk("T10: query p_counter_index correct", q_cidx === 32'd77);
+      chk("T10: query p_pcp correct", q_pcp === 32'd5);
+      chk("T10: query p_cfi correct", q_cfi === 32'd1);
+      chk("T10: query p_vid correct", q_vid === 32'd42);
+
+      cp_delete_entry(32'hC0A80020, 32'hC0A80021, 8'd17, 16'd7000, 16'd8000, q_hit);
+      chk("T10: delete via AXI reports hit=1 (found it)", q_hit);
+
+      cp_query_entry(32'hC0A80020, 32'hC0A80021, 8'd17, 16'd7000, 16'd8000,
+                      q_hit, q_act, q_cidx, q_pcp, q_cfi, q_vid);
+      chk("T10: post-delete query via AXI -> miss", !q_hit);
+    end
+
+    // ──────────────────────────────────────────────────────────────────────
+    $display("\n══ T11: AXI-level busy-stall -- delete_commit immediately followed by a commit ══");
+    do_reset();
+    begin
+      logic q_hit;
+      logic [31:0] q_act, q_cidx, q_pcp, q_cfi, q_vid;
+      longint c0, c1;
+      cp_write_entry(13'd2, 32'hC0A80010, 32'hC0A80011, 8'd6, 16'd100, 16'd200);
+
+      // Stage the delete's key fields, but don't wait/poll after the
+      // delete_commit -- immediately issue a second, unrelated regular
+      // write's full word sequence right behind it. axil_write() blocks on
+      // s_axil_wready, which the decoder holds low (real AXI4-Lite
+      // backpressure, see pending_commit_busy in emit_top.py) for as long
+      // as FiveTuple_cp_query_busy is asserted -- so the second write must
+      // visibly stall, not silently accept-and-drop.
+      axil_write(12, 32'hC0A80010);
+      axil_write(13, 32'hC0A80011);
+      axil_write(14, {24'd0, 8'd6});
+      axil_write(15, {16'd0, 16'd100});
+      axil_write(16, {16'd0, 16'd200});
+      c0 = cycle_count;
+      axil_write(18, 32'd0);              // delete_commit -- kicks off query/delete pipeline
+      axil_write(0, 13'd3);
+      axil_write(2, 32'hC0A80020);
+      axil_write(3, 32'hC0A80021);
+      axil_write(4, {24'd0, 8'd17});
+      axil_write(5, {16'd0, 16'd300});
+      axil_write(6, {16'd0, 16'd400});
+      axil_write(11, 32'd0);              // regular commit -- must stall, then land
+      c1 = cycle_count;
+      chk("T11: back-to-back commit visibly stalled (genuine backpressure, not instantaneous)",
+          (c1 - c0) > 4);
+
+      cp_query_entry(32'hC0A80010, 32'hC0A80011, 8'd6, 16'd100, 16'd200,
+                      q_hit, q_act, q_cidx, q_pcp, q_cfi, q_vid);
+      chk("T11: deleted entry (idx2) is gone", !q_hit);
+      cp_query_entry(32'hC0A80020, 32'hC0A80021, 8'd17, 16'd300, 16'd400,
+                      q_hit, q_act, q_cidx, q_pcp, q_cfi, q_vid);
+      chk("T11: the stalled-then-committed write (idx3) landed correctly", q_hit);
     end
 
     // ──────────────────────────────────────────────────────────────────────

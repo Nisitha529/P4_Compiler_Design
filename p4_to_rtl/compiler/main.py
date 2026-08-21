@@ -341,6 +341,12 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         frontend = 'p4test' if arch == 'xsa' else 'bmv2'
         print(f"[INFO] Detected architecture : {arch}  → using {frontend} frontend")
 
+    # CP query/delete (see emit_table.py's enable_query) is only reachable
+    # through emit_top.py's AXI4-Lite control plane, which only exists for
+    # the p4test/XSA frontend -- the bmv2 frontend has no bus wrapper at
+    # all, so its output must stay byte-identical regardless of table shape.
+    enable_query = (frontend == 'p4test')
+
     if frontend == 'p4test':
         print("[INFO] Running p4test MidEnd front-end...")
         midend_text = _run_p4c_frontend(p4_path, p4test_bin)
@@ -366,10 +372,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if ir.controls:
         print("[INFO] Generating table RTL...")
-        emit_tables(ir, out_dir, budget_levels=budget_levels, ways=ways)
+        emit_tables(ir, out_dir, budget_levels=budget_levels, ways=ways, enable_query=enable_query)
 
         print("[INFO] Generating processing RTL...")
-        emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways)
+        emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways, enable_query=enable_query)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
@@ -382,10 +388,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     if eg is not None and (eg.tables or eg.statements):
         out_egress_processing = os.path.join(out_dir, "egress_processing_generated.sv")
         print("[INFO] Generating egress table RTL...")
-        emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels, ways=ways)
+        emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query)
 
         print("[INFO] Generating egress processing RTL...")
-        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways)
+        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:

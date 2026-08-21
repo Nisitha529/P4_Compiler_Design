@@ -506,7 +506,7 @@ def _emit_axil_decoder(f, regmap):
     f.write('  // Commit-type words for a busy table stall wready instead of silently\n')
     f.write('  // dropping the write (see cp_query_busy on the query/delete pipeline).\n')
     f.write('  logic pending_commit_busy;\n')
-    f.write('  always_comb begin\n')
+    f.write('  always @(*) begin\n')
     f.write("    pending_commit_busy = 1'b0;\n")
     f.write('    case (axil_awaddr_r[AXIL_ADDR_W-1:2])\n')
     for ti in regmap:
