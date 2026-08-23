@@ -35,6 +35,7 @@ import math
 import re
 from collections import defaultdict, deque
 
+from boards import validate_board
 from emit_processing import (
     _find_processing_ctrl,
     _table_params,
@@ -783,14 +784,22 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
-def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W):
+def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None):
     """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
 
     axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
     power of 2, >=8, and <= MAX_AXI_DATA_W -- see the ceiling's rationale
     above. Re-validated here (not just in main.py's CLI parsing) since
     emit_top() can be called directly/programmatically, not only via the CLI.
+    board: None (default) = today's behavior exactly, both ram_style pragma
+        sites emit Vivado's hardcoded default, byte-identical to before this
+        parameter existed. Otherwise a board descriptor dict (see
+        boards.py/load_board) -- makes those pragmas vendor-correct.
+        Re-validated here for the same reason as axi_data_width above.
     """
+    if board is not None:
+        validate_board(board)
+
     if axi_data_width < 8 or (axi_data_width & (axi_data_width - 1)) != 0:
         raise ValueError(
             f'axi_data_width must be a power of 2, >=8 (got {axi_data_width})'
@@ -836,7 +845,8 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W):
         _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                       ctrl, amap, fwmap, regmap,
                       emit_insts, total_hdr_bytes,
-                      axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w)
+                      axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
+                      board)
 
 
 def _build_fwmap(ir):
@@ -858,9 +868,25 @@ def _build_fwmap(ir):
 
 # ── Module body writer ────────────────────────────────────────────────────────
 
+def _write_ram_style_pragma(f, board):
+    """board=None (default) = today's exact hardcoded Vivado pragma, byte-
+    identical to before this parameter existed. Otherwise uses the board
+    descriptor's own ram_style_pragma (or, if falsy, an explanatory comment
+    instead of guessing at unverified syntax)."""
+    if board is None:
+        f.write('  (* ram_style = "block" *)\n')
+        return
+    pragma = board['ram_style_pragma']
+    if pragma:
+        f.write(f'  {pragma}\n')
+    else:
+        f.write(f"  // ram_style: board '{board['name']}' ({board['vendor']}) defines no RAM-style pragma\n")
+
+
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
-                  axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w):
+                  axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
+                  board=None):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -948,9 +974,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # simulation determinism now that pkt_buf_hdr is read *during* RX to
     # drive a live control decision, not only after the whole packet lands.
     f.write('  // ── Packet buffer (header region / payload region, see above) ───────────────\n')
-    f.write('  (* ram_style = "block" *)\n')
+    _write_ram_style_pragma(f, board)
     f.write('  logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];\n')
-    f.write('  (* ram_style = "block" *)\n')
+    _write_ram_style_pragma(f, board)
     f.write('  logic [7:0] pkt_buf_payload [0:PAYLOAD_MAX_BYTES-1];\n')
     f.write('  initial begin\n')
     f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++)     pkt_buf_hdr[i]     = 8\'d0;\n')

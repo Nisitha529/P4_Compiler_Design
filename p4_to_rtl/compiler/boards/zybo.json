@@ -1,0 +1,14 @@
+{
+  "name": "zybo",
+  "display_name": "Digilent Zybo (Zynq-7000, exact board revision unconfirmed)",
+  "vendor": "xilinx",
+  "toolchain": "vivado",
+  "device_family": "Zynq-7000",
+  "constraint_format": "xdc",
+  "ram_style_pragma": "(* ram_style = \"block\" *)",
+  "fsm_encoding_pragma": "(* fsm_encoding = \"one_hot\" *)",
+  "device_part": null,
+  "device_part_verified": false,
+  "device_part_note": "Digilent ships at least three Zybo revisions (original Zybo, Zybo Z7-10, Zybo Z7-20) on different Zynq-7000 parts. This project has not confirmed which one the user has. Look up the exact part number from Digilent's official Zybo product page / Master XDC before using this descriptor for a real bitstream.",
+  "notes": "This board's pragma text is identical to the compiler's pre-existing (pre---board) hardcoded Xilinx defaults, so RTL output for this board is expected to be byte-identical to the --board-unset default -- only a new constraint-file skeleton is added."
+}

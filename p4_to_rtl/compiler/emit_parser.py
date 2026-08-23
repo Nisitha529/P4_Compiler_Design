@@ -1,5 +1,7 @@
 import math
 
+from boards import validate_board
+
 
 # ============================================================
 # Utility
@@ -96,7 +98,17 @@ def _build_field_width_map(ir):
 # ============================================================
 # MAIN EMITTER
 # ============================================================
-def emit_parser(ir, output_path):
+def emit_parser(ir, output_path, board=None):
+    """
+    board: None (default) = today's behavior exactly -- emits Vivado's
+        `(* fsm_encoding = "one_hot" *)` unconditionally, byte-identical to
+        before this parameter existed. Otherwise a board descriptor dict
+        (see boards.py/load_board) -- makes that pragma vendor-correct.
+        Re-validated here since this function can be called directly, not
+        only via the CLI.
+    """
+    if board is not None:
+        validate_board(board)
 
     const_map = _build_const_map(ir)
     fwmap     = _build_field_width_map(ir)
@@ -145,7 +157,18 @@ def emit_parser(ir, output_path):
             f.write(f"    {s}{comma}\n")
         f.write("  } state_t;\n\n")
 
-        f.write('  (* fsm_encoding = "one_hot" *)\n')
+        if board is None:
+            f.write('  (* fsm_encoding = "one_hot" *)\n')
+        else:
+            fsm_pragma = board['fsm_encoding_pragma']
+            if fsm_pragma:
+                f.write(f'  {fsm_pragma}\n')
+            else:
+                f.write(
+                    f"  // fsm_encoding: board '{board['name']}' ({board['vendor']}) has no "
+                    f"reliable inline attribute for this -- set state-machine encoding via "
+                    f"your toolchain's Assignment/Settings UI instead\n"
+                )
         f.write("  state_t state, next_state;\n\n")
 
         # FSM

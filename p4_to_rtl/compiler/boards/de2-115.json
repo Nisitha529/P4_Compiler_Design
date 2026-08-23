@@ -1,0 +1,14 @@
+{
+  "name": "de2-115",
+  "display_name": "Terasic DE2-115",
+  "vendor": "altera",
+  "toolchain": "quartus",
+  "device_family": "Cyclone IV E",
+  "constraint_format": "qsf+sdc",
+  "ram_style_pragma": "(* ramstyle = \"M9K\" *)",
+  "fsm_encoding_pragma": null,
+  "device_part": "EP4CE115F29C7",
+  "device_part_verified": false,
+  "device_part_note": "EP4CE115F29C7 is the commonly cited part number for Terasic's DE2-115, but has not been independently verified against the board's official datasheet in this session -- confirm before use.",
+  "notes": "fsm_encoding_pragma is intentionally null: Quartus has no single universally-reliable inline SystemVerilog attribute equivalent to Vivado's fsm_encoding -- it is normally set via the Quartus Assignment Editor / a .qsf assignment instead, not inline SV. emit_parser.py omits the pragma line and writes an explanatory comment when this is null. ram_style_pragma ('ramstyle = \"M9K\"') is Quartus's standard inline RAM-style attribute -- reasonable-confidence but NOT synthesis-verified on this machine (no Quartus installed here)."
+}

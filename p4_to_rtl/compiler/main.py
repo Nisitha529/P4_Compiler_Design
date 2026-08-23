@@ -16,6 +16,8 @@ from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
 from emit_top import emit_top, DEFAULT_AXI_DATA_W, MAX_AXI_DATA_W
 from timing_model import budget_levels as _budget_levels, DEVICE_FACTOR
+from boards import available_boards, load_board
+from emit_constraints import emit_constraints
 
 
 # ============================================================
@@ -297,7 +299,7 @@ def debug_ir(ir):
 # ============================================================
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
-                  axi_data_width=DEFAULT_AXI_DATA_W):
+                  axi_data_width=DEFAULT_AXI_DATA_W, board=None):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -309,6 +311,17 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         top-level (default 256; ignored for the bmv2 frontend, which has no
         byte-stream I/O). See emit_top.py's MAX_AXI_DATA_W for the ceiling's
         rationale.
+    board: None (default) = today's behavior exactly, both hardcoded Xilinx/
+        Vivado synthesis pragmas unchanged, no constraint file emitted.
+        Otherwise a board descriptor dict (see boards.py) -- makes those two
+        pragmas vendor-correct and additionally emits a constraint-file
+        skeleton (not synthesis-tested) into the app's output directory, but
+        only for the p4test/XSA frontend (only that frontend produces a
+        complete top-level design with board-facing I/O; the bmv2 frontend
+        has no top-level module at all, so there's nothing to constrain for
+        a full board bring-up there -- board still affects that frontend's
+        parser_generated.sv fsm_encoding pragma, since emit_parser() runs
+        for every frontend).
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -367,7 +380,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     print(f"[SUCCESS] SV package       -> {out_pkg}")
 
     print("[INFO] Generating parser RTL...")
-    emit_parser(ir, out_parser)
+    emit_parser(ir, out_parser, board=board)
     print(f"[SUCCESS] Parser RTL       -> {out_parser}")
 
     if ir.controls:
@@ -403,8 +416,21 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
-        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width)
+        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
+
+        if board is not None:
+            print(f"[INFO] Generating constraint-file skeleton for board '{board['name']}'...")
+            paths = emit_constraints(board, app_name, out_dir)
+            for p in paths:
+                print(f"[SUCCESS] Constraint skeleton -> {p}")
+    elif board is not None:
+        print(
+            f"[INFO] --board {board['name']} set but frontend is bmv2 (no "
+            f"top-level board-facing design) -- only parser_generated.sv's "
+            f"fsm_encoding pragma was vendor-adjusted; no constraint-file "
+            f"skeleton emitted."
+        )
 
 
 # ============================================================
@@ -503,6 +529,30 @@ def main():
             f"target (a WebPACK-tier Artix-7 part)."
         ),
     )
+    parser.add_argument(
+        "--board",
+        choices=available_boards(),
+        default=None,
+        metavar="NAME",
+        help=(
+            "Opt-in target board. Default: unset -- identical output to not "
+            "passing this flag at all (the two Xilinx/Vivado synthesis pragmas "
+            "this compiler already hardcodes -- ram_style, fsm_encoding -- stay "
+            "exactly as they are today, and no constraint file is emitted). "
+            "When set, makes those two pragmas vendor-correct for the chosen "
+            "board's toolchain (Vivado ram_style/fsm_encoding for Xilinx "
+            "boards; Quartus ramstyle for Altera boards, which has no "
+            "reliable inline fsm_encoding equivalent so that pragma is "
+            "omitted with an explanatory comment instead) and additionally "
+            "emits a constraint-file SKELETON (.xdc for Xilinx, .qsf+.sdc for "
+            "Altera) into the app's generated/ output directory -- a "
+            "structural starting point only, never synthesis-tested on this "
+            "machine for anything but out-of-context Artix-7 runs. Distinct "
+            "from --device (which only scales --target-freq-mhz's timing "
+            "budget): --board additionally changes emitted RTL pragmas and "
+            f"files. Available boards: {', '.join(available_boards())}."
+        ),
+    )
     args = parser.parse_args()
 
     if args.exact_match_ways < 1:
@@ -519,6 +569,24 @@ def main():
             f"supported width ({MAX_AXI_DATA_W}) -- see --help for why this "
             f"ceiling exists."
         )
+
+    board = None
+    if args.board is not None:
+        try:
+            board = load_board(args.board)
+        except ValueError as e:
+            parser.error(str(e))
+        if board['vendor'] != 'xilinx':
+            print(
+                f"[WARN] --board {args.board}: {board['vendor']}/{board['toolchain']} "
+                f"output is UNVERIFIED on this machine (no {board['toolchain']} "
+                f"installed here) -- structural skeleton only, never synthesized."
+            )
+        if not board['device_part_verified']:
+            print(
+                f"[WARN] --board {args.board}: device_part is not independently "
+                f"verified this session -- {board['device_part_note']}"
+            )
 
     levels = None
     if args.target_freq_mhz is not None:
@@ -543,6 +611,7 @@ def main():
         budget_levels=levels,
         ways=args.exact_match_ways,
         axi_data_width=args.axi_data_width,
+        board=board,
     )
 
 
