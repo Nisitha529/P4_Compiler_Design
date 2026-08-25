@@ -18,6 +18,7 @@ from emit_top import emit_top, DEFAULT_AXI_DATA_W, MAX_AXI_DATA_W
 from timing_model import budget_levels as _budget_levels, DEVICE_FACTOR
 from boards import available_boards, load_board
 from emit_constraints import emit_constraints
+from emit_selftest import emit_selftest_top
 
 
 # ============================================================
@@ -299,7 +300,7 @@ def debug_ir(ir):
 # ============================================================
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
-                  axi_data_width=DEFAULT_AXI_DATA_W, board=None):
+                  axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -322,6 +323,13 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         a full board bring-up there -- board still affects that frontend's
         parser_generated.sv fsm_encoding pragma, since emit_parser() runs
         for every frontend).
+    self_test: False (default) = today's behavior exactly, no self-test wrapper
+        emitted. Otherwise emits {app_name}_selftest_top.sv (see emit_selftest.py)
+        -- an on-chip packet generator + capture wrapper around {app_name}_top.sv
+        for exercising the packet processor on real hardware without a real
+        Ethernet MAC/PHY. Only for the p4test/XSA frontend (only that frontend
+        produces a top-level to wrap); emit_top.py itself is never modified by
+        this flag.
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -431,6 +439,18 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
             f"fsm_encoding pragma was vendor-adjusted; no constraint-file "
             f"skeleton emitted."
         )
+
+    if self_test:
+        if frontend == 'p4test':
+            print("[INFO] Generating self-test wrapper RTL (on-chip generator + capture)...")
+            out_selftest_top = os.path.join(out_dir, f"{app_name}_selftest_top.sv")
+            emit_selftest_top(ir, app_name, out_selftest_top, axi_data_width=axi_data_width)
+            print(f"[SUCCESS] Self-test wrapper RTL -> {out_selftest_top}")
+        else:
+            print(
+                "[INFO] --self-test set but frontend is bmv2 (no top-level "
+                "board-facing design to wrap) -- self-test wrapper not generated."
+            )
 
 
 # ============================================================
@@ -553,6 +573,27 @@ def main():
             f"files. Available boards: {', '.join(available_boards())}."
         ),
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt-in on-chip packet generator + capture wrapper "
+            "({app}_selftest_top.sv), for exercising the p4test/XSA frontend's "
+            "packet processor on real FPGA hardware without a real Ethernet "
+            "MAC/PHY. Default: off -- no effect on any existing output "
+            "(emit_top.py is never modified by this flag). A writable template "
+            "buffer holds real packet bytes (constructed the same way a "
+            "testbench builds one), streamed out N times over a new, separate "
+            "AXI4-Lite control bus, with output captured back for read-back "
+            "verification. Real resource cost: on-chip packet buffering "
+            "roughly triples versus not using this flag (the wrapper adds two "
+            "more full-packet-sized buffers on top of the processor's own). "
+            "Getting a real bus master (e.g. Vivado's JTAG-to-AXI-Master IP) "
+            "onto the board to actually drive the new bus is a separate "
+            "board-integration step, outside this compiler's scope."
+        ),
+    )
     args = parser.parse_args()
 
     if args.exact_match_ways < 1:
@@ -612,6 +653,7 @@ def main():
         ways=args.exact_match_ways,
         axi_data_width=args.axi_data_width,
         board=board,
+        self_test=args.self_test,
     )
 
 
