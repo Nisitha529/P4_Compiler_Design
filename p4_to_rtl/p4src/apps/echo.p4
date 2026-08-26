@@ -147,21 +147,39 @@ parser MyParser(packet_in packet,
     state parse_eth {
         packet.extract(hdr.eth);
         transition select(hdr.eth.type) {
-            VLAN_TYPE : parse_vlan;
+            VLAN_TYPE : parse_vlan_0;
             IPV4_TYPE : parse_ipv4;
-            default   : accept; 
+            default   : accept;
         }
     }
-    
-    state parse_vlan {
-        packet.extract(hdr.vlan.next);
-        transition select(hdr.vlan.last.tpid) {
-            VLAN_TYPE : parse_vlan;
+
+    // Fixed 2-entry unroll (matches hdr.vlan[2]'s bound) instead of a
+    // dynamic hdr.vlan.next/hdr.vlan.last loop -- dynamic header-stack
+    // parsing (runtime-indexed stack writes/reads driven by a data-
+    // dependent extract count) is a deliberately out-of-scope compiler
+    // limitation, not implemented here by design (same fix applied to
+    // complex_app.p4's MPLS stack).
+    state parse_vlan_0 {
+        packet.extract(hdr.vlan[0]);
+        transition select(hdr.vlan[0].tpid) {
+            VLAN_TYPE : parse_vlan_1;
             IPV4_TYPE : parse_ipv4;
-            default   : accept; 
+            default   : accept;
         }
     }
-    
+
+    state parse_vlan_1 {
+        packet.extract(hdr.vlan[1]);
+        // Last available stack slot -- if another VLAN tag follows here,
+        // the stack is exhausted (a malformed/over-tagged frame); accept
+        // rather than looping, since a real hardware parser FSM must be
+        // bounded.
+        transition select(hdr.vlan[1].tpid) {
+            IPV4_TYPE : parse_ipv4;
+            default   : accept;
+        }
+    }
+
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
         verify(hdr.ipv4.version == 4 && hdr.ipv4.hdr_len >= 5, error.InvalidIPpacket);
@@ -233,7 +251,12 @@ control MyDeparser(packet_out packet,
                    inout standard_metadata_t smeta) {
     apply {
         packet.emit(hdr.eth);
-        packet.emit(hdr.vlan);
+        // Indexed emits, not the whole-stack packet.emit(hdr.vlan) shorthand
+        // -- that form was silently dropped by this compiler's bmv2 deparser
+        // ingestion (produced no emit at all, a real correctness gap found
+        // while fixing the parser above, not just a compile error).
+        packet.emit(hdr.vlan[0]);
+        packet.emit(hdr.vlan[1]);
         packet.emit(hdr.ipv4);
         packet.emit(hdr.ipv4opt);
         packet.emit(hdr.udp);

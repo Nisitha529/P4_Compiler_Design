@@ -1,4 +1,4 @@
-module fiveTuple_top #(
+module echo_top #(
     parameter int AXI_DATA_W  = 256,
     parameter int AXIL_ADDR_W = 16
 ) (
@@ -122,13 +122,13 @@ module fiveTuple_top #(
   wire [47:0] w_eth_smac = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
   wire [15:0] w_eth_type = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
 
-  // vlan — base: 14
-  wire [2:0] w_vlan_pcp = pkt_buf_hdr[14][7:5];
-  wire [0:0] w_vlan_cfi = pkt_buf_hdr[14][4:4];
-  wire [11:0] w_vlan_vid = {pkt_buf_hdr[14][3:0], pkt_buf_hdr[14+1]};
-  wire [15:0] w_vlan_tpid = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
+  // vlan_0 — base: 14
+  wire [2:0] w_vlan_0_pcp = pkt_buf_hdr[14][7:5];
+  wire [0:0] w_vlan_0_cfi = pkt_buf_hdr[14][4:4];
+  wire [11:0] w_vlan_0_vid = {pkt_buf_hdr[14][3:0], pkt_buf_hdr[14+1]};
+  wire [15:0] w_vlan_0_tpid = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
 
-  wire [13:0] w_ipv4_base = 14 + ((w_eth_type == 16'h8100) ? 4 : 0);
+  wire [13:0] w_ipv4_base = 14 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? 4 : 0);
   // ipv4 — base: w_ipv4_base
   wire [3:0] w_ipv4_version = pkt_buf_hdr[w_ipv4_base][7:4];
   wire [3:0] w_ipv4_hdr_len = pkt_buf_hdr[w_ipv4_base][3:0];
@@ -148,22 +148,11 @@ module fiveTuple_top #(
   // ipv4opt — base: w_ipv4opt_base
   wire [319:0] w_ipv4opt_options = {pkt_buf_hdr[w_ipv4opt_base], pkt_buf_hdr[w_ipv4opt_base+1], pkt_buf_hdr[w_ipv4opt_base+2], pkt_buf_hdr[w_ipv4opt_base+3], pkt_buf_hdr[w_ipv4opt_base+4], pkt_buf_hdr[w_ipv4opt_base+5], pkt_buf_hdr[w_ipv4opt_base+6], pkt_buf_hdr[w_ipv4opt_base+7], pkt_buf_hdr[w_ipv4opt_base+8], pkt_buf_hdr[w_ipv4opt_base+9], pkt_buf_hdr[w_ipv4opt_base+10], pkt_buf_hdr[w_ipv4opt_base+11], pkt_buf_hdr[w_ipv4opt_base+12], pkt_buf_hdr[w_ipv4opt_base+13], pkt_buf_hdr[w_ipv4opt_base+14], pkt_buf_hdr[w_ipv4opt_base+15], pkt_buf_hdr[w_ipv4opt_base+16], pkt_buf_hdr[w_ipv4opt_base+17], pkt_buf_hdr[w_ipv4opt_base+18], pkt_buf_hdr[w_ipv4opt_base+19], pkt_buf_hdr[w_ipv4opt_base+20], pkt_buf_hdr[w_ipv4opt_base+21], pkt_buf_hdr[w_ipv4opt_base+22], pkt_buf_hdr[w_ipv4opt_base+23], pkt_buf_hdr[w_ipv4opt_base+24], pkt_buf_hdr[w_ipv4opt_base+25], pkt_buf_hdr[w_ipv4opt_base+26], pkt_buf_hdr[w_ipv4opt_base+27], pkt_buf_hdr[w_ipv4opt_base+28], pkt_buf_hdr[w_ipv4opt_base+29], pkt_buf_hdr[w_ipv4opt_base+30], pkt_buf_hdr[w_ipv4opt_base+31], pkt_buf_hdr[w_ipv4opt_base+32], pkt_buf_hdr[w_ipv4opt_base+33], pkt_buf_hdr[w_ipv4opt_base+34], pkt_buf_hdr[w_ipv4opt_base+35], pkt_buf_hdr[w_ipv4opt_base+36], pkt_buf_hdr[w_ipv4opt_base+37], pkt_buf_hdr[w_ipv4opt_base+38], pkt_buf_hdr[w_ipv4opt_base+39]};
 
-  wire [13:0] w_tcp_base = w_ipv4_base + w_ipv4_hdr_bytes;
-  // tcp — base: w_tcp_base
-  wire [15:0] w_tcp_src_port = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
-  wire [15:0] w_tcp_dst_port = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
-  wire [31:0] w_tcp_seqNum = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
-  wire [31:0] w_tcp_ackNum = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
-  wire [3:0] w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
-  wire [5:0] w_tcp_resv = {pkt_buf_hdr[w_tcp_base+12][3:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
-  wire [5:0] w_tcp_flags = pkt_buf_hdr[w_tcp_base+13][5:0];
-  wire [15:0] w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
-  wire [15:0] w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
-  wire [15:0] w_tcp_urgPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
-
-  wire [13:0] w_tcpopt_base = w_ipv4_base + w_ipv4_hdr_bytes;
-  // tcpopt — base: w_tcpopt_base
-  wire [319:0] w_tcpopt_options = {pkt_buf_hdr[w_tcpopt_base], pkt_buf_hdr[w_tcpopt_base+1], pkt_buf_hdr[w_tcpopt_base+2], pkt_buf_hdr[w_tcpopt_base+3], pkt_buf_hdr[w_tcpopt_base+4], pkt_buf_hdr[w_tcpopt_base+5], pkt_buf_hdr[w_tcpopt_base+6], pkt_buf_hdr[w_tcpopt_base+7], pkt_buf_hdr[w_tcpopt_base+8], pkt_buf_hdr[w_tcpopt_base+9], pkt_buf_hdr[w_tcpopt_base+10], pkt_buf_hdr[w_tcpopt_base+11], pkt_buf_hdr[w_tcpopt_base+12], pkt_buf_hdr[w_tcpopt_base+13], pkt_buf_hdr[w_tcpopt_base+14], pkt_buf_hdr[w_tcpopt_base+15], pkt_buf_hdr[w_tcpopt_base+16], pkt_buf_hdr[w_tcpopt_base+17], pkt_buf_hdr[w_tcpopt_base+18], pkt_buf_hdr[w_tcpopt_base+19], pkt_buf_hdr[w_tcpopt_base+20], pkt_buf_hdr[w_tcpopt_base+21], pkt_buf_hdr[w_tcpopt_base+22], pkt_buf_hdr[w_tcpopt_base+23], pkt_buf_hdr[w_tcpopt_base+24], pkt_buf_hdr[w_tcpopt_base+25], pkt_buf_hdr[w_tcpopt_base+26], pkt_buf_hdr[w_tcpopt_base+27], pkt_buf_hdr[w_tcpopt_base+28], pkt_buf_hdr[w_tcpopt_base+29], pkt_buf_hdr[w_tcpopt_base+30], pkt_buf_hdr[w_tcpopt_base+31], pkt_buf_hdr[w_tcpopt_base+32], pkt_buf_hdr[w_tcpopt_base+33], pkt_buf_hdr[w_tcpopt_base+34], pkt_buf_hdr[w_tcpopt_base+35], pkt_buf_hdr[w_tcpopt_base+36], pkt_buf_hdr[w_tcpopt_base+37], pkt_buf_hdr[w_tcpopt_base+38], pkt_buf_hdr[w_tcpopt_base+39]};
+  // vlan_1 — base: 18
+  wire [2:0] w_vlan_1_pcp = pkt_buf_hdr[18][7:5];
+  wire [0:0] w_vlan_1_cfi = pkt_buf_hdr[18][4:4];
+  wire [11:0] w_vlan_1_vid = {pkt_buf_hdr[18][3:0], pkt_buf_hdr[18+1]};
+  wire [15:0] w_vlan_1_tpid = {pkt_buf_hdr[18+2], pkt_buf_hdr[18+3]};
 
   wire [13:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
   // udp — base: w_udp_base
@@ -174,35 +163,25 @@ module fiveTuple_top #(
 
   // ── Header validity (derived from extracted fields) ──────────────────────
   wire w_eth_valid = 1'b1;
-  wire w_vlan_valid = (w_eth_type == 16'h8100);
-  wire w_ipv4_valid = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800)));
-  wire w_ipv4opt_valid = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800)));
-  wire w_tcp_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06));
-  wire w_tcpopt_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06));
-  wire w_udp_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11));
-  wire w_new_vlan_valid = 1'b0;
+  wire w_vlan_0_valid = (w_eth_type == 16'h8100);
+  wire w_ipv4_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800)));
+  wire w_ipv4opt_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800)));
+  wire w_vlan_1_valid = ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100));
+  wire w_udp_valid = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11));
 
   // ── Header-region cutoff ──────────────────────────────────────────────────
   wire [13:0] w_eth_cutoff_term = 0 + 14;
-  wire [13:0] w_vlan_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 14'd0;
-  wire [13:0] w_ipv4_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
-  wire [13:0] w_ipv4opt_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
-  wire [13:0] w_tcp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcp_base + 20) : 14'd0;
-  wire [13:0] w_tcpopt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) ? (w_tcpopt_base + 40) : 14'd0;
-  wire [13:0] w_udp_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) ? (w_udp_base + 8) : 14'd0;
-  wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_cutoff_term) ? w_eth_cutoff_term : w_vlan_cutoff_term;
+  wire [13:0] w_vlan_0_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 14'd0;
+  wire [13:0] w_ipv4_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
+  wire [13:0] w_ipv4opt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
+  wire [13:0] w_vlan_1_cutoff_term = ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? (18 + 4) : 14'd0;
+  wire [13:0] w_udp_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) ? (w_udp_base + 8) : 14'd0;
+  wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_0_cutoff_term) ? w_eth_cutoff_term : w_vlan_0_cutoff_term;
   wire [13:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_ipv4_cutoff_term) ? w_cutoff_max_1 : w_ipv4_cutoff_term;
   wire [13:0] w_cutoff_max_3 = (w_cutoff_max_2 > w_ipv4opt_cutoff_term) ? w_cutoff_max_2 : w_ipv4opt_cutoff_term;
-  wire [13:0] w_cutoff_max_4 = (w_cutoff_max_3 > w_tcp_cutoff_term) ? w_cutoff_max_3 : w_tcp_cutoff_term;
-  wire [13:0] w_cutoff_max_5 = (w_cutoff_max_4 > w_tcpopt_cutoff_term) ? w_cutoff_max_4 : w_tcpopt_cutoff_term;
-  wire [13:0] w_cutoff_max_6 = (w_cutoff_max_5 > w_udp_cutoff_term) ? w_cutoff_max_5 : w_udp_cutoff_term;
-  wire [13:0] cutoff_byte = w_cutoff_max_6;
-
-  // Action-only headers (not in received packet; inputs tied to 0)
-  wire [2:0] w_new_vlan_pcp = '0;
-  wire [0:0] w_new_vlan_cfi = '0;
-  wire [11:0] w_new_vlan_vid = '0;
-  wire [15:0] w_new_vlan_tpid = '0;
+  wire [13:0] w_cutoff_max_4 = (w_cutoff_max_3 > w_vlan_1_cutoff_term) ? w_cutoff_max_3 : w_vlan_1_cutoff_term;
+  wire [13:0] w_cutoff_max_5 = (w_cutoff_max_4 > w_udp_cutoff_term) ? w_cutoff_max_4 : w_udp_cutoff_term;
+  wire [13:0] cutoff_byte = w_cutoff_max_5;
 
   // ── processing_generated ─────────────────────────────────────────────────
   //    Signals prefixed proc_out_* are the match-action outputs.
@@ -211,11 +190,11 @@ module fiveTuple_top #(
   wire [47:0] out_eth_dmac;
   wire [47:0] out_eth_smac;
   wire [15:0] out_eth_type;
-  wire out_vlan_valid;
-  wire [2:0] out_vlan_pcp;
-  wire [0:0] out_vlan_cfi;
-  wire [11:0] out_vlan_vid;
-  wire [15:0] out_vlan_tpid;
+  wire out_vlan_0_valid;
+  wire [2:0] out_vlan_0_pcp;
+  wire [0:0] out_vlan_0_cfi;
+  wire [11:0] out_vlan_0_vid;
+  wire [15:0] out_vlan_0_tpid;
   wire out_ipv4_valid;
   wire [3:0] out_ipv4_version;
   wire [3:0] out_ipv4_hdr_len;
@@ -231,221 +210,38 @@ module fiveTuple_top #(
   wire [31:0] out_ipv4_dst;
   wire out_ipv4opt_valid;
   wire [319:0] out_ipv4opt_options;
-  wire out_tcp_valid;
-  wire [15:0] out_tcp_src_port;
-  wire [15:0] out_tcp_dst_port;
-  wire [31:0] out_tcp_seqNum;
-  wire [31:0] out_tcp_ackNum;
-  wire [3:0] out_tcp_dataOffset;
-  wire [5:0] out_tcp_resv;
-  wire [5:0] out_tcp_flags;
-  wire [15:0] out_tcp_window;
-  wire [15:0] out_tcp_checksum;
-  wire [15:0] out_tcp_urgPtr;
-  wire out_tcpopt_valid;
-  wire [319:0] out_tcpopt_options;
+  wire out_vlan_1_valid;
+  wire [2:0] out_vlan_1_pcp;
+  wire [0:0] out_vlan_1_cfi;
+  wire [11:0] out_vlan_1_vid;
+  wire [15:0] out_vlan_1_tpid;
   wire out_udp_valid;
   wire [15:0] out_udp_src_port;
   wire [15:0] out_udp_dst_port;
   wire [15:0] out_udp_length;
   wire [15:0] out_udp_checksum;
-  wire out_new_vlan_valid;
-  wire [2:0] out_new_vlan_pcp;
-  wire [0:0] out_new_vlan_cfi;
-  wire [11:0] out_new_vlan_vid;
-  wire [15:0] out_new_vlan_tpid;
   wire proc_valid_out;
   wire proc_drop;
 
-  wire FiveTuple_cp_query_busy;
-  wire FiveTuple_cp_query_hit;
-  wire [0:0] FiveTuple_cp_query_action_id;
-  wire [12:0] FiveTuple_cp_query_p_counter_index;
-  wire [2:0] FiveTuple_cp_query_p_pcp;
-  wire [0:0] FiveTuple_cp_query_p_cfi;
-  wire [11:0] FiveTuple_cp_query_p_vid;
 
-
-  // ── AXI4-Lite staging registers ─────────────────────────────────────────
-  logic [12:0] r_FiveTuple_cp_wr_idx;
-  logic [0:0] r_FiveTuple_cp_wr_action;
-  logic [31:0] r_FiveTuple_cp_wr_key_src;
-  logic [31:0] r_FiveTuple_cp_wr_key_dst;
-  logic [7:0] r_FiveTuple_cp_wr_key_protocol;
-  logic [15:0] r_FiveTuple_cp_wr_key_table_key_sport;
-  logic [15:0] r_FiveTuple_cp_wr_key_table_key_dport;
-  logic [12:0] r_FiveTuple_cp_wr_p_counter_index;
-  logic [2:0] r_FiveTuple_cp_wr_p_pcp;
-  logic [0:0] r_FiveTuple_cp_wr_p_cfi;
-  logic [11:0] r_FiveTuple_cp_wr_p_vid;
-  logic [31:0] r_FiveTuple_cp_query_key_src;
-  logic [31:0] r_FiveTuple_cp_query_key_dst;
-  logic [7:0] r_FiveTuple_cp_query_key_protocol;
-  logic [15:0] r_FiveTuple_cp_query_key_table_key_sport;
-  logic [15:0] r_FiveTuple_cp_query_key_table_key_dport;
-  logic r_FiveTuple_cp_query_del;
-  logic r_FiveTuple_cp_wr_en;
-  logic r_FiveTuple_cp_query_en;
-
-  // AXI4-Lite write channel state machine
-  typedef enum logic [1:0] {
-    AXIL_IDLE  = 2'd0,
-    AXIL_WDATA = 2'd1,
-    AXIL_BRESP = 2'd2
-  } axil_st_t;
-
-  axil_st_t               axil_st;
-  logic [AXIL_ADDR_W-1:0] axil_awaddr_r;
-
-  assign s_axil_awready = (axil_st == AXIL_IDLE);
-  assign s_axil_bvalid  = (axil_st == AXIL_BRESP);
-  assign s_axil_bresp   = 2'b00;
-
-  // Commit-type words for a busy table stall wready instead of silently
-  // dropping the write (see cp_query_busy on the query/delete pipeline).
-  logic pending_commit_busy;
-  always @(*) begin
-    pending_commit_busy = 1'b0;
-    case (axil_awaddr_r[AXIL_ADDR_W-1:2])
-      14'd11: pending_commit_busy = FiveTuple_cp_query_busy;
-      14'd17: pending_commit_busy = FiveTuple_cp_query_busy;
-      14'd18: pending_commit_busy = FiveTuple_cp_query_busy;
-      default: pending_commit_busy = 1'b0;
-    endcase
-  end
-  assign s_axil_wready = (axil_st == AXIL_WDATA) && !pending_commit_busy;
-
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      axil_st <= AXIL_IDLE;
-      r_FiveTuple_cp_wr_en <= 1'b0;
-      r_FiveTuple_cp_query_en <= 1'b0;
-    end else begin
-      r_FiveTuple_cp_wr_en <= 1'b0;
-      r_FiveTuple_cp_query_en <= 1'b0;
-      case (axil_st)
-        AXIL_IDLE: begin
-          if (s_axil_awvalid) begin
-            axil_awaddr_r <= s_axil_awaddr;
-            axil_st       <= AXIL_WDATA;
-          end
-        end
-        AXIL_WDATA: begin
-          if (s_axil_wvalid && s_axil_wready) begin
-            case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_FiveTuple_cp_wr_idx <= s_axil_wdata[12:0]; // wr_idx
-              14'd1: r_FiveTuple_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd2: r_FiveTuple_cp_wr_key_src <= s_axil_wdata[31:0]; // key_src
-              14'd3: r_FiveTuple_cp_wr_key_dst <= s_axil_wdata[31:0]; // key_dst
-              14'd4: r_FiveTuple_cp_wr_key_protocol <= s_axil_wdata[7:0]; // key_protocol
-              14'd5: r_FiveTuple_cp_wr_key_table_key_sport <= s_axil_wdata[15:0]; // key_table_key_sport
-              14'd6: r_FiveTuple_cp_wr_key_table_key_dport <= s_axil_wdata[15:0]; // key_table_key_dport
-              14'd7: r_FiveTuple_cp_wr_p_counter_index <= s_axil_wdata[12:0]; // p_counter_index
-              14'd8: r_FiveTuple_cp_wr_p_pcp <= s_axil_wdata[2:0]; // p_pcp
-              14'd9: r_FiveTuple_cp_wr_p_cfi <= s_axil_wdata[0:0]; // p_cfi
-              14'd10: r_FiveTuple_cp_wr_p_vid <= s_axil_wdata[11:0]; // p_vid
-              14'd11: r_FiveTuple_cp_wr_en <= 1'b1; // FiveTuple commit
-              14'd12: r_FiveTuple_cp_query_key_src <= s_axil_wdata[31:0]; // query_key_src
-              14'd13: r_FiveTuple_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst
-              14'd14: r_FiveTuple_cp_query_key_protocol <= s_axil_wdata[7:0]; // query_key_protocol
-              14'd15: r_FiveTuple_cp_query_key_table_key_sport <= s_axil_wdata[15:0]; // query_key_table_key_sport
-              14'd16: r_FiveTuple_cp_query_key_table_key_dport <= s_axil_wdata[15:0]; // query_key_table_key_dport
-              14'd17: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b0; end // FiveTuple query
-              14'd18: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b1; end // FiveTuple delete
-              default: ; // ignore unknown address
-            endcase
-            axil_st <= AXIL_BRESP;
-          end
-        end
-        AXIL_BRESP: begin
-          if (s_axil_bready) axil_st <= AXIL_IDLE;
-        end
-        default: axil_st <= AXIL_IDLE;
-      endcase
-    end
-  end
-
-  // AXI4-Lite read channel
-  typedef enum logic {
-    AXIL_R_IDLE = 1'd0,
-    AXIL_R_DATA = 1'd1
-  } axil_rst_t;
-
-  axil_rst_t   axil_rst;
-  logic [31:0] r_rdata;
-
-  assign s_axil_arready = (axil_rst == AXIL_R_IDLE);
-  assign s_axil_rdata   = r_rdata;
-  assign s_axil_rresp   = 2'b00;
-  assign s_axil_rvalid  = (axil_rst == AXIL_R_DATA);
-
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      axil_rst <= AXIL_R_IDLE;
-    end else begin
-      case (axil_rst)
-        AXIL_R_IDLE: begin
-          if (s_axil_arvalid) begin
-            case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd19: r_rdata <= {30'd0, FiveTuple_cp_query_hit, FiveTuple_cp_query_busy}; // FiveTuple query_status
-              14'd20: r_rdata <= {31'd0, FiveTuple_cp_query_action_id}; // FiveTuple query_action_id
-              14'd21: r_rdata <= {19'd0, FiveTuple_cp_query_p_counter_index}; // FiveTuple query_p_counter_index
-              14'd22: r_rdata <= {29'd0, FiveTuple_cp_query_p_pcp}; // FiveTuple query_p_pcp
-              14'd23: r_rdata <= {31'd0, FiveTuple_cp_query_p_cfi}; // FiveTuple query_p_cfi
-              14'd24: r_rdata <= {20'd0, FiveTuple_cp_query_p_vid}; // FiveTuple query_p_vid
-              default: r_rdata <= 32'd0;
-            endcase
-            axil_rst <= AXIL_R_DATA;
-          end
-        end
-        AXIL_R_DATA: begin
-          if (s_axil_rready) axil_rst <= AXIL_R_IDLE;
-        end
-        default: axil_rst <= AXIL_R_IDLE;
-      endcase
-    end
-  end
-
-  wire [12:0] FiveTuple_cp_wr_idx = r_FiveTuple_cp_wr_idx;
-  wire [0:0] FiveTuple_cp_wr_action = r_FiveTuple_cp_wr_action;
-  wire [31:0] FiveTuple_cp_wr_key_src = r_FiveTuple_cp_wr_key_src;
-  wire [31:0] FiveTuple_cp_wr_key_dst = r_FiveTuple_cp_wr_key_dst;
-  wire [7:0] FiveTuple_cp_wr_key_protocol = r_FiveTuple_cp_wr_key_protocol;
-  wire [15:0] FiveTuple_cp_wr_key_table_key_sport = r_FiveTuple_cp_wr_key_table_key_sport;
-  wire [15:0] FiveTuple_cp_wr_key_table_key_dport = r_FiveTuple_cp_wr_key_table_key_dport;
-  wire [12:0] FiveTuple_cp_wr_p_counter_index = r_FiveTuple_cp_wr_p_counter_index;
-  wire [2:0] FiveTuple_cp_wr_p_pcp = r_FiveTuple_cp_wr_p_pcp;
-  wire [0:0] FiveTuple_cp_wr_p_cfi = r_FiveTuple_cp_wr_p_cfi;
-  wire [11:0] FiveTuple_cp_wr_p_vid = r_FiveTuple_cp_wr_p_vid;
-  wire FiveTuple_cp_wr_en = r_FiveTuple_cp_wr_en;
-  wire [31:0] FiveTuple_cp_query_key_src = r_FiveTuple_cp_query_key_src;
-  wire [31:0] FiveTuple_cp_query_key_dst = r_FiveTuple_cp_query_key_dst;
-  wire [7:0] FiveTuple_cp_query_key_protocol = r_FiveTuple_cp_query_key_protocol;
-  wire [15:0] FiveTuple_cp_query_key_table_key_sport = r_FiveTuple_cp_query_key_table_key_sport;
-  wire [15:0] FiveTuple_cp_query_key_table_key_dport = r_FiveTuple_cp_query_key_table_key_dport;
-  wire FiveTuple_cp_query_en  = r_FiveTuple_cp_query_en;
-  wire FiveTuple_cp_query_del = r_FiveTuple_cp_query_del;
-  wire FiveTuple_hit_out;
 
   processing_generated u_proc (
     .clk       (clk),
     .rst_n     (rst_n),
     .valid_in  (proc_armed),
     .eth_valid     (w_eth_valid),
-    .vlan_valid     (w_vlan_valid),
+    .vlan_0_valid     (w_vlan_0_valid),
     .ipv4_valid     (w_ipv4_valid),
     .ipv4opt_valid     (w_ipv4opt_valid),
-    .tcp_valid     (w_tcp_valid),
-    .tcpopt_valid     (w_tcpopt_valid),
+    .vlan_1_valid     (w_vlan_1_valid),
     .udp_valid     (w_udp_valid),
-    .new_vlan_valid     (w_new_vlan_valid),
     .eth_dmac  (w_eth_dmac),
     .eth_smac  (w_eth_smac),
     .eth_type  (w_eth_type),
-    .vlan_pcp  (w_vlan_pcp),
-    .vlan_cfi  (w_vlan_cfi),
-    .vlan_vid  (w_vlan_vid),
-    .vlan_tpid  (w_vlan_tpid),
+    .vlan_0_pcp  (w_vlan_0_pcp),
+    .vlan_0_cfi  (w_vlan_0_cfi),
+    .vlan_0_vid  (w_vlan_0_vid),
+    .vlan_0_tpid  (w_vlan_0_tpid),
     .ipv4_version  (w_ipv4_version),
     .ipv4_hdr_len  (w_ipv4_hdr_len),
     .ipv4_tos  (w_ipv4_tos),
@@ -459,40 +255,27 @@ module fiveTuple_top #(
     .ipv4_src  (w_ipv4_src),
     .ipv4_dst  (w_ipv4_dst),
     .ipv4opt_options  (w_ipv4opt_options),
-    .tcp_src_port  (w_tcp_src_port),
-    .tcp_dst_port  (w_tcp_dst_port),
-    .tcp_seqNum  (w_tcp_seqNum),
-    .tcp_ackNum  (w_tcp_ackNum),
-    .tcp_dataOffset  (w_tcp_dataOffset),
-    .tcp_resv  (w_tcp_resv),
-    .tcp_flags  (w_tcp_flags),
-    .tcp_window  (w_tcp_window),
-    .tcp_checksum  (w_tcp_checksum),
-    .tcp_urgPtr  (w_tcp_urgPtr),
-    .tcpopt_options  (w_tcpopt_options),
+    .vlan_1_pcp  (w_vlan_1_pcp),
+    .vlan_1_cfi  (w_vlan_1_cfi),
+    .vlan_1_vid  (w_vlan_1_vid),
+    .vlan_1_tpid  (w_vlan_1_tpid),
     .udp_src_port  (w_udp_src_port),
     .udp_dst_port  (w_udp_dst_port),
     .udp_length  (w_udp_length),
     .udp_checksum  (w_udp_checksum),
-    .new_vlan_pcp  (w_new_vlan_pcp),
-    .new_vlan_cfi  (w_new_vlan_cfi),
-    .new_vlan_vid  (w_new_vlan_vid),
-    .new_vlan_tpid  (w_new_vlan_tpid),
     .out_eth_valid     (out_eth_valid),
-    .out_vlan_valid     (out_vlan_valid),
+    .out_vlan_0_valid     (out_vlan_0_valid),
     .out_ipv4_valid     (out_ipv4_valid),
     .out_ipv4opt_valid     (out_ipv4opt_valid),
-    .out_tcp_valid     (out_tcp_valid),
-    .out_tcpopt_valid     (out_tcpopt_valid),
+    .out_vlan_1_valid     (out_vlan_1_valid),
     .out_udp_valid     (out_udp_valid),
-    .out_new_vlan_valid     (out_new_vlan_valid),
     .out_eth_dmac  (out_eth_dmac),
     .out_eth_smac  (out_eth_smac),
     .out_eth_type  (out_eth_type),
-    .out_vlan_pcp  (out_vlan_pcp),
-    .out_vlan_cfi  (out_vlan_cfi),
-    .out_vlan_vid  (out_vlan_vid),
-    .out_vlan_tpid  (out_vlan_tpid),
+    .out_vlan_0_pcp  (out_vlan_0_pcp),
+    .out_vlan_0_cfi  (out_vlan_0_cfi),
+    .out_vlan_0_vid  (out_vlan_0_vid),
+    .out_vlan_0_tpid  (out_vlan_0_tpid),
     .out_ipv4_version  (out_ipv4_version),
     .out_ipv4_hdr_len  (out_ipv4_hdr_len),
     .out_ipv4_tos  (out_ipv4_tos),
@@ -506,52 +289,14 @@ module fiveTuple_top #(
     .out_ipv4_src  (out_ipv4_src),
     .out_ipv4_dst  (out_ipv4_dst),
     .out_ipv4opt_options  (out_ipv4opt_options),
-    .out_tcp_src_port  (out_tcp_src_port),
-    .out_tcp_dst_port  (out_tcp_dst_port),
-    .out_tcp_seqNum  (out_tcp_seqNum),
-    .out_tcp_ackNum  (out_tcp_ackNum),
-    .out_tcp_dataOffset  (out_tcp_dataOffset),
-    .out_tcp_resv  (out_tcp_resv),
-    .out_tcp_flags  (out_tcp_flags),
-    .out_tcp_window  (out_tcp_window),
-    .out_tcp_checksum  (out_tcp_checksum),
-    .out_tcp_urgPtr  (out_tcp_urgPtr),
-    .out_tcpopt_options  (out_tcpopt_options),
+    .out_vlan_1_pcp  (out_vlan_1_pcp),
+    .out_vlan_1_cfi  (out_vlan_1_cfi),
+    .out_vlan_1_vid  (out_vlan_1_vid),
+    .out_vlan_1_tpid  (out_vlan_1_tpid),
     .out_udp_src_port  (out_udp_src_port),
     .out_udp_dst_port  (out_udp_dst_port),
     .out_udp_length  (out_udp_length),
     .out_udp_checksum  (out_udp_checksum),
-    .out_new_vlan_pcp  (out_new_vlan_pcp),
-    .out_new_vlan_cfi  (out_new_vlan_cfi),
-    .out_new_vlan_vid  (out_new_vlan_vid),
-    .out_new_vlan_tpid  (out_new_vlan_tpid),
-    .FiveTuple_cp_wr_en  (FiveTuple_cp_wr_en),
-    .FiveTuple_cp_wr_idx (FiveTuple_cp_wr_idx),
-    .FiveTuple_cp_wr_action (FiveTuple_cp_wr_action),
-    .FiveTuple_cp_wr_key_src (FiveTuple_cp_wr_key_src),
-    .FiveTuple_cp_wr_key_dst (FiveTuple_cp_wr_key_dst),
-    .FiveTuple_cp_wr_key_protocol (FiveTuple_cp_wr_key_protocol),
-    .FiveTuple_cp_wr_key_table_key_sport (FiveTuple_cp_wr_key_table_key_sport),
-    .FiveTuple_cp_wr_key_table_key_dport (FiveTuple_cp_wr_key_table_key_dport),
-    .FiveTuple_cp_wr_p_counter_index (FiveTuple_cp_wr_p_counter_index),
-    .FiveTuple_cp_wr_p_pcp (FiveTuple_cp_wr_p_pcp),
-    .FiveTuple_cp_wr_p_cfi (FiveTuple_cp_wr_p_cfi),
-    .FiveTuple_cp_wr_p_vid (FiveTuple_cp_wr_p_vid),
-    .FiveTuple_cp_query_key_src (FiveTuple_cp_query_key_src),
-    .FiveTuple_cp_query_key_dst (FiveTuple_cp_query_key_dst),
-    .FiveTuple_cp_query_key_protocol (FiveTuple_cp_query_key_protocol),
-    .FiveTuple_cp_query_key_table_key_sport (FiveTuple_cp_query_key_table_key_sport),
-    .FiveTuple_cp_query_key_table_key_dport (FiveTuple_cp_query_key_table_key_dport),
-    .FiveTuple_cp_query_en  (FiveTuple_cp_query_en),
-    .FiveTuple_cp_query_del (FiveTuple_cp_query_del),
-    .FiveTuple_cp_query_busy (FiveTuple_cp_query_busy),
-    .FiveTuple_cp_query_hit  (FiveTuple_cp_query_hit),
-    .FiveTuple_cp_query_action_id (FiveTuple_cp_query_action_id),
-    .FiveTuple_cp_query_p_counter_index (FiveTuple_cp_query_p_counter_index),
-    .FiveTuple_cp_query_p_pcp (FiveTuple_cp_query_p_pcp),
-    .FiveTuple_cp_query_p_cfi (FiveTuple_cp_query_p_cfi),
-    .FiveTuple_cp_query_p_vid (FiveTuple_cp_query_p_vid),
-    .FiveTuple_hit_out  (FiveTuple_hit_out),
     .valid_out (proc_valid_out),
     .drop      (proc_drop)
   );
@@ -666,11 +411,11 @@ module fiveTuple_top #(
           pkt_buf_hdr[11] <= out_eth_smac[7:0];
           pkt_buf_hdr[12] <= out_eth_type[15:8];
           pkt_buf_hdr[13] <= out_eth_type[7:0];
-          if (out_vlan_valid) begin
-              pkt_buf_hdr[14] <= {out_vlan_pcp, out_vlan_cfi, out_vlan_vid[11:8]};
-              pkt_buf_hdr[14+1] <= out_vlan_vid[7:0];
-              pkt_buf_hdr[14+2] <= out_vlan_tpid[15:8];
-              pkt_buf_hdr[14+3] <= out_vlan_tpid[7:0];
+          if (out_vlan_0_valid) begin
+              pkt_buf_hdr[14] <= {out_vlan_0_pcp, out_vlan_0_cfi, out_vlan_0_vid[11:8]};
+              pkt_buf_hdr[14+1] <= out_vlan_0_vid[7:0];
+              pkt_buf_hdr[14+2] <= out_vlan_0_tpid[15:8];
+              pkt_buf_hdr[14+3] <= out_vlan_0_tpid[7:0];
           end
           if (out_ipv4_valid) begin
               pkt_buf_hdr[w_ipv4_base] <= {out_ipv4_version, out_ipv4_hdr_len};
@@ -736,69 +481,11 @@ module fiveTuple_top #(
               pkt_buf_hdr[w_ipv4opt_base+38] <= out_ipv4opt_options[15:8];
               pkt_buf_hdr[w_ipv4opt_base+39] <= out_ipv4opt_options[7:0];
           end
-          if (out_tcp_valid) begin
-              pkt_buf_hdr[w_tcp_base] <= out_tcp_src_port[15:8];
-              pkt_buf_hdr[w_tcp_base+1] <= out_tcp_src_port[7:0];
-              pkt_buf_hdr[w_tcp_base+2] <= out_tcp_dst_port[15:8];
-              pkt_buf_hdr[w_tcp_base+3] <= out_tcp_dst_port[7:0];
-              pkt_buf_hdr[w_tcp_base+4] <= out_tcp_seqNum[31:24];
-              pkt_buf_hdr[w_tcp_base+5] <= out_tcp_seqNum[23:16];
-              pkt_buf_hdr[w_tcp_base+6] <= out_tcp_seqNum[15:8];
-              pkt_buf_hdr[w_tcp_base+7] <= out_tcp_seqNum[7:0];
-              pkt_buf_hdr[w_tcp_base+8] <= out_tcp_ackNum[31:24];
-              pkt_buf_hdr[w_tcp_base+9] <= out_tcp_ackNum[23:16];
-              pkt_buf_hdr[w_tcp_base+10] <= out_tcp_ackNum[15:8];
-              pkt_buf_hdr[w_tcp_base+11] <= out_tcp_ackNum[7:0];
-              pkt_buf_hdr[w_tcp_base+12] <= {out_tcp_dataOffset, out_tcp_resv[5:2]};
-              pkt_buf_hdr[w_tcp_base+13] <= {out_tcp_resv[1:0], out_tcp_flags};
-              pkt_buf_hdr[w_tcp_base+14] <= out_tcp_window[15:8];
-              pkt_buf_hdr[w_tcp_base+15] <= out_tcp_window[7:0];
-              pkt_buf_hdr[w_tcp_base+16] <= out_tcp_checksum[15:8];
-              pkt_buf_hdr[w_tcp_base+17] <= out_tcp_checksum[7:0];
-              pkt_buf_hdr[w_tcp_base+18] <= out_tcp_urgPtr[15:8];
-              pkt_buf_hdr[w_tcp_base+19] <= out_tcp_urgPtr[7:0];
-          end
-          if (out_tcpopt_valid) begin
-              pkt_buf_hdr[w_tcpopt_base] <= out_tcpopt_options[319:312];
-              pkt_buf_hdr[w_tcpopt_base+1] <= out_tcpopt_options[311:304];
-              pkt_buf_hdr[w_tcpopt_base+2] <= out_tcpopt_options[303:296];
-              pkt_buf_hdr[w_tcpopt_base+3] <= out_tcpopt_options[295:288];
-              pkt_buf_hdr[w_tcpopt_base+4] <= out_tcpopt_options[287:280];
-              pkt_buf_hdr[w_tcpopt_base+5] <= out_tcpopt_options[279:272];
-              pkt_buf_hdr[w_tcpopt_base+6] <= out_tcpopt_options[271:264];
-              pkt_buf_hdr[w_tcpopt_base+7] <= out_tcpopt_options[263:256];
-              pkt_buf_hdr[w_tcpopt_base+8] <= out_tcpopt_options[255:248];
-              pkt_buf_hdr[w_tcpopt_base+9] <= out_tcpopt_options[247:240];
-              pkt_buf_hdr[w_tcpopt_base+10] <= out_tcpopt_options[239:232];
-              pkt_buf_hdr[w_tcpopt_base+11] <= out_tcpopt_options[231:224];
-              pkt_buf_hdr[w_tcpopt_base+12] <= out_tcpopt_options[223:216];
-              pkt_buf_hdr[w_tcpopt_base+13] <= out_tcpopt_options[215:208];
-              pkt_buf_hdr[w_tcpopt_base+14] <= out_tcpopt_options[207:200];
-              pkt_buf_hdr[w_tcpopt_base+15] <= out_tcpopt_options[199:192];
-              pkt_buf_hdr[w_tcpopt_base+16] <= out_tcpopt_options[191:184];
-              pkt_buf_hdr[w_tcpopt_base+17] <= out_tcpopt_options[183:176];
-              pkt_buf_hdr[w_tcpopt_base+18] <= out_tcpopt_options[175:168];
-              pkt_buf_hdr[w_tcpopt_base+19] <= out_tcpopt_options[167:160];
-              pkt_buf_hdr[w_tcpopt_base+20] <= out_tcpopt_options[159:152];
-              pkt_buf_hdr[w_tcpopt_base+21] <= out_tcpopt_options[151:144];
-              pkt_buf_hdr[w_tcpopt_base+22] <= out_tcpopt_options[143:136];
-              pkt_buf_hdr[w_tcpopt_base+23] <= out_tcpopt_options[135:128];
-              pkt_buf_hdr[w_tcpopt_base+24] <= out_tcpopt_options[127:120];
-              pkt_buf_hdr[w_tcpopt_base+25] <= out_tcpopt_options[119:112];
-              pkt_buf_hdr[w_tcpopt_base+26] <= out_tcpopt_options[111:104];
-              pkt_buf_hdr[w_tcpopt_base+27] <= out_tcpopt_options[103:96];
-              pkt_buf_hdr[w_tcpopt_base+28] <= out_tcpopt_options[95:88];
-              pkt_buf_hdr[w_tcpopt_base+29] <= out_tcpopt_options[87:80];
-              pkt_buf_hdr[w_tcpopt_base+30] <= out_tcpopt_options[79:72];
-              pkt_buf_hdr[w_tcpopt_base+31] <= out_tcpopt_options[71:64];
-              pkt_buf_hdr[w_tcpopt_base+32] <= out_tcpopt_options[63:56];
-              pkt_buf_hdr[w_tcpopt_base+33] <= out_tcpopt_options[55:48];
-              pkt_buf_hdr[w_tcpopt_base+34] <= out_tcpopt_options[47:40];
-              pkt_buf_hdr[w_tcpopt_base+35] <= out_tcpopt_options[39:32];
-              pkt_buf_hdr[w_tcpopt_base+36] <= out_tcpopt_options[31:24];
-              pkt_buf_hdr[w_tcpopt_base+37] <= out_tcpopt_options[23:16];
-              pkt_buf_hdr[w_tcpopt_base+38] <= out_tcpopt_options[15:8];
-              pkt_buf_hdr[w_tcpopt_base+39] <= out_tcpopt_options[7:0];
+          if (out_vlan_1_valid) begin
+              pkt_buf_hdr[18] <= {out_vlan_1_pcp, out_vlan_1_cfi, out_vlan_1_vid[11:8]};
+              pkt_buf_hdr[18+1] <= out_vlan_1_vid[7:0];
+              pkt_buf_hdr[18+2] <= out_vlan_1_tpid[15:8];
+              pkt_buf_hdr[18+3] <= out_vlan_1_tpid[7:0];
           end
           if (out_udp_valid) begin
               pkt_buf_hdr[w_udp_base] <= out_udp_src_port[15:8];

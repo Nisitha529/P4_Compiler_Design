@@ -87,6 +87,12 @@ module fiveTuple_selftest_top #(
     .s_axil_rdata(s_axil_rdata), .s_axil_rresp(s_axil_rresp), .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready)
   );
 
+  logic [13:0] gen_pkt_len_reg;
+  logic [31:0] gen_pkt_count_reg;
+  logic [12:0] gen_vary_offset_reg;
+  logic gen_vary_enable_reg;
+  logic [31:0] gen_ipg_reg;
+
   // ── Packet generator ─────────────────────────────────────────────────────
   typedef enum logic [1:0] {
     GEN_IDLE = 2'd0,
@@ -258,11 +264,8 @@ module fiveTuple_selftest_top #(
   end
 
   // ── Self-test AXI4-Lite decoder (own bus, own FSM -- see register map above) ──
-  logic [13:0] gen_pkt_len_reg;
-  logic [31:0] gen_pkt_count_reg;
-  logic [12:0] gen_vary_offset_reg;
-  logic gen_vary_enable_reg;
-  logic [31:0] gen_ipg_reg;
+  // (staging-register declarations for gen_pkt_len_reg/etc. are hoisted to
+  // before _write_generator -- see the call site in _write_module.)
 
   typedef enum logic [1:0] {
     ST_AXIL_IDLE  = 2'd0,

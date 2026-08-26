@@ -1049,23 +1049,33 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // ── Header field extraction from pkt_buf ────────────────────────────────\n')
     f.write('  //    Fields extracted using big-endian (network byte order) bit mapping.\n\n')
 
-    # First pass: generate offset variable declarations (ordered by dependency)
-    # We need to generate offset vars BEFORE the field wires that depend on them.
-    _emit_offset_vars(f, layouts, inst_map, valid_map, HDR_IDX_W)
-
-    # Second pass: generate field extraction wires
+    # Offset-var and field-extraction wires are interleaved per-header, in
+    # layouts' topological (parse) order, rather than emitted as two flat
+    # blocks -- because of a real cross-toolchain finding: Vivado's xvlog
+    # (unlike iverilog) rejects a `wire X = expr_referencing_Y;` when Y's own
+    # declaration appears later in the file, even though this is ordinary,
+    # valid Verilog (module-level net/continuous-assign order has no
+    # synthesis/simulation meaning) -- iverilog tolerates the forward
+    # reference, xvlog does not. The dependency runs BOTH directions: an
+    # offset-var can need an earlier header's plain field (e.g. an eth_type
+    # check gating a variable-base header), and it can ALSO need an earlier
+    # variable-base header's OWN field (e.g. an ipv4-options header's offset
+    # depending on ipv4's hdr_len field, where ipv4 itself has a variable
+    # base if an optional VLAN tag precedes it) -- so a simple two-bucket
+    # split (fixed-base fields, then all offset-vars, then variable-base
+    # fields) isn't sufficient; only true per-header interleaving in parse
+    # order is, since `layouts` is already in that order and a header's
+    # offset/var_pred predecessor is always an earlier entry in it.
+    emitted_offset_vars = set()
     for layout in layouts:
+        _emit_offset_var_for(f, layout, layouts, valid_map, HDR_IDX_W, emitted_offset_vars)
+
         inst_name = layout['inst_name']
         inst      = inst_map.get(inst_name)
         if not inst:
             continue
-        mandatory_base = layout['mandatory_base']
-        optional_preds = layout['optional_preds']
-        var_pred       = layout['var_pred']
-
-        # Choose the base expression for this header
-        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred)
-
+        base_expr = _choose_base_expr(inst_name, layout['mandatory_base'],
+                                       layout['optional_preds'], layout['var_pred'])
         f.write(f'  // {inst_name} — base: {base_expr}\n')
         bit_off = 0
         for fld in inst.header_type.fields:
@@ -1128,7 +1138,32 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  wire proc_valid_out;\n')
     f.write('  wire proc_drop;\n\n')
 
-    # Declare cp_wr staging regs wires (for processing instantiation)
+    # Plain (no-initializer) query-result wires declared here, BEFORE the
+    # AXI4-Lite decoder -- the decoder's own read-side logic (query_status/
+    # query_action_id/query_p_* word reads) and pending_commit_busy mux
+    # reference these by name (e.g. `pending_commit_busy = FiveTuple_cp_query_busy;`),
+    # and Vivado's xvlog (unlike iverilog) rejects referencing a signal
+    # before its own declaration. A bare `wire X;` has no initializer to
+    # depend on anything itself, so hoisting just these (not the r_*-register
+    # ALIAS wires below, which must stay AFTER the decoder since they
+    # reference ITS registers) resolves this direction of the same
+    # cross-toolchain forward-reference class fixed above for header fields.
+    for ti in regmap:
+        if ti['supports_query']:
+            tname = ti['tname']
+            f.write(f'  wire {tname}_cp_query_busy;\n')
+            f.write(f'  wire {tname}_cp_query_hit;\n')
+            f.write(f'  wire [{ti["act_w"]-1}:0] {tname}_cp_query_action_id;\n')
+            for pname, pw in ti['params']:
+                f.write(f'  wire [{pw-1}:0] {tname}_cp_query_p_{pname};\n')
+    f.write('\n')
+
+    _emit_axil_decoder(f, regmap)
+
+    # Declare cp_wr staging regs wires (for processing instantiation) -- these
+    # ALIAS the decoder's own r_{tname}_cp_wr_*/r_{tname}_cp_query_*
+    # registers (e.g. `wire [W-1:0] {cp_sig} = r_{cp_sig};`), so must stay
+    # AFTER _emit_axil_decoder, which is what actually declares those registers.
     for ti in regmap:
         tname = ti['tname']
         for rname, cp_sig, width in ti['regs']:
@@ -1141,11 +1176,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if ti['supports_query']:
             f.write(f'  wire {tname}_cp_query_en  = r_{tname}_cp_query_en;\n')
             f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
-            f.write(f'  wire {tname}_cp_query_busy;\n')
-            f.write(f'  wire {tname}_cp_query_hit;\n')
-            f.write(f'  wire [{ti["act_w"]-1}:0] {tname}_cp_query_action_id;\n')
-            for pname, pw in ti['params']:
-                f.write(f'  wire [{pw-1}:0] {tname}_cp_query_p_{pname};\n')
         f.write(f'  wire {tname}_hit_out;\n')
 
     f.write('\n')
@@ -1194,9 +1224,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    .valid_out (proc_valid_out),\n')
     f.write('    .drop      (proc_drop)\n')
     f.write('  );\n\n')
-
-    # ── AXI4-Lite decoder ─────────────────────────────────────────────────────
-    _emit_axil_decoder(f, regmap)
 
     # ── Cross-block completion signal ─────────────────────────────────────────
     f.write('  // ── Cross-block wiring ───────────────────────────────────────────────────\n')
@@ -1377,56 +1404,73 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
 # ── Offset variable emitter ────────────────────────────────────────────────────
 
+def _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted):
+    """
+    Emit the wire declaration for one header's runtime-computed byte offset
+    (a no-op if this header has only mandatory predecessors -- fixed offset,
+    no variable needed -- or its var was already emitted). Factored out of
+    _emit_offset_vars so callers can interleave this per-header, in the same
+    topological (parse) order as field-wire emission -- required because a
+    var_pred offset can reference an EARLIER header's own field (e.g. an
+    ipv4-options header's offset depending on ipv4's hdr_len field), which
+    must itself already be declared. See the caller in _write_module for the
+    full cross-toolchain (Vivado xvlog vs iverilog) rationale.
+    """
+    inst_name      = layout['inst_name']
+    mandatory_base = layout['mandatory_base']
+    optional_preds = layout['optional_preds']
+    var_pred       = layout['var_pred']
+
+    if not optional_preds and var_pred is None:
+        return  # fixed offset, no var needed
+
+    var_name = _offset_var(inst_name)
+    if var_name in emitted:
+        return
+    emitted.add(var_name)
+
+    if optional_preds and var_pred is None:
+        # offset = mandatory_base + sum(size if opt_valid else 0 for opt, size in optional_preds)
+        terms = [str(mandatory_base)]
+        for opt_name, opt_size in optional_preds:
+            vexpr = valid_map.get(opt_name, "1'b0")
+            terms.append(f'({vexpr} ? {opt_size} : 0)')
+        expr = ' + '.join(terms)
+        f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = {expr};\n')
+
+    elif var_pred is not None:
+        vname, vfield = var_pred
+        # base = previous header's offset + (length_field * scale)
+        # hdr_len field has scale factor 4 (32-bit words → bytes)
+        prev_var = _offset_var(vname)
+        prev_layout = next((l for l in layouts if l['inst_name'] == vname), None)
+        has_prev_var = (prev_layout and
+                        (prev_layout['optional_preds'] or prev_layout['var_pred'] is not None))
+        prev_base_expr = prev_var if has_prev_var else str(
+            prev_layout['mandatory_base'] if prev_layout else 0)
+        hdr_bytes_var = f'w_{vname}_hdr_bytes'
+        if hdr_bytes_var not in emitted:
+            emitted.add(hdr_bytes_var)
+            f.write(f'  wire [{hdr_idx_w-1}:0] {hdr_bytes_var} = '
+                    f'{{{hdr_idx_w-4}\'b0, w_{vname}_{vfield}}} << 2;\n')
+        f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = '
+                f'{prev_base_expr} + {hdr_bytes_var};\n')
+
+
 def _emit_offset_vars(f, layouts, inst_map, valid_map, hdr_idx_w):
     """
-    Emit wire declarations for runtime-computed header byte offsets.
-    Headers with only mandatory predecessors (fixed offset) need no variable.
-    Headers with optional or variable predecessors get a w_{name}_base wire.
+    Emit wire declarations for runtime-computed header byte offsets, for
+    every header in one pass (see _emit_offset_var_for for the per-header
+    logic). Headers with only mandatory predecessors (fixed offset) need no
+    variable. Headers with optional or variable predecessors get a
+    w_{name}_base wire. Not used by _write_module directly any more (its own
+    field/offset emission is interleaved per-header instead, see there) --
+    kept as the simple non-interleaved form for any future caller that
+    doesn't have this file's specific forward-reference constraint.
     """
-    # Track which headers have already emitted an offset var
     emitted = set()
-
     for layout in layouts:
-        inst_name    = layout['inst_name']
-        mandatory_base = layout['mandatory_base']
-        optional_preds = layout['optional_preds']
-        var_pred       = layout['var_pred']
-
-        if not optional_preds and var_pred is None:
-            continue  # fixed offset, no var needed
-
-        var_name = _offset_var(inst_name)
-        if var_name in emitted:
-            continue
-        emitted.add(var_name)
-
-        if optional_preds and var_pred is None:
-            # offset = mandatory_base + sum(size if opt_valid else 0 for opt, size in optional_preds)
-            terms = [str(mandatory_base)]
-            for opt_name, opt_size in optional_preds:
-                vexpr = valid_map.get(opt_name, "1'b0")
-                terms.append(f'({vexpr} ? {opt_size} : 0)')
-            expr = ' + '.join(terms)
-            f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = {expr};\n')
-
-        elif var_pred is not None:
-            vname, vfield = var_pred
-            # base = previous header's offset + (length_field * scale)
-            # hdr_len field has scale factor 4 (32-bit words → bytes)
-            prev_var = _offset_var(vname)
-            prev_layout = next((l for l in layouts if l['inst_name'] == vname), None)
-            has_prev_var = (prev_layout and
-                            (prev_layout['optional_preds'] or prev_layout['var_pred'] is not None))
-            prev_base_expr = prev_var if has_prev_var else str(
-                prev_layout['mandatory_base'] if prev_layout else 0)
-            hdr_bytes_var = f'w_{vname}_hdr_bytes'
-            if hdr_bytes_var not in emitted:
-                emitted.add(hdr_bytes_var)
-                f.write(f'  wire [{hdr_idx_w-1}:0] {hdr_bytes_var} = '
-                        f'{{{hdr_idx_w-4}\'b0, w_{vname}_{vfield}}} << 2;\n')
-            f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = '
-                    f'{prev_base_expr} + {hdr_bytes_var};\n')
-
+        _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted)
     f.write('\n')
 
 

@@ -82,6 +82,22 @@ def _p4_lit_to_sv(lit):
     return lit
 
 
+def _sanitize_stack_idx(name):
+    """
+    Header-stack element syntax (hdr.vlan[0]) has no direct SV identifier
+    equivalent -- 'vlan[0]' is not a legal signal-name fragment. Convert to
+    'vlan_0', matching ingest_bmv2.py's own _sanitize_stack_idx() exactly
+    (same fix, same naming convention, ported to this frontend's ingestion
+    -- this file had no equivalent sanitization until a real, demonstrated
+    bug (illegal 'vlan[0]_tpid'-shaped ports/wires in generated RTL) showed
+    the gap). Only static, compile-time-constant indices ever reach here
+    (P4-16 requires stack-element indices to be compile-time constants for
+    this syntax; dynamic .next/.last indexing is a separate, deliberately
+    unsupported feature -- see feedback_no_dynamic_header_stack).
+    """
+    return re.sub(r'\[(\d+)\]', r'_\1', name)
+
+
 def _convert_expr(expr):
     """Convert P4 expression literals to SV-ready strings."""
     expr = expr.strip()
@@ -93,6 +109,12 @@ def _convert_expr(expr):
     # P4 numeric literals (Nw0xHH or NwD)
     expr = re.sub(r'\b(\d+w(?:0[xX][0-9a-fA-F]+|\d+))',
                   lambda m: _p4_lit_to_sv(m.group(1)), expr)
+    # Header-stack element syntax (hdr.vlan[0].tpid) -> hdr.vlan_0.tpid, so
+    # every downstream consumer (emit_parser.py's/emit_processing.py's own
+    # hdr.-stripping dot-to-underscore mapping) sees a plain dotted path,
+    # never a bracket -- same "sanitize once, at ingestion" discipline
+    # ingest_bmv2.py already uses.
+    expr = _sanitize_stack_idx(expr)
     return expr
 
 
@@ -161,6 +183,29 @@ def _parse_structs(text, header_type_map):
         if sname in ('headers', 'Headers'):
             for line in body.split(';'):
                 line = line.strip()
+                # TYPE[N] NAME;  (header stack) -- register N independent
+                # instances (NAME_0..NAME_{N-1}), matching the fixed-size
+                # unroll this compiler supports (N is a compile-time
+                # constant from the array bound; dynamic .next/.last
+                # indexing is a separate, deliberately unsupported feature
+                # -- see feedback_no_dynamic_header_stack). Without this,
+                # a stack-typed member matched NEITHER this branch NOR the
+                # plain-header branch below (the '[' breaks \w+), so it was
+                # silently registered as NO header instance at all -- a
+                # real, previously-undiscovered gap distinct from (and
+                # upstream of) the parser/deparser bracket-sanitization fix
+                # in _convert_expr/_sanitize_stack_idx.
+                sm = re.match(r'(\w+)\s*\[\s*(\d+)\s*\]\s+(\w+)', line)
+                if sm:
+                    type_name, size_str, inst_name = sm.group(1), sm.group(2), sm.group(3)
+                    hdr_type = header_type_map.get(type_name)
+                    if hdr_type:
+                        for i in range(int(size_str)):
+                            header_instances.append(
+                                HeaderInstance(f'{inst_name}_{i}', type_name, hdr_type)
+                            )
+                    continue
+
                 fm = re.match(r'(\w+)\s+(\w+)', line)
                 if fm:
                     type_name, inst_name = fm.group(1), fm.group(2)
@@ -309,7 +354,7 @@ def _parse_action_body(body_text, name_map=None):
         # LHS = RHS  (skip == comparisons)
         m = re.match(r'(.+?)\s*=\s*(.+)', raw, re.DOTALL)
         if m and '==' not in m.group(0):
-            lhs = m.group(1).strip()
+            lhs = _convert_expr(m.group(1).strip())
             rhs = _convert_expr(m.group(2).strip())
             stmts.append(Assignment(lhs, rhs))
 
@@ -713,6 +758,7 @@ def _parse_parser_states(body_text):
             args = [a.strip() for a in args_str.split(',')]
             hdr_ref = args[0]
             hdr_field = hdr_ref.split('.')[-1] if '.' in hdr_ref else hdr_ref
+            hdr_field = _sanitize_stack_idx(hdr_field)
             is_dynamic = len(args) > 1
             len_expr = _convert_expr(args[1]) if is_dynamic else None
             state.add_extract(Extract(hdr_field, dynamic=is_dynamic, length_expr=len_expr))
@@ -758,8 +804,13 @@ def _parse_parser_states(body_text):
 def _parse_deparser(body_text):
     """Extract emit list from deparser control body."""
     emit_list = []
-    for m in re.finditer(r'packet\s*\.\s*emit\s*<[^>]*>\s*\(\s*hdr\.(\w+)\s*\)', body_text):
-        emit_list.append(m.group(1))
+    # (\w+(?:\[\d+\])?) also matches a header-stack element (hdr.vlan[0]) --
+    # without this the whole packet.emit(hdr.vlan[0]) statement silently
+    # failed to match at all (finditer just skips it, no error), a real,
+    # previously-undiscovered bug: emitting a stack element was silently
+    # dropped from the deparser entirely, not just misnamed.
+    for m in re.finditer(r'packet\s*\.\s*emit\s*<[^>]*>\s*\(\s*hdr\.(\w+(?:\[\d+\])?)\s*\)', body_text):
+        emit_list.append(_sanitize_stack_idx(m.group(1)))
     return emit_list
 
 

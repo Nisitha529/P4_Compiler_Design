@@ -204,6 +204,20 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
     f.write('    .s_axil_rdata(s_axil_rdata), .s_axil_rresp(s_axil_rresp), .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready)\n')
     f.write('  );\n\n')
 
+    # Bare (no-initializer) staging-register declarations hoisted here,
+    # BEFORE _write_generator -- its own logic references gen_pkt_len_reg/
+    # etc. by name, but those are only ever DECLARED inside
+    # _write_axil_decoder (which runs after it, since it also needs
+    # gen_busy/cap_busy/etc. from the generator/capture blocks). Vivado's
+    # xvlog (unlike iverilog) rejects referencing a signal before its own
+    # declaration -- same cross-toolchain forward-reference class already
+    # found and fixed in emit_top.py.
+    f.write(f'  logic [{pktlen_w-1}:0] gen_pkt_len_reg;\n')
+    f.write("  logic [31:0] gen_pkt_count_reg;\n")
+    f.write(f'  logic [{vary_w-1}:0] gen_vary_offset_reg;\n')
+    f.write('  logic gen_vary_enable_reg;\n')
+    f.write("  logic [31:0] gen_ipg_reg;\n\n")
+
     _write_generator(f, pktlen_w, vary_w)
     _write_capture(f)
     _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr_span_words, max_pkt_bytes)
@@ -387,11 +401,8 @@ def _write_capture(f):
 
 def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr_span_words, max_pkt_bytes):
     f.write('  // ── Self-test AXI4-Lite decoder (own bus, own FSM -- see register map above) ──\n')
-    f.write(f'  logic [{pktlen_w-1}:0] gen_pkt_len_reg;\n')
-    f.write("  logic [31:0] gen_pkt_count_reg;\n")
-    f.write(f'  logic [{vary_w-1}:0] gen_vary_offset_reg;\n')
-    f.write('  logic gen_vary_enable_reg;\n')
-    f.write("  logic [31:0] gen_ipg_reg;\n\n")
+    f.write('  // (staging-register declarations for gen_pkt_len_reg/etc. are hoisted to\n')
+    f.write('  // before _write_generator -- see the call site in _write_module.)\n\n')
 
     f.write('  typedef enum logic [1:0] {\n')
     f.write("    ST_AXIL_IDLE  = 2'd0,\n")

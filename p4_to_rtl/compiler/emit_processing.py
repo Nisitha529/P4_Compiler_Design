@@ -383,6 +383,17 @@ def _subst(text, pmap, cmap):
     return _map_expr(text, cmap)
 
 
+def _sanitize_reg_dest(raw):
+    """register.read()'s destination argument can be a dotted P4 lvalue (e.g.
+    'meta.ttl') -- sanitize into a legal SV identifier fragment for the
+    {reg}_rd_{dest} wire name, matching this codebase's meta_{name}-style
+    dot-to-underscore convention used everywhere else (e.g. emit_parser.py's
+    _map_expr). Used identically at both the wire's declaration site
+    (_collect_reg_reads' consumer) and its usage site (_emit_extern_stub) so
+    the two can never drift into different names for the same register read."""
+    return raw.replace('.', '_')
+
+
 def _collect_reg_reads(ctrl):
     seen  = set()
     reads = []
@@ -479,7 +490,7 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
         if method == 'read' and len(stmt.args) >= 2:
             raw_out = stmt.args[0].strip()
             out_var = _subst(raw_out, pmap, cmap)
-            f.write(f'{ind}{out_var} = {obj}_rd_{raw_out};\n')
+            f.write(f'{ind}{out_var} = {obj}_rd_{_sanitize_reg_dest(raw_out)};\n')
             return
         if method == 'write' and len(stmt.args) >= 2:
             addr = _subst(stmt.args[0], pmap, cmap)
@@ -1369,8 +1380,9 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     dw = reg_obj.data_width if reg_obj else 1
                     read_stage = _reg_read_stage(reg_name)
                     addr_expr = _stage_text(_map_expr(raw_addr), read_stage)
-                    f.write(f'  logic [{dw-1}:0] {reg_name}_rd_{raw_out};\n')
-                    f.write(f'  assign {reg_name}_rd_{raw_out} = {reg_name}_mem[{addr_expr}];\n')
+                    dest_id = _sanitize_reg_dest(raw_out)
+                    f.write(f'  logic [{dw-1}:0] {reg_name}_rd_{dest_id};\n')
+                    f.write(f'  assign {reg_name}_rd_{dest_id} = {reg_name}_mem[{addr_expr}];\n')
                 f.write('\n')
 
         # ── Table lookup result wires ──────────────────────────────────
