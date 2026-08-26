@@ -1,0 +1,1 @@
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) jtag_to_avalon_mst_brg_01/jtag_to_avalon_mst_brg_01.qip]

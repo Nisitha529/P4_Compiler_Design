@@ -178,10 +178,35 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
     f.write('  // read over st_axil_*). Real BRAM cost -- see this file\'s module docstring.\n')
     f.write('  logic [7:0] tmpl_buf [0:MAX_PKT_BYTES-1];\n')
     f.write('  logic [7:0] cap_buf  [0:MAX_PKT_BYTES-1];\n')
+    # Simulation-only zero-fill, excluded from synthesis: real hardware needs
+    # no reset value here (tmpl_buf is written by software before use,
+    # cap_buf by the capture FSM before being read) -- this exists purely
+    # for simulation determinism. Required, not cosmetic: a real Quartus
+    # synthesis run of this file hit "Loop error... must terminate within
+    # 5000 iterations" at MAX_PKT_BYTES=8192 -- Quartus caps procedural
+    # for-loop unrolling in initial blocks, and this loop (correctly)
+    # exceeds that for any real packet-size buffer.
+    #
+    # `ifndef SYNTHESIS alone did NOT resolve this on real Quartus (found
+    # empirically -- the loop error persisted, meaning Quartus's Analysis &
+    # Synthesis does not reliably predefine SYNTHESIS, contrary to the
+    # first attempt's assumption) -- switched to `// synthesis
+    # translate_off` / `// synthesis translate_on`, a much older,
+    # comment-based directive (not a preprocessor macro, so it can't
+    # silently fail to apply the way an undefined `ifdef would) that every
+    # major FPGA synthesis tool, Quartus and Vivado both, recognizes
+    # natively as "skip this block during synthesis." Kept alongside the
+    # `ifndef SYNTHESIS guard (harmless, may help other future toolchains)
+    # rather than removed, but translate_off/on is now the real, load-
+    # bearing mechanism.
+    f.write('  `ifndef SYNTHESIS\n')
+    f.write('  // synthesis translate_off\n')
     f.write('  initial begin\n')
     f.write('    for (int i = 0; i < MAX_PKT_BYTES; i++) tmpl_buf[i] = 8\'d0;\n')
     f.write('    for (int i = 0; i < MAX_PKT_BYTES; i++) cap_buf[i]  = 8\'d0;\n')
-    f.write('  end\n\n')
+    f.write('  end\n')
+    f.write('  // synthesis translate_on\n')
+    f.write('  `endif\n\n')
 
     # ── Core instantiation ───────────────────────────────────────────────────
     f.write(f'  logic [AXI_DATA_W-1:0] gen_axis_tdata;\n')

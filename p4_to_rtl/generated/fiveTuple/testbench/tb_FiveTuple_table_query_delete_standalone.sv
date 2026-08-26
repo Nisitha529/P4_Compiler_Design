@@ -217,6 +217,9 @@ module tb_FiveTuple_table_query_delete_standalone;
     // ────────────────────────────────────────────────────────────────────
     $display("══ T1: write + query -> hit ═══════════════════════════════════════");
     do_reset();
+    // mem_valid's power-on clear FSM (not rst_n-gated -- see FiveTuple_table.sv)
+    // runs exactly once; wait for it here so no test below races it.
+    wait (!dut.clearing);
     cp_write(A_SRC, A_DST, A_PROTO, A_SPORT, A_DPORT, A_ACT, A_CIDX, A_PCP, A_CFI, A_VID);
     cp_query(A_SRC, A_DST, A_PROTO, A_SPORT, A_DPORT, 0);
     chk("T1: query hit", cp_query_hit);

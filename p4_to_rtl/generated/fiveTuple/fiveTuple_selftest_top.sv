@@ -61,10 +61,14 @@ module fiveTuple_selftest_top #(
   // read over st_axil_*). Real BRAM cost -- see this file's module docstring.
   logic [7:0] tmpl_buf [0:MAX_PKT_BYTES-1];
   logic [7:0] cap_buf  [0:MAX_PKT_BYTES-1];
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (int i = 0; i < MAX_PKT_BYTES; i++) tmpl_buf[i] = 8'd0;
     for (int i = 0; i < MAX_PKT_BYTES; i++) cap_buf[i]  = 8'd0;
   end
+  // synthesis translate_on
+  `endif
 
   logic [AXI_DATA_W-1:0] gen_axis_tdata;
   logic [KEEP_W-1:0]     gen_axis_tkeep;

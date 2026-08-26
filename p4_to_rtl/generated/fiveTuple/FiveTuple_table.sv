@@ -69,10 +69,14 @@ module FiveTuple_table #(
   logic [11:0] mem_p_vid[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 104-bit key -> 13-bit BRAM address
   function automatic logic [12:0] hash_key(input logic [103:0] k);
@@ -128,7 +132,7 @@ module FiveTuple_table #(
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       q_pend_valid <= 1'b0;
-    end else if (cp_query_en && !q_pend_valid && !cp_wr_en) begin
+    end else if (cp_query_en && !q_pend_valid && !cp_wr_en && !clearing) begin
       q_pend_valid <= 1'b1;
       q_pend_del   <= cp_query_del;
       q_pend_addr  <= q_addr;
@@ -190,17 +194,46 @@ module FiveTuple_table #(
   assign cp_query_p_cfi = q_p_cfi_r;
   assign cp_query_p_vid = q_p_vid_r;
 
-  // Synchronous write (control plane) -- extended, not duplicated, to
-  // add the delete-commit branch: this is the one place mem_valid needs
-  // two possible writers, and it must stay a single always_ff with
-  // if/else-if so at most one branch can ever drive the array per cycle.
-  // The plain write is additionally gated !q_pend_valid so a write
-  // colliding with an in-flight query/delete is dropped here rather
-  // than corrupting anything -- the AXI4-Lite decoder is responsible
-  // for never letting that collision reach this port in the first
-  // place (see cp_query_busy-gated backpressure on the write channel).
+  // Real power-on clear for mem_valid: the initial-block zero-fill above
+  // is excluded from real synthesis (translate_off), so Quartus never sees
+  // an init hint for this BRAM -- real Cyclone IV power-up content is
+  // otherwise unspecified, which would let the table report spurious hits
+  // on entries the control plane never wrote. This FSM walks every address
+  // once, forcing mem_valid low, before any real write/query/lookup is
+  // allowed to see memory content. Deliberately NOT gated on rst_n: table
+  // entries must persist across a soft rst_n pulse (existing, tested
+  // behavior -- see tb_FiveTuple_table_query_delete_standalone.sv), so this
+  // has to be a genuine one-shot power-on sequence, driven purely by each
+  // register's own inline initial value (a standard, synthesizable FPGA
+  // idiom -- distinct from the procedural initial-BLOCK LOOP that hit
+  // Quartus's 5000-iteration cap; a single register's declared reset value
+  // is just its configuration-time power-up state, not an unrolled loop).
+  // A write/query issued while clearing is in progress is silently
+  // dropped (see cp_query_en's !clearing gate above) -- accepted as a
+  // low-probability edge case, since DEPTH cycles is microseconds of real
+  // wall-clock time, not something realistic control-plane software would
+  // race against.
+  logic clearing = 1'b1;
+  logic [12:0] clr_idx = '0;
+
+  // Synchronous write (control plane) -- extended, not duplicated, to add
+  // the delete-commit branch AND the power-on clear above: this is the one
+  // place mem_valid needs multiple writers, and it must stay a single
+  // always_ff with if/else-if so at most one branch can ever drive the
+  // array per cycle. The plain write is additionally gated !q_pend_valid so
+  // a write colliding with an in-flight query/delete is dropped here rather
+  // than corrupting anything -- the AXI4-Lite decoder is responsible for
+  // never letting that collision reach this port in the first place (see
+  // cp_query_busy-gated backpressure on the write channel).
   always_ff @(posedge clk) begin
-    if (cp_wr_en && !q_pend_valid) begin
+    if (clearing) begin
+      mem_valid[clr_idx] <= 1'b0;
+      if (clr_idx == DEPTH-1) begin
+        clearing <= 1'b0;
+      end else begin
+        clr_idx <= clr_idx + 1'b1;
+      end
+    end else if (cp_wr_en && !q_pend_valid) begin
       mem_valid[wr_addr]  <= 1'b1;
       mem_key_src[wr_addr] <= cp_wr_key_src;
       mem_key_dst[wr_addr] <= cp_wr_key_dst;
@@ -239,7 +272,7 @@ module FiveTuple_table #(
     if (!rst_n) begin
       valid_r <= 1'b0;
     end else begin
-      valid_r     <= mem_valid[lkp_addr];
+      valid_r     <= clearing ? 1'b0 : mem_valid[lkp_addr];
       key_r_src     <= lkp_src;
       mem_key_r_src <= mem_key_src[lkp_addr];
       key_r_dst     <= lkp_dst;

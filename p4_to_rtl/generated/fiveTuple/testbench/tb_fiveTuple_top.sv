@@ -388,6 +388,9 @@ module tb_fiveTuple_top;
   initial begin
     $display("== tb_fiveTuple_top: cut-through AXI4-Stream regression ==\n");
     do_reset();
+    // mem_valid's power-on clear FSM (not rst_n-gated -- see FiveTuple_table.sv)
+    // runs exactly once; wait for it here so no test below races it.
+    wait (!dut.u_proc.u_FiveTuple.clearing);
 
     // ────────────────────────────────────────────────────────────────────
     // T1 -- small UDP packet, no payload beyond the header. Correctness

@@ -12,16 +12,28 @@ import os
 from boards import validate_board
 
 
-def emit_constraints(board, app_name, out_dir):
+def emit_constraints(board, app_name, out_dir, top_level=None):
     """
     Emit a structural constraint-file skeleton for `board` into out_dir.
     Returns the list of paths written.
+
+    top_level: None (default) = today's behavior exactly, {app_name}_top
+        (the bare AXI4-Stream/AXI4-Lite core -- byte-identical output to
+        before this parameter existed). Pass f'{app_name}_selftest_top' when
+        also using --self-test: that's the module actually meant to be
+        synthesized standalone (it wraps {app_name}_top with its own on-chip
+        traffic generator/capture, needing no real MAC/PHY) -- {app_name}_top
+        alone has no AXI4-Stream source to drive it without one. Only
+        Quartus's TOP_LEVEL_ENTITY assignment uses this; Vivado's .xdc has no
+        equivalent (top-level entity is a project-level setting there, not
+        written into the constraint file).
     """
     validate_board(board)
+    top_level = top_level or f'{app_name}_top'
     if board['vendor'] == 'xilinx':
         return [_emit_xdc(board, app_name, out_dir)]
     elif board['vendor'] == 'altera':
-        return [_emit_qsf(board, app_name, out_dir), _emit_sdc(board, app_name, out_dir)]
+        return [_emit_qsf(board, app_name, out_dir, top_level), _emit_sdc(board, app_name, out_dir)]
     else:
         raise ValueError(f"no constraint-skeleton emitter for vendor '{board['vendor']}'")
 
@@ -56,14 +68,23 @@ def _emit_xdc(board, app_name, out_dir):
     return path
 
 
-def _emit_qsf(board, app_name, out_dir):
+def _emit_qsf(board, app_name, out_dir, top_level):
     path = os.path.join(out_dir, f'{app_name}.qsf')
     with open(path, 'w') as f:
         f.write(_header(board, app_name, 'qsf'))
         f.write(f'set_global_assignment -name FAMILY "{board["device_family"]}"\n')
         f.write(f'set_global_assignment -name DEVICE {board["device_part"] or "TODO_FILL_IN_DEVICE_PART"}\n')
-        f.write(f'set_global_assignment -name TOP_LEVEL_ENTITY {app_name}_top\n')
-        f.write(f'set_global_assignment -name SDC_FILE {app_name}.sdc\n\n')
+        f.write(f'set_global_assignment -name TOP_LEVEL_ENTITY {top_level}\n')
+        f.write(f'set_global_assignment -name SDC_FILE {app_name}.sdc\n')
+        # Belt-and-suspenders: the generated RTL wraps large simulation-only
+        # initial-block zero-fill loops (packet buffers that would otherwise
+        # exceed Quartus's default 5000-iteration procedural-loop cap) in
+        # `ifndef SYNTHESIS. Quartus predefines SYNTHESIS during Analysis &
+        # Synthesis in the versions checked so far, but this explicit
+        # assignment guarantees it regardless of Quartus version -- found
+        # necessary via a real synthesis run hitting "Loop error... must
+        # terminate within 5000 iterations" before this was added.
+        f.write('set_global_assignment -name VERILOG_MACRO "SYNTHESIS=1"\n\n')
         f.write('# TODO: add LOCATION assignments for clk/rst_n, taken from\n')
         f.write("# Terasic's official DE2-115 pin assignment table.\n")
     return path

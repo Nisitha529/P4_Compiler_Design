@@ -47,14 +47,18 @@ module fiveTuple_top #(
   localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8064
 
   // ── Packet buffer (header region / payload region, see above) ───────────────
-  (* ram_style = "block" *)
+  (* ramstyle = "M9K" *)
   logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];
-  (* ram_style = "block" *)
+  (* ramstyle = "M9K" *)
   logic [7:0] pkt_buf_payload [0:PAYLOAD_MAX_BYTES-1];
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (int i = 0; i < HDR_MAX_BYTES; i++)     pkt_buf_hdr[i]     = 8'd0;
     for (int i = 0; i < PAYLOAD_MAX_BYTES; i++) pkt_buf_payload[i] = 8'd0;
   end
+  // synthesis translate_on
+  `endif
   logic [AXI_DATA_W/8-1:0] pkt_keep [0:MAX_PKT_BEATS-1];
 
   // ── State registers ──────────────────────────────────────────────────────
@@ -576,9 +580,6 @@ module fiveTuple_top #(
       if (accept_beat) begin
         pkt_busy <= 1'b1;
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
-          for (int i = 0; i < 32; i++)
-            if (s_axis_tkeep[i])
-              pkt_buf_hdr[rx_beat_cnt * 32 + i] <= s_axis_tdata[i*8 +: 8];
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
         end else if (rx_beat_cnt < MAX_PKT_BEATS) begin
@@ -651,166 +652,6 @@ module fiveTuple_top #(
       end
       if (proc_settle && !proc_committed) begin
         proc_committed <= 1'b1;
-        if (!proc_drop) begin
-          pkt_buf_hdr[0] <= out_eth_dmac[47:40];
-          pkt_buf_hdr[1] <= out_eth_dmac[39:32];
-          pkt_buf_hdr[2] <= out_eth_dmac[31:24];
-          pkt_buf_hdr[3] <= out_eth_dmac[23:16];
-          pkt_buf_hdr[4] <= out_eth_dmac[15:8];
-          pkt_buf_hdr[5] <= out_eth_dmac[7:0];
-          pkt_buf_hdr[6] <= out_eth_smac[47:40];
-          pkt_buf_hdr[7] <= out_eth_smac[39:32];
-          pkt_buf_hdr[8] <= out_eth_smac[31:24];
-          pkt_buf_hdr[9] <= out_eth_smac[23:16];
-          pkt_buf_hdr[10] <= out_eth_smac[15:8];
-          pkt_buf_hdr[11] <= out_eth_smac[7:0];
-          pkt_buf_hdr[12] <= out_eth_type[15:8];
-          pkt_buf_hdr[13] <= out_eth_type[7:0];
-          if (out_vlan_valid) begin
-              pkt_buf_hdr[14] <= {out_vlan_pcp, out_vlan_cfi, out_vlan_vid[11:8]};
-              pkt_buf_hdr[14+1] <= out_vlan_vid[7:0];
-              pkt_buf_hdr[14+2] <= out_vlan_tpid[15:8];
-              pkt_buf_hdr[14+3] <= out_vlan_tpid[7:0];
-          end
-          if (out_ipv4_valid) begin
-              pkt_buf_hdr[w_ipv4_base] <= {out_ipv4_version, out_ipv4_hdr_len};
-              pkt_buf_hdr[w_ipv4_base+1] <= out_ipv4_tos;
-              pkt_buf_hdr[w_ipv4_base+2] <= out_ipv4_length[15:8];
-              pkt_buf_hdr[w_ipv4_base+3] <= out_ipv4_length[7:0];
-              pkt_buf_hdr[w_ipv4_base+4] <= out_ipv4_id[15:8];
-              pkt_buf_hdr[w_ipv4_base+5] <= out_ipv4_id[7:0];
-              pkt_buf_hdr[w_ipv4_base+6] <= {out_ipv4_flags, out_ipv4_offset[12:8]};
-              pkt_buf_hdr[w_ipv4_base+7] <= out_ipv4_offset[7:0];
-              pkt_buf_hdr[w_ipv4_base+8] <= out_ipv4_ttl;
-              pkt_buf_hdr[w_ipv4_base+9] <= out_ipv4_protocol;
-              pkt_buf_hdr[w_ipv4_base+10] <= out_ipv4_hdr_chk[15:8];
-              pkt_buf_hdr[w_ipv4_base+11] <= out_ipv4_hdr_chk[7:0];
-              pkt_buf_hdr[w_ipv4_base+12] <= out_ipv4_src[31:24];
-              pkt_buf_hdr[w_ipv4_base+13] <= out_ipv4_src[23:16];
-              pkt_buf_hdr[w_ipv4_base+14] <= out_ipv4_src[15:8];
-              pkt_buf_hdr[w_ipv4_base+15] <= out_ipv4_src[7:0];
-              pkt_buf_hdr[w_ipv4_base+16] <= out_ipv4_dst[31:24];
-              pkt_buf_hdr[w_ipv4_base+17] <= out_ipv4_dst[23:16];
-              pkt_buf_hdr[w_ipv4_base+18] <= out_ipv4_dst[15:8];
-              pkt_buf_hdr[w_ipv4_base+19] <= out_ipv4_dst[7:0];
-          end
-          if (out_ipv4opt_valid) begin
-              pkt_buf_hdr[w_ipv4opt_base] <= out_ipv4opt_options[319:312];
-              pkt_buf_hdr[w_ipv4opt_base+1] <= out_ipv4opt_options[311:304];
-              pkt_buf_hdr[w_ipv4opt_base+2] <= out_ipv4opt_options[303:296];
-              pkt_buf_hdr[w_ipv4opt_base+3] <= out_ipv4opt_options[295:288];
-              pkt_buf_hdr[w_ipv4opt_base+4] <= out_ipv4opt_options[287:280];
-              pkt_buf_hdr[w_ipv4opt_base+5] <= out_ipv4opt_options[279:272];
-              pkt_buf_hdr[w_ipv4opt_base+6] <= out_ipv4opt_options[271:264];
-              pkt_buf_hdr[w_ipv4opt_base+7] <= out_ipv4opt_options[263:256];
-              pkt_buf_hdr[w_ipv4opt_base+8] <= out_ipv4opt_options[255:248];
-              pkt_buf_hdr[w_ipv4opt_base+9] <= out_ipv4opt_options[247:240];
-              pkt_buf_hdr[w_ipv4opt_base+10] <= out_ipv4opt_options[239:232];
-              pkt_buf_hdr[w_ipv4opt_base+11] <= out_ipv4opt_options[231:224];
-              pkt_buf_hdr[w_ipv4opt_base+12] <= out_ipv4opt_options[223:216];
-              pkt_buf_hdr[w_ipv4opt_base+13] <= out_ipv4opt_options[215:208];
-              pkt_buf_hdr[w_ipv4opt_base+14] <= out_ipv4opt_options[207:200];
-              pkt_buf_hdr[w_ipv4opt_base+15] <= out_ipv4opt_options[199:192];
-              pkt_buf_hdr[w_ipv4opt_base+16] <= out_ipv4opt_options[191:184];
-              pkt_buf_hdr[w_ipv4opt_base+17] <= out_ipv4opt_options[183:176];
-              pkt_buf_hdr[w_ipv4opt_base+18] <= out_ipv4opt_options[175:168];
-              pkt_buf_hdr[w_ipv4opt_base+19] <= out_ipv4opt_options[167:160];
-              pkt_buf_hdr[w_ipv4opt_base+20] <= out_ipv4opt_options[159:152];
-              pkt_buf_hdr[w_ipv4opt_base+21] <= out_ipv4opt_options[151:144];
-              pkt_buf_hdr[w_ipv4opt_base+22] <= out_ipv4opt_options[143:136];
-              pkt_buf_hdr[w_ipv4opt_base+23] <= out_ipv4opt_options[135:128];
-              pkt_buf_hdr[w_ipv4opt_base+24] <= out_ipv4opt_options[127:120];
-              pkt_buf_hdr[w_ipv4opt_base+25] <= out_ipv4opt_options[119:112];
-              pkt_buf_hdr[w_ipv4opt_base+26] <= out_ipv4opt_options[111:104];
-              pkt_buf_hdr[w_ipv4opt_base+27] <= out_ipv4opt_options[103:96];
-              pkt_buf_hdr[w_ipv4opt_base+28] <= out_ipv4opt_options[95:88];
-              pkt_buf_hdr[w_ipv4opt_base+29] <= out_ipv4opt_options[87:80];
-              pkt_buf_hdr[w_ipv4opt_base+30] <= out_ipv4opt_options[79:72];
-              pkt_buf_hdr[w_ipv4opt_base+31] <= out_ipv4opt_options[71:64];
-              pkt_buf_hdr[w_ipv4opt_base+32] <= out_ipv4opt_options[63:56];
-              pkt_buf_hdr[w_ipv4opt_base+33] <= out_ipv4opt_options[55:48];
-              pkt_buf_hdr[w_ipv4opt_base+34] <= out_ipv4opt_options[47:40];
-              pkt_buf_hdr[w_ipv4opt_base+35] <= out_ipv4opt_options[39:32];
-              pkt_buf_hdr[w_ipv4opt_base+36] <= out_ipv4opt_options[31:24];
-              pkt_buf_hdr[w_ipv4opt_base+37] <= out_ipv4opt_options[23:16];
-              pkt_buf_hdr[w_ipv4opt_base+38] <= out_ipv4opt_options[15:8];
-              pkt_buf_hdr[w_ipv4opt_base+39] <= out_ipv4opt_options[7:0];
-          end
-          if (out_tcp_valid) begin
-              pkt_buf_hdr[w_tcp_base] <= out_tcp_src_port[15:8];
-              pkt_buf_hdr[w_tcp_base+1] <= out_tcp_src_port[7:0];
-              pkt_buf_hdr[w_tcp_base+2] <= out_tcp_dst_port[15:8];
-              pkt_buf_hdr[w_tcp_base+3] <= out_tcp_dst_port[7:0];
-              pkt_buf_hdr[w_tcp_base+4] <= out_tcp_seqNum[31:24];
-              pkt_buf_hdr[w_tcp_base+5] <= out_tcp_seqNum[23:16];
-              pkt_buf_hdr[w_tcp_base+6] <= out_tcp_seqNum[15:8];
-              pkt_buf_hdr[w_tcp_base+7] <= out_tcp_seqNum[7:0];
-              pkt_buf_hdr[w_tcp_base+8] <= out_tcp_ackNum[31:24];
-              pkt_buf_hdr[w_tcp_base+9] <= out_tcp_ackNum[23:16];
-              pkt_buf_hdr[w_tcp_base+10] <= out_tcp_ackNum[15:8];
-              pkt_buf_hdr[w_tcp_base+11] <= out_tcp_ackNum[7:0];
-              pkt_buf_hdr[w_tcp_base+12] <= {out_tcp_dataOffset, out_tcp_resv[5:2]};
-              pkt_buf_hdr[w_tcp_base+13] <= {out_tcp_resv[1:0], out_tcp_flags};
-              pkt_buf_hdr[w_tcp_base+14] <= out_tcp_window[15:8];
-              pkt_buf_hdr[w_tcp_base+15] <= out_tcp_window[7:0];
-              pkt_buf_hdr[w_tcp_base+16] <= out_tcp_checksum[15:8];
-              pkt_buf_hdr[w_tcp_base+17] <= out_tcp_checksum[7:0];
-              pkt_buf_hdr[w_tcp_base+18] <= out_tcp_urgPtr[15:8];
-              pkt_buf_hdr[w_tcp_base+19] <= out_tcp_urgPtr[7:0];
-          end
-          if (out_tcpopt_valid) begin
-              pkt_buf_hdr[w_tcpopt_base] <= out_tcpopt_options[319:312];
-              pkt_buf_hdr[w_tcpopt_base+1] <= out_tcpopt_options[311:304];
-              pkt_buf_hdr[w_tcpopt_base+2] <= out_tcpopt_options[303:296];
-              pkt_buf_hdr[w_tcpopt_base+3] <= out_tcpopt_options[295:288];
-              pkt_buf_hdr[w_tcpopt_base+4] <= out_tcpopt_options[287:280];
-              pkt_buf_hdr[w_tcpopt_base+5] <= out_tcpopt_options[279:272];
-              pkt_buf_hdr[w_tcpopt_base+6] <= out_tcpopt_options[271:264];
-              pkt_buf_hdr[w_tcpopt_base+7] <= out_tcpopt_options[263:256];
-              pkt_buf_hdr[w_tcpopt_base+8] <= out_tcpopt_options[255:248];
-              pkt_buf_hdr[w_tcpopt_base+9] <= out_tcpopt_options[247:240];
-              pkt_buf_hdr[w_tcpopt_base+10] <= out_tcpopt_options[239:232];
-              pkt_buf_hdr[w_tcpopt_base+11] <= out_tcpopt_options[231:224];
-              pkt_buf_hdr[w_tcpopt_base+12] <= out_tcpopt_options[223:216];
-              pkt_buf_hdr[w_tcpopt_base+13] <= out_tcpopt_options[215:208];
-              pkt_buf_hdr[w_tcpopt_base+14] <= out_tcpopt_options[207:200];
-              pkt_buf_hdr[w_tcpopt_base+15] <= out_tcpopt_options[199:192];
-              pkt_buf_hdr[w_tcpopt_base+16] <= out_tcpopt_options[191:184];
-              pkt_buf_hdr[w_tcpopt_base+17] <= out_tcpopt_options[183:176];
-              pkt_buf_hdr[w_tcpopt_base+18] <= out_tcpopt_options[175:168];
-              pkt_buf_hdr[w_tcpopt_base+19] <= out_tcpopt_options[167:160];
-              pkt_buf_hdr[w_tcpopt_base+20] <= out_tcpopt_options[159:152];
-              pkt_buf_hdr[w_tcpopt_base+21] <= out_tcpopt_options[151:144];
-              pkt_buf_hdr[w_tcpopt_base+22] <= out_tcpopt_options[143:136];
-              pkt_buf_hdr[w_tcpopt_base+23] <= out_tcpopt_options[135:128];
-              pkt_buf_hdr[w_tcpopt_base+24] <= out_tcpopt_options[127:120];
-              pkt_buf_hdr[w_tcpopt_base+25] <= out_tcpopt_options[119:112];
-              pkt_buf_hdr[w_tcpopt_base+26] <= out_tcpopt_options[111:104];
-              pkt_buf_hdr[w_tcpopt_base+27] <= out_tcpopt_options[103:96];
-              pkt_buf_hdr[w_tcpopt_base+28] <= out_tcpopt_options[95:88];
-              pkt_buf_hdr[w_tcpopt_base+29] <= out_tcpopt_options[87:80];
-              pkt_buf_hdr[w_tcpopt_base+30] <= out_tcpopt_options[79:72];
-              pkt_buf_hdr[w_tcpopt_base+31] <= out_tcpopt_options[71:64];
-              pkt_buf_hdr[w_tcpopt_base+32] <= out_tcpopt_options[63:56];
-              pkt_buf_hdr[w_tcpopt_base+33] <= out_tcpopt_options[55:48];
-              pkt_buf_hdr[w_tcpopt_base+34] <= out_tcpopt_options[47:40];
-              pkt_buf_hdr[w_tcpopt_base+35] <= out_tcpopt_options[39:32];
-              pkt_buf_hdr[w_tcpopt_base+36] <= out_tcpopt_options[31:24];
-              pkt_buf_hdr[w_tcpopt_base+37] <= out_tcpopt_options[23:16];
-              pkt_buf_hdr[w_tcpopt_base+38] <= out_tcpopt_options[15:8];
-              pkt_buf_hdr[w_tcpopt_base+39] <= out_tcpopt_options[7:0];
-          end
-          if (out_udp_valid) begin
-              pkt_buf_hdr[w_udp_base] <= out_udp_src_port[15:8];
-              pkt_buf_hdr[w_udp_base+1] <= out_udp_src_port[7:0];
-              pkt_buf_hdr[w_udp_base+2] <= out_udp_dst_port[15:8];
-              pkt_buf_hdr[w_udp_base+3] <= out_udp_dst_port[7:0];
-              pkt_buf_hdr[w_udp_base+4] <= out_udp_length[15:8];
-              pkt_buf_hdr[w_udp_base+5] <= out_udp_length[7:0];
-              pkt_buf_hdr[w_udp_base+6] <= out_udp_checksum[15:8];
-              pkt_buf_hdr[w_udp_base+7] <= out_udp_checksum[7:0];
-          end
-        end
       end
       if (pkt_ready_to_clear) begin
         proc_armed     <= 1'b0;
@@ -818,6 +659,187 @@ module fiveTuple_top #(
         proc_committed <= 1'b0;
       end
     end
+  end
+
+  // ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────
+  // pkt_buf_hdr has exactly one driver: this block. RX header-capture and
+  // PROC write-back both target pkt_buf_hdr -- two independent always_ff
+  // blocks driving the same net is tolerated by iverilog/xsim but rejected
+  // by Quartus/Cyclone IV E synthesis ("multiple constant drivers"), so both
+  // writes must live in one block. The two conditions are verified disjoint
+  // for every packet shape reachable by this app -- see the simulation-only
+  // assertion below, which fails loudly (rather than silently dropping one
+  // side's write) if that ever stops holding for a future app/config.
+  always_ff @(posedge clk) begin
+    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS) begin
+      for (int i = 0; i < 32; i++)
+        if (s_axis_tkeep[i])
+          pkt_buf_hdr[rx_beat_cnt * 32 + i] <= s_axis_tdata[i*8 +: 8];
+    end else if (proc_settle && !proc_committed && !proc_drop) begin
+      pkt_buf_hdr[0] <= out_eth_dmac[47:40];
+      pkt_buf_hdr[1] <= out_eth_dmac[39:32];
+      pkt_buf_hdr[2] <= out_eth_dmac[31:24];
+      pkt_buf_hdr[3] <= out_eth_dmac[23:16];
+      pkt_buf_hdr[4] <= out_eth_dmac[15:8];
+      pkt_buf_hdr[5] <= out_eth_dmac[7:0];
+      pkt_buf_hdr[6] <= out_eth_smac[47:40];
+      pkt_buf_hdr[7] <= out_eth_smac[39:32];
+      pkt_buf_hdr[8] <= out_eth_smac[31:24];
+      pkt_buf_hdr[9] <= out_eth_smac[23:16];
+      pkt_buf_hdr[10] <= out_eth_smac[15:8];
+      pkt_buf_hdr[11] <= out_eth_smac[7:0];
+      pkt_buf_hdr[12] <= out_eth_type[15:8];
+      pkt_buf_hdr[13] <= out_eth_type[7:0];
+      if (out_vlan_valid) begin
+          pkt_buf_hdr[14] <= {out_vlan_pcp, out_vlan_cfi, out_vlan_vid[11:8]};
+          pkt_buf_hdr[14+1] <= out_vlan_vid[7:0];
+          pkt_buf_hdr[14+2] <= out_vlan_tpid[15:8];
+          pkt_buf_hdr[14+3] <= out_vlan_tpid[7:0];
+      end
+      if (out_ipv4_valid) begin
+          pkt_buf_hdr[w_ipv4_base] <= {out_ipv4_version, out_ipv4_hdr_len};
+          pkt_buf_hdr[w_ipv4_base+1] <= out_ipv4_tos;
+          pkt_buf_hdr[w_ipv4_base+2] <= out_ipv4_length[15:8];
+          pkt_buf_hdr[w_ipv4_base+3] <= out_ipv4_length[7:0];
+          pkt_buf_hdr[w_ipv4_base+4] <= out_ipv4_id[15:8];
+          pkt_buf_hdr[w_ipv4_base+5] <= out_ipv4_id[7:0];
+          pkt_buf_hdr[w_ipv4_base+6] <= {out_ipv4_flags, out_ipv4_offset[12:8]};
+          pkt_buf_hdr[w_ipv4_base+7] <= out_ipv4_offset[7:0];
+          pkt_buf_hdr[w_ipv4_base+8] <= out_ipv4_ttl;
+          pkt_buf_hdr[w_ipv4_base+9] <= out_ipv4_protocol;
+          pkt_buf_hdr[w_ipv4_base+10] <= out_ipv4_hdr_chk[15:8];
+          pkt_buf_hdr[w_ipv4_base+11] <= out_ipv4_hdr_chk[7:0];
+          pkt_buf_hdr[w_ipv4_base+12] <= out_ipv4_src[31:24];
+          pkt_buf_hdr[w_ipv4_base+13] <= out_ipv4_src[23:16];
+          pkt_buf_hdr[w_ipv4_base+14] <= out_ipv4_src[15:8];
+          pkt_buf_hdr[w_ipv4_base+15] <= out_ipv4_src[7:0];
+          pkt_buf_hdr[w_ipv4_base+16] <= out_ipv4_dst[31:24];
+          pkt_buf_hdr[w_ipv4_base+17] <= out_ipv4_dst[23:16];
+          pkt_buf_hdr[w_ipv4_base+18] <= out_ipv4_dst[15:8];
+          pkt_buf_hdr[w_ipv4_base+19] <= out_ipv4_dst[7:0];
+      end
+      if (out_ipv4opt_valid) begin
+          pkt_buf_hdr[w_ipv4opt_base] <= out_ipv4opt_options[319:312];
+          pkt_buf_hdr[w_ipv4opt_base+1] <= out_ipv4opt_options[311:304];
+          pkt_buf_hdr[w_ipv4opt_base+2] <= out_ipv4opt_options[303:296];
+          pkt_buf_hdr[w_ipv4opt_base+3] <= out_ipv4opt_options[295:288];
+          pkt_buf_hdr[w_ipv4opt_base+4] <= out_ipv4opt_options[287:280];
+          pkt_buf_hdr[w_ipv4opt_base+5] <= out_ipv4opt_options[279:272];
+          pkt_buf_hdr[w_ipv4opt_base+6] <= out_ipv4opt_options[271:264];
+          pkt_buf_hdr[w_ipv4opt_base+7] <= out_ipv4opt_options[263:256];
+          pkt_buf_hdr[w_ipv4opt_base+8] <= out_ipv4opt_options[255:248];
+          pkt_buf_hdr[w_ipv4opt_base+9] <= out_ipv4opt_options[247:240];
+          pkt_buf_hdr[w_ipv4opt_base+10] <= out_ipv4opt_options[239:232];
+          pkt_buf_hdr[w_ipv4opt_base+11] <= out_ipv4opt_options[231:224];
+          pkt_buf_hdr[w_ipv4opt_base+12] <= out_ipv4opt_options[223:216];
+          pkt_buf_hdr[w_ipv4opt_base+13] <= out_ipv4opt_options[215:208];
+          pkt_buf_hdr[w_ipv4opt_base+14] <= out_ipv4opt_options[207:200];
+          pkt_buf_hdr[w_ipv4opt_base+15] <= out_ipv4opt_options[199:192];
+          pkt_buf_hdr[w_ipv4opt_base+16] <= out_ipv4opt_options[191:184];
+          pkt_buf_hdr[w_ipv4opt_base+17] <= out_ipv4opt_options[183:176];
+          pkt_buf_hdr[w_ipv4opt_base+18] <= out_ipv4opt_options[175:168];
+          pkt_buf_hdr[w_ipv4opt_base+19] <= out_ipv4opt_options[167:160];
+          pkt_buf_hdr[w_ipv4opt_base+20] <= out_ipv4opt_options[159:152];
+          pkt_buf_hdr[w_ipv4opt_base+21] <= out_ipv4opt_options[151:144];
+          pkt_buf_hdr[w_ipv4opt_base+22] <= out_ipv4opt_options[143:136];
+          pkt_buf_hdr[w_ipv4opt_base+23] <= out_ipv4opt_options[135:128];
+          pkt_buf_hdr[w_ipv4opt_base+24] <= out_ipv4opt_options[127:120];
+          pkt_buf_hdr[w_ipv4opt_base+25] <= out_ipv4opt_options[119:112];
+          pkt_buf_hdr[w_ipv4opt_base+26] <= out_ipv4opt_options[111:104];
+          pkt_buf_hdr[w_ipv4opt_base+27] <= out_ipv4opt_options[103:96];
+          pkt_buf_hdr[w_ipv4opt_base+28] <= out_ipv4opt_options[95:88];
+          pkt_buf_hdr[w_ipv4opt_base+29] <= out_ipv4opt_options[87:80];
+          pkt_buf_hdr[w_ipv4opt_base+30] <= out_ipv4opt_options[79:72];
+          pkt_buf_hdr[w_ipv4opt_base+31] <= out_ipv4opt_options[71:64];
+          pkt_buf_hdr[w_ipv4opt_base+32] <= out_ipv4opt_options[63:56];
+          pkt_buf_hdr[w_ipv4opt_base+33] <= out_ipv4opt_options[55:48];
+          pkt_buf_hdr[w_ipv4opt_base+34] <= out_ipv4opt_options[47:40];
+          pkt_buf_hdr[w_ipv4opt_base+35] <= out_ipv4opt_options[39:32];
+          pkt_buf_hdr[w_ipv4opt_base+36] <= out_ipv4opt_options[31:24];
+          pkt_buf_hdr[w_ipv4opt_base+37] <= out_ipv4opt_options[23:16];
+          pkt_buf_hdr[w_ipv4opt_base+38] <= out_ipv4opt_options[15:8];
+          pkt_buf_hdr[w_ipv4opt_base+39] <= out_ipv4opt_options[7:0];
+      end
+      if (out_tcp_valid) begin
+          pkt_buf_hdr[w_tcp_base] <= out_tcp_src_port[15:8];
+          pkt_buf_hdr[w_tcp_base+1] <= out_tcp_src_port[7:0];
+          pkt_buf_hdr[w_tcp_base+2] <= out_tcp_dst_port[15:8];
+          pkt_buf_hdr[w_tcp_base+3] <= out_tcp_dst_port[7:0];
+          pkt_buf_hdr[w_tcp_base+4] <= out_tcp_seqNum[31:24];
+          pkt_buf_hdr[w_tcp_base+5] <= out_tcp_seqNum[23:16];
+          pkt_buf_hdr[w_tcp_base+6] <= out_tcp_seqNum[15:8];
+          pkt_buf_hdr[w_tcp_base+7] <= out_tcp_seqNum[7:0];
+          pkt_buf_hdr[w_tcp_base+8] <= out_tcp_ackNum[31:24];
+          pkt_buf_hdr[w_tcp_base+9] <= out_tcp_ackNum[23:16];
+          pkt_buf_hdr[w_tcp_base+10] <= out_tcp_ackNum[15:8];
+          pkt_buf_hdr[w_tcp_base+11] <= out_tcp_ackNum[7:0];
+          pkt_buf_hdr[w_tcp_base+12] <= {out_tcp_dataOffset, out_tcp_resv[5:2]};
+          pkt_buf_hdr[w_tcp_base+13] <= {out_tcp_resv[1:0], out_tcp_flags};
+          pkt_buf_hdr[w_tcp_base+14] <= out_tcp_window[15:8];
+          pkt_buf_hdr[w_tcp_base+15] <= out_tcp_window[7:0];
+          pkt_buf_hdr[w_tcp_base+16] <= out_tcp_checksum[15:8];
+          pkt_buf_hdr[w_tcp_base+17] <= out_tcp_checksum[7:0];
+          pkt_buf_hdr[w_tcp_base+18] <= out_tcp_urgPtr[15:8];
+          pkt_buf_hdr[w_tcp_base+19] <= out_tcp_urgPtr[7:0];
+      end
+      if (out_tcpopt_valid) begin
+          pkt_buf_hdr[w_tcpopt_base] <= out_tcpopt_options[319:312];
+          pkt_buf_hdr[w_tcpopt_base+1] <= out_tcpopt_options[311:304];
+          pkt_buf_hdr[w_tcpopt_base+2] <= out_tcpopt_options[303:296];
+          pkt_buf_hdr[w_tcpopt_base+3] <= out_tcpopt_options[295:288];
+          pkt_buf_hdr[w_tcpopt_base+4] <= out_tcpopt_options[287:280];
+          pkt_buf_hdr[w_tcpopt_base+5] <= out_tcpopt_options[279:272];
+          pkt_buf_hdr[w_tcpopt_base+6] <= out_tcpopt_options[271:264];
+          pkt_buf_hdr[w_tcpopt_base+7] <= out_tcpopt_options[263:256];
+          pkt_buf_hdr[w_tcpopt_base+8] <= out_tcpopt_options[255:248];
+          pkt_buf_hdr[w_tcpopt_base+9] <= out_tcpopt_options[247:240];
+          pkt_buf_hdr[w_tcpopt_base+10] <= out_tcpopt_options[239:232];
+          pkt_buf_hdr[w_tcpopt_base+11] <= out_tcpopt_options[231:224];
+          pkt_buf_hdr[w_tcpopt_base+12] <= out_tcpopt_options[223:216];
+          pkt_buf_hdr[w_tcpopt_base+13] <= out_tcpopt_options[215:208];
+          pkt_buf_hdr[w_tcpopt_base+14] <= out_tcpopt_options[207:200];
+          pkt_buf_hdr[w_tcpopt_base+15] <= out_tcpopt_options[199:192];
+          pkt_buf_hdr[w_tcpopt_base+16] <= out_tcpopt_options[191:184];
+          pkt_buf_hdr[w_tcpopt_base+17] <= out_tcpopt_options[183:176];
+          pkt_buf_hdr[w_tcpopt_base+18] <= out_tcpopt_options[175:168];
+          pkt_buf_hdr[w_tcpopt_base+19] <= out_tcpopt_options[167:160];
+          pkt_buf_hdr[w_tcpopt_base+20] <= out_tcpopt_options[159:152];
+          pkt_buf_hdr[w_tcpopt_base+21] <= out_tcpopt_options[151:144];
+          pkt_buf_hdr[w_tcpopt_base+22] <= out_tcpopt_options[143:136];
+          pkt_buf_hdr[w_tcpopt_base+23] <= out_tcpopt_options[135:128];
+          pkt_buf_hdr[w_tcpopt_base+24] <= out_tcpopt_options[127:120];
+          pkt_buf_hdr[w_tcpopt_base+25] <= out_tcpopt_options[119:112];
+          pkt_buf_hdr[w_tcpopt_base+26] <= out_tcpopt_options[111:104];
+          pkt_buf_hdr[w_tcpopt_base+27] <= out_tcpopt_options[103:96];
+          pkt_buf_hdr[w_tcpopt_base+28] <= out_tcpopt_options[95:88];
+          pkt_buf_hdr[w_tcpopt_base+29] <= out_tcpopt_options[87:80];
+          pkt_buf_hdr[w_tcpopt_base+30] <= out_tcpopt_options[79:72];
+          pkt_buf_hdr[w_tcpopt_base+31] <= out_tcpopt_options[71:64];
+          pkt_buf_hdr[w_tcpopt_base+32] <= out_tcpopt_options[63:56];
+          pkt_buf_hdr[w_tcpopt_base+33] <= out_tcpopt_options[55:48];
+          pkt_buf_hdr[w_tcpopt_base+34] <= out_tcpopt_options[47:40];
+          pkt_buf_hdr[w_tcpopt_base+35] <= out_tcpopt_options[39:32];
+          pkt_buf_hdr[w_tcpopt_base+36] <= out_tcpopt_options[31:24];
+          pkt_buf_hdr[w_tcpopt_base+37] <= out_tcpopt_options[23:16];
+          pkt_buf_hdr[w_tcpopt_base+38] <= out_tcpopt_options[15:8];
+          pkt_buf_hdr[w_tcpopt_base+39] <= out_tcpopt_options[7:0];
+      end
+      if (out_udp_valid) begin
+          pkt_buf_hdr[w_udp_base] <= out_udp_src_port[15:8];
+          pkt_buf_hdr[w_udp_base+1] <= out_udp_src_port[7:0];
+          pkt_buf_hdr[w_udp_base+2] <= out_udp_dst_port[15:8];
+          pkt_buf_hdr[w_udp_base+3] <= out_udp_dst_port[7:0];
+          pkt_buf_hdr[w_udp_base+4] <= out_udp_length[15:8];
+          pkt_buf_hdr[w_udp_base+5] <= out_udp_length[7:0];
+          pkt_buf_hdr[w_udp_base+6] <= out_udp_checksum[15:8];
+          pkt_buf_hdr[w_udp_base+7] <= out_udp_checksum[7:0];
+      end
+    end
+  `ifndef SYNTHESIS
+    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS &&
+        proc_settle && !proc_committed && !proc_drop)
+      $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");
+  `endif
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────

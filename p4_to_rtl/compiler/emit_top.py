@@ -978,10 +978,21 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];\n')
     _write_ram_style_pragma(f, board)
     f.write('  logic [7:0] pkt_buf_payload [0:PAYLOAD_MAX_BYTES-1];\n')
+    # Simulation-only zero-fill, excluded from synthesis -- see the matching
+    # comment in emit_selftest.py's own tmpl_buf/cap_buf initial block for
+    # the full rationale, including why `// synthesis translate_off/on`
+    # (not just `ifndef SYNTHESIS, which real Quartus did not honor here)
+    # is the load-bearing mechanism. A real Quartus synthesis run hit "Loop
+    # error... must terminate within 5000 iterations" on PAYLOAD_MAX_BYTES
+    # (8064 at the default 256-bit width) -- required, not cosmetic.
+    f.write('  `ifndef SYNTHESIS\n')
+    f.write('  // synthesis translate_off\n')
     f.write('  initial begin\n')
     f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++)     pkt_buf_hdr[i]     = 8\'d0;\n')
     f.write('    for (int i = 0; i < PAYLOAD_MAX_BYTES; i++) pkt_buf_payload[i] = 8\'d0;\n')
     f.write('  end\n')
+    f.write('  // synthesis translate_on\n')
+    f.write('  `endif\n')
     f.write(f'  logic [AXI_DATA_W/8-1:0] pkt_keep [0:MAX_PKT_BEATS-1];\n\n')
 
     # ── State registers ────────────────────────────────────────────────────────
@@ -1247,9 +1258,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      if (accept_beat) begin\n')
     f.write('        pkt_busy <= 1\'b1;\n')
     f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
-    f.write(f'          for (int i = 0; i < {KEEP_W}; i++)\n')
-    f.write('            if (s_axis_tkeep[i])\n')
-    f.write(f'              pkt_buf_hdr[rx_beat_cnt * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
     f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
     f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
     f.write('        end else if (rx_beat_cnt < MAX_PKT_BEATS) begin\n')
@@ -1323,9 +1331,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      end\n')
     f.write('      if (proc_settle && !proc_committed) begin\n')
     f.write('        proc_committed <= 1\'b1;\n')
-    f.write('        if (!proc_drop) begin\n')
-    _emit_writeback_block(f, layouts, inst_map, valid_map, '          ')
-    f.write('        end\n')
     f.write('      end\n')
     f.write('      if (pkt_ready_to_clear) begin\n')
     f.write('        proc_armed     <= 1\'b0;\n')
@@ -1333,6 +1338,31 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('        proc_committed <= 1\'b0;\n')
     f.write('      end\n')
     f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────
+    f.write('  // ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────\n')
+    f.write('  // pkt_buf_hdr has exactly one driver: this block. RX header-capture and\n')
+    f.write('  // PROC write-back both target pkt_buf_hdr -- two independent always_ff\n')
+    f.write('  // blocks driving the same net is tolerated by iverilog/xsim but rejected\n')
+    f.write('  // by Quartus/Cyclone IV E synthesis ("multiple constant drivers"), so both\n')
+    f.write('  // writes must live in one block. The two conditions are verified disjoint\n')
+    f.write('  // for every packet shape reachable by this app -- see the simulation-only\n')
+    f.write('  // assertion below, which fails loudly (rather than silently dropping one\n')
+    f.write('  // side\'s write) if that ever stops holding for a future app/config.\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS) begin\n')
+    f.write(f'      for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write('        if (s_axis_tkeep[i])\n')
+    f.write(f'          pkt_buf_hdr[rx_beat_cnt * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
+    f.write('    end else if (proc_settle && !proc_committed && !proc_drop) begin\n')
+    _emit_writeback_block(f, layouts, inst_map, valid_map, '      ')
+    f.write('    end\n')
+    f.write('  `ifndef SYNTHESIS\n')
+    f.write('    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS &&\n')
+    f.write('        proc_settle && !proc_committed && !proc_drop)\n')
+    f.write('      $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");\n')
+    f.write('  `endif\n')
     f.write('  end\n\n')
 
     # ── TX (egress) ────────────────────────────────────────────────────────────

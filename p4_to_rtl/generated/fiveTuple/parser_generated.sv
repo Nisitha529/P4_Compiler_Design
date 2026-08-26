@@ -24,16 +24,16 @@ module parser_generated(
     ACCEPT
   } state_t;
 
-  (* fsm_encoding = "one_hot" *)
+  // fsm_encoding: board 'de2-115' (altera) has no reliable inline attribute for this -- set state-machine encoding via your toolchain's Assignment/Settings UI instead
   state_t state, next_state;
 
   always_comb begin
-    extract_tcp = 0;
+    extract_ipv4opt = 0;
     extract_ipv4 = 0;
     extract_eth = 0;
     extract_tcpopt = 0;
     extract_udp = 0;
-    extract_ipv4opt = 0;
+    extract_tcp = 0;
     extract_vlan = 0;
     done = 0;
     next_state = state;

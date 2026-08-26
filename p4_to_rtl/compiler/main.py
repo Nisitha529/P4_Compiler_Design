@@ -429,7 +429,12 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
         if board is not None:
             print(f"[INFO] Generating constraint-file skeleton for board '{board['name']}'...")
-            paths = emit_constraints(board, app_name, out_dir)
+            # When --self-test is also set, the self-test wrapper (which
+            # supplies its own on-chip AXI4-Stream traffic, needing no real
+            # MAC/PHY) is the module actually meant to be synthesized
+            # standalone -- {app_name}_top alone has no traffic source.
+            top_level = f'{app_name}_selftest_top' if self_test else None
+            paths = emit_constraints(board, app_name, out_dir, top_level=top_level)
             for p in paths:
                 print(f"[SUCCESS] Constraint skeleton -> {p}")
     elif board is not None:
