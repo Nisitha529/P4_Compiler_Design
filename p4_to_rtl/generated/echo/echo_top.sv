@@ -45,17 +45,18 @@ module echo_top #(
   localparam int HDR_MAX_BYTES = 128;
   localparam int HDR_MAX_BEATS = 4;
   localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8064
+  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 252
 
   // ── Packet buffer (header region / payload region, see above) ───────────────
-  (* ram_style = "block" *)
   logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];
   (* ram_style = "block" *)
-  logic [7:0] pkt_buf_payload [0:PAYLOAD_MAX_BYTES-1];
+  logic [BEAT_BYTES-1:0][7:0] pkt_buf_payload [0:PAYLOAD_MAX_BEATS-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
-    for (int i = 0; i < HDR_MAX_BYTES; i++)     pkt_buf_hdr[i]     = 8'd0;
-    for (int i = 0; i < PAYLOAD_MAX_BYTES; i++) pkt_buf_payload[i] = 8'd0;
+    for (int i = 0; i < HDR_MAX_BYTES; i++) pkt_buf_hdr[i] = 8'd0;
+    for (int r = 0; r < PAYLOAD_MAX_BEATS; r++)
+      for (int b = 0; b < BEAT_BYTES; b++) pkt_buf_payload[r][b] = 8'd0;
   end
   // synthesis translate_on
   `endif
@@ -101,13 +102,18 @@ module echo_top #(
   //                exact same pre-edge condition proc_committed itself latches
   //                on, so both fire together); cleared once TX's last beat is
   //                accepted.
-  //   tx_beat_cnt: beats transmitted so far. Advance/tvalid gated on
+  //   tx_beat_cnt: the FETCH-ISSUE pointer -- the row TX is about to read this
+  //                cycle, one row ahead of what tx_out_* is currently presenting
+  //                (pkt_buf_payload is real BRAM now, needing a 1-cycle registered
+  //                read; see the TX section below). Issue/advance gated on
   //                tx_beat_cnt < rx_beat_cnt (never read a beat RX hasn't
   //                captured yet -- this is what makes TX correctly chase RX's
-  //                arrival frontier instead of racing ahead). tlast additionally
-  //                requires rx_done, to distinguish "caught up to RX's live
-  //                frontier, more beats still coming" from "this really is the
-  //                last beat of the whole packet".
+  //                arrival frontier instead of racing ahead). tlast is computed
+  //                at issue-time from (rx_done||overflow), to distinguish "caught
+  //                up to RX's live frontier, more beats still coming" from "this
+  //                really is the last beat of the whole packet".
+  //   tx_out_*   : registered output stage -- what m_axis_* actually presents,
+  //                one cycle behind tx_beat_cnt's own fetch-issue.
   logic pkt_busy;
   logic rx_done;
   logic overflow;
@@ -117,6 +123,18 @@ module echo_top #(
   logic tx_active;
   logic [8:0] rx_beat_cnt;
   logic [8:0] tx_beat_cnt;
+  logic tx_out_valid;
+  logic [255:0] tx_out_data;
+  logic [31:0] tx_out_keep;
+  logic tx_out_last;
+  // 2-stage issue/commit pipeline for TX's own fetch, needed because
+  // pkt_buf_payload is real BRAM (1-cycle registered read) -- see the TX
+  // section below for the full design rationale.
+  logic tx_pend_valid, tx_pend_ready, tx_pend_is_hdr, tx_pend_last;
+  logic [8:0] tx_pend_row;
+  logic [31:0] tx_pend_keep;
+  logic [8:0] payload_fetch_addr;
+  logic [255:0] payload_rd_data;
 
   // ── Header field extraction from pkt_buf ────────────────────────────────
   //    Fields extracted using big-endian (network byte order) bit mapping.
@@ -314,6 +332,7 @@ module echo_top #(
   // ── RX (ingest) ──────────────────────────────────────────────────────────
   assign s_axis_tready = !rx_done;
   wire accept_beat = s_axis_tvalid && s_axis_tready;
+  wire accept_payload_beat = accept_beat && (rx_beat_cnt >= HDR_MAX_BEATS) && (rx_beat_cnt < MAX_PKT_BEATS);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -328,9 +347,11 @@ module echo_top #(
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
         end else if (rx_beat_cnt < MAX_PKT_BEATS) begin
-          for (int i = 0; i < 32; i++)
-            if (s_axis_tkeep[i])
-              pkt_buf_payload[(rx_beat_cnt - HDR_MAX_BEATS) * 32 + i] <= s_axis_tdata[i*8 +: 8];
+          // pkt_buf_payload's own byte-enable write lives in a separate,
+          // dedicated always_ff below (accept_payload_beat) -- Quartus's RAM
+          // inference template was found not to match when the byte-enable
+          // write is nested two if-levels deep (accept_beat -> this branch);
+          // one level (a single derived enable wire) is required.
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
         end else begin
@@ -349,6 +370,50 @@ module echo_top #(
         rx_beat_cnt <= '0;
         overflow    <= 1'b0;
       end
+    end
+  end
+
+  // pkt_buf_payload's only writer, isolated in its own always_ff with a
+  // single derived enable and no other nesting -- see accept_payload_beat
+  // above and the comment in the RX block for why this had to be pulled out
+  // (Quartus's byte-enable RAM inference template requires this shape;
+  // nested two if-levels deep inside RX's own always_ff, it silently failed
+  // to infer -- confirmed via a real Quartus run's explicit "can't infer
+  // memory... with attribute M9K" warning).
+  always_ff @(posedge clk) begin
+    if (accept_payload_beat) begin
+      if (s_axis_tkeep[0]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][0] <= s_axis_tdata[0 +: 8];
+      if (s_axis_tkeep[1]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][1] <= s_axis_tdata[8 +: 8];
+      if (s_axis_tkeep[2]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][2] <= s_axis_tdata[16 +: 8];
+      if (s_axis_tkeep[3]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][3] <= s_axis_tdata[24 +: 8];
+      if (s_axis_tkeep[4]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][4] <= s_axis_tdata[32 +: 8];
+      if (s_axis_tkeep[5]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][5] <= s_axis_tdata[40 +: 8];
+      if (s_axis_tkeep[6]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][6] <= s_axis_tdata[48 +: 8];
+      if (s_axis_tkeep[7]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][7] <= s_axis_tdata[56 +: 8];
+      if (s_axis_tkeep[8]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][8] <= s_axis_tdata[64 +: 8];
+      if (s_axis_tkeep[9]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][9] <= s_axis_tdata[72 +: 8];
+      if (s_axis_tkeep[10]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][10] <= s_axis_tdata[80 +: 8];
+      if (s_axis_tkeep[11]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][11] <= s_axis_tdata[88 +: 8];
+      if (s_axis_tkeep[12]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][12] <= s_axis_tdata[96 +: 8];
+      if (s_axis_tkeep[13]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][13] <= s_axis_tdata[104 +: 8];
+      if (s_axis_tkeep[14]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][14] <= s_axis_tdata[112 +: 8];
+      if (s_axis_tkeep[15]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][15] <= s_axis_tdata[120 +: 8];
+      if (s_axis_tkeep[16]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][16] <= s_axis_tdata[128 +: 8];
+      if (s_axis_tkeep[17]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][17] <= s_axis_tdata[136 +: 8];
+      if (s_axis_tkeep[18]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][18] <= s_axis_tdata[144 +: 8];
+      if (s_axis_tkeep[19]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][19] <= s_axis_tdata[152 +: 8];
+      if (s_axis_tkeep[20]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][20] <= s_axis_tdata[160 +: 8];
+      if (s_axis_tkeep[21]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][21] <= s_axis_tdata[168 +: 8];
+      if (s_axis_tkeep[22]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][22] <= s_axis_tdata[176 +: 8];
+      if (s_axis_tkeep[23]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][23] <= s_axis_tdata[184 +: 8];
+      if (s_axis_tkeep[24]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][24] <= s_axis_tdata[192 +: 8];
+      if (s_axis_tkeep[25]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][25] <= s_axis_tdata[200 +: 8];
+      if (s_axis_tkeep[26]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][26] <= s_axis_tdata[208 +: 8];
+      if (s_axis_tkeep[27]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][27] <= s_axis_tdata[216 +: 8];
+      if (s_axis_tkeep[28]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][28] <= s_axis_tdata[224 +: 8];
+      if (s_axis_tkeep[29]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][29] <= s_axis_tdata[232 +: 8];
+      if (s_axis_tkeep[30]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][30] <= s_axis_tdata[240 +: 8];
+      if (s_axis_tkeep[31]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][31] <= s_axis_tdata[248 +: 8];
     end
   end
 
@@ -530,65 +595,120 @@ module echo_top #(
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────
+  // pkt_buf_payload is real BRAM (1-cycle registered read), so TX needs a real
+  // issue/commit pipeline, not a single same-cycle read -- pkt_buf_hdr stays a
+  // plain register array (fresh combinational read, no latency) but is routed
+  // through the SAME 2-cycle pipeline for uniformity/simplicity rather than
+  // special-cased, at the cost of one harmless extra cycle for header beats.
+  //
+  // Stage 1 (issue, tx_beat_cnt<rx_beat_cnt gate -- same cut-through chase as
+  // before): latches which row/whether-header/keep/last this beat needs, and
+  // -- for the payload case -- updates payload_fetch_addr, which ONLY changes
+  // on an issue (holds steady otherwise, safe to sit for however long stage 2
+  // is backpressured, since the free-running read below just keeps re-settling
+  // on the same correct row while it holds).
+  //
+  // Stage 2 (commit, gated on tx_pend_ready AND tx_pend_valid together --
+  // BOTH are required, not tx_pend_ready alone): tx_pend_ready is tx_pend_valid
+  // delayed by exactly one more cycle (see the shadow register below), which is
+  // what guarantees payload_rd_data has caught up to payload_fetch_addr's new
+  // value by the time it's consumed -- gating on tx_pend_valid alone would read
+  // payload_rd_data one cycle too early (its previous, stale row). But
+  // tx_pend_ready, being a plain shadow register, itself stays high for one
+  // extra cycle AFTER tx_pend_valid is cleared by a commit -- gating on
+  // tx_pend_ready alone let stage 2 fire a SECOND time on that trailing-high
+  // cycle, re-committing the same already-consumed pend (a real, silent
+  // duplicate-beat bug caught only by simulation content mismatches, not by
+  // any structural warning). tx_pend_valid in the gate is what stops that.
+  //
+  // Non-pipelined by construction (stage 1 requires !tx_pend_valid, so a new
+  // issue can never overlap an uncommitted pend) -- 2 cycles/beat instead of
+  // 1, accepted for correctness/simplicity; nothing in this project asserts an
+  // exact TX throughput, only loose cut-through-ordering inequalities.
+  wire tx_consumed = tx_out_valid && m_axis_tready;
+  wire tx_stage1_issue = !tx_pend_valid && (!tx_out_valid || tx_consumed) && tx_active && (tx_beat_cnt < rx_beat_cnt);
+
+  always_ff @(posedge clk)
+    if (tx_stage1_issue) payload_fetch_addr <= tx_beat_cnt - HDR_MAX_BEATS;
+
+  always_ff @(posedge clk) payload_rd_data <= pkt_buf_payload[payload_fetch_addr];
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      tx_active   <= 1'b0;
-      tx_beat_cnt <= '0;
+      tx_active    <= 1'b0;
+      tx_beat_cnt  <= '0;
+      tx_out_valid <= 1'b0;
+      tx_out_data  <= '0;
+      tx_out_keep  <= '0;
+      tx_out_last  <= 1'b0;
+      tx_pend_valid <= 1'b0;
+      tx_pend_ready <= 1'b0;
     end else begin
+      tx_pend_ready <= tx_pend_valid;  // unconditional shadow, one cycle behind
+      // Unconditional drain-on-consume, overridden below by stage 2's own
+      // tx_out_valid<=1 when it ALSO fires this same cycle (NBA "last write
+      // wins" for the same signal in the same always_ff) -- without this,
+      // a cycle where the current beat is consumed AND stage 1 issues a new
+      // fetch (instead of stage 2 committing) would leave tx_out_valid/data
+      // stuck at the just-consumed beat's stale value for another cycle,
+      // presenting it a second time.
+      if (tx_consumed) tx_out_valid <= 1'b0;
       // Armed on the exact same pre-edge condition that latches
       // proc_committed above (proc_settle && !proc_committed), so both fire
       // together on the true commit cycle (never the cycle write-back's own
       // commit happens on -- write-back and this arm both become visible
-      // starting the next cycle, so TX only ever reads pkt_buf_hdr after
-      // write-back landed).
+      // starting the next cycle, so TX only ever fetches pkt_buf_hdr/payload
+      // after write-back landed).
       if (!tx_active && proc_settle && !proc_committed && !proc_drop) begin
-        tx_active   <= 1'b1;
-        tx_beat_cnt <= '0;
-      end else if (tx_active && m_axis_tvalid && m_axis_tready) begin
-        if (m_axis_tlast) begin
-          tx_active <= 1'b0;
+        tx_active     <= 1'b1;
+        tx_beat_cnt   <= '0;
+        tx_out_valid  <= 1'b0;
+        tx_pend_valid <= 1'b0;
+      end else if (tx_consumed && tx_out_last) begin
+        tx_active    <= 1'b0;
+        tx_out_valid <= 1'b0;
+      end else if (tx_pend_ready && tx_pend_valid && (!tx_out_valid || tx_consumed)) begin
+        // Stage 2: commit. payload_rd_data is guaranteed fresh here -- see the
+        // tx_pend_ready shadow-register comment above.
+        tx_out_valid  <= 1'b1;
+        tx_out_keep   <= tx_pend_keep;
+        tx_out_last   <= tx_pend_last;
+        if (tx_pend_is_hdr) begin
+          for (int i = 0; i < 32; i++)
+            tx_out_data[i*8 +: 8] <= pkt_buf_hdr[tx_pend_row * 32 + i];
         end else begin
-          tx_beat_cnt <= tx_beat_cnt + 9'd1;
+          tx_out_data <= payload_rd_data;
         end
+        tx_pend_valid <= 1'b0;
+      end else if (tx_stage1_issue) begin
+        // Stage 1: issue. payload_fetch_addr is updated above, same condition.
+        tx_pend_valid  <= 1'b1;
+        tx_pend_is_hdr <= (tx_beat_cnt < HDR_MAX_BEATS);
+        tx_pend_row    <= tx_beat_cnt;
+        tx_pend_keep   <= pkt_keep[tx_beat_cnt];
+        tx_pend_last   <= (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - 9'd1);
+        tx_beat_cnt    <= tx_beat_cnt + 9'd1;
       end
+      // (no separate "else if (tx_consumed) tx_out_valid<=0" branch needed --
+      // the unconditional drain-on-consume above already covers the case
+      // where none of the branches above fire: next row not yet arrived from
+      // RX, so tx_out_valid correctly drops and stays a bubble.)
       if (pkt_ready_to_clear) begin
-        tx_active   <= 1'b0;
-        tx_beat_cnt <= '0;
+        tx_active     <= 1'b0;
+        tx_beat_cnt   <= '0;
+        tx_out_valid  <= 1'b0;
+        tx_pend_valid <= 1'b0;
       end
     end
   end
 
   // ── TX output ────────────────────────────────────────────────────────────
-  // m_axis_tvalid gated on tx_beat_cnt < rx_beat_cnt alone -- a beat is only
-  // presentable once RX has actually captured it, which is exactly what lets
-  // TX chase RX's live arrival frontier through the payload region instead
-  // of racing ahead. m_axis_tlast additionally requires (rx_done || overflow):
-  // without it, TX catching up to RX's live frontier mid-packet (simply
-  // because TX is faster than the input rate) would be indistinguishable from
-  // genuinely reaching the last beat of the whole packet. `overflow` is
-  // required alongside rx_done, not just rx_done alone: once RX truncates a
-  // packet at MAX_PKT_BEATS, rx_beat_cnt freezes there PERMANENTLY -- the
-  // real upstream tlast (whenever it eventually arrives) no longer changes
-  // rx_beat_cnt at all, so waiting for rx_done alone would deadlock TX at
-  // tx_beat_cnt==rx_beat_cnt forever, never getting the chance to emit tlast
-  // for the truncated packet's real final beat.
-  always_comb begin
-    m_axis_tdata  = '0;
-    m_axis_tkeep  = '0;
-    m_axis_tlast  = 1'b0;
-    m_axis_tvalid = 1'b0;
-    if (tx_active && (tx_beat_cnt < rx_beat_cnt)) begin
-      m_axis_tvalid = 1'b1;
-      m_axis_tkeep  = pkt_keep[tx_beat_cnt];
-      m_axis_tlast  = (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - 9'd1);
-      if (tx_beat_cnt < HDR_MAX_BEATS) begin
-        for (int i = 0; i < 32; i++)
-          m_axis_tdata[i*8 +: 8] = pkt_buf_hdr[tx_beat_cnt * 32 + i];
-      end else begin
-        for (int i = 0; i < 32; i++)
-          m_axis_tdata[i*8 +: 8] = pkt_buf_payload[(tx_beat_cnt - HDR_MAX_BEATS) * 32 + i];
-      end
-    end
-  end
+  // Plain registered pass-through -- see the always_ff above for the fetch/
+  // issue logic that fills tx_out_*. tlast is additionally gated on tx_out_valid
+  // defensively (tx_out_last could otherwise hold a stale value across a clear).
+  assign m_axis_tvalid = tx_out_valid;
+  assign m_axis_tdata  = tx_out_data;
+  assign m_axis_tkeep  = tx_out_keep;
+  assign m_axis_tlast  = tx_out_valid && tx_out_last;
 
 endmodule

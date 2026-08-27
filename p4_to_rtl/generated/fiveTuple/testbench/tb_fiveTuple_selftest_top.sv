@@ -161,7 +161,12 @@ module tb_fiveTuple_selftest_top;
     end
     @(negedge clk);
     st_axil_arvalid = 1'b0;
-    @(posedge clk);
+    // Poll for rvalid rather than assuming a fixed 1-cycle turnaround: tmpl_buf/
+    // cap_buf-backed addresses now take 3 cycles (real BRAM read, ST_AXIL_R_IDLE ->
+    // R_WAIT -> R_EXTRACT -> R_DATA) while control-register addresses still take 1
+    // (straight to R_DATA) -- sample rdata at the same edge rvalid first reads high,
+    // matching the decoder's own documented undelayed-sampling contract.
+    while (!st_axil_rvalid) @(posedge clk);
     data = st_axil_rdata;
   endtask
 

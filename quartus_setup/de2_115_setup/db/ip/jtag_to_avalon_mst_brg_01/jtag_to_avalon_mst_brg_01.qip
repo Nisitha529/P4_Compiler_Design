@@ -2,7 +2,7 @@ set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_aval
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_TOOL_VERSION "25.1"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_TOOL_ENV "Qsys"
 set_global_assignment -library "jtag_to_avalon_mst_brg_01" -name SOPCINFO_FILE [file join $::quartus(qip_path) "../../../jtag_to_avalon_mst_brg_01.sopcinfo"]
-set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name SLD_INFO "QSYS_NAME jtag_to_avalon_mst_brg_01 HAS_SOPCINFO 1 GENERATION_ID 1787758423"
+set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name SLD_INFO "QSYS_NAME jtag_to_avalon_mst_brg_01 HAS_SOPCINFO 1 GENERATION_ID 1787806565"
 set_global_assignment -library "jtag_to_avalon_mst_brg_01" -name SLD_FILE [file join $::quartus(qip_path) "jtag_to_avalon_mst_brg_01.debuginfo"]
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_TARGETED_DEVICE_FAMILY "Cyclone IV E"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_GENERATED_DEVICE_FAMILY "{Cyclone IV E}"
@@ -14,7 +14,7 @@ set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_aval
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_REPORT_HIERARCHY "On"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_INTERNAL "Off"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_VERSION "MS4w"
-set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_PARAMETER "QVVUT19HRU5FUkFUSU9OX0lE::MTc4Nzc1ODQyMw==::QXV0byBHRU5FUkFUSU9OX0lE"
+set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_PARAMETER "QVVUT19HRU5FUkFUSU9OX0lE::MTc4NzgwNjU2NQ==::QXV0byBHRU5FUkFUSU9OX0lE"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_PARAMETER "QVVUT19ERVZJQ0VfRkFNSUxZ::Q3ljbG9uZSBJViBF::QXV0byBERVZJQ0VfRkFNSUxZ"
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_PARAMETER "QVVUT19ERVZJQ0U=::RVA0Q0UxMTVGMjlDNw==::QXV0byBERVZJQ0U="
 set_global_assignment -entity "jtag_to_avalon_mst_brg_01" -library "jtag_to_avalon_mst_brg_01" -name IP_COMPONENT_PARAMETER "QVVUT19ERVZJQ0VfU1BFRURHUkFERQ==::Nw==::QXV0byBERVZJQ0VfU1BFRURHUkFERQ=="

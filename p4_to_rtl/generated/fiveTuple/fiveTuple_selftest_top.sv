@@ -55,17 +55,32 @@ module fiveTuple_selftest_top #(
   localparam int TMPL_BASE_WORD  = 16;
   localparam int CAP_BASE_WORD   = 2064;
   localparam int ADDR_SPAN_WORDS = 4112;
+  localparam int TMPL_ROWS     = 256;  // == MAX_PKT_BEATS; one row per beat
+  localparam int CAP_ROWS      = TMPL_ROWS;
+  localparam int WORDS_PER_ROW = 8;  // KEEP_W/4
 
   // Template buffer (software-written packet content, read+write over
   // st_axil_*) and capture buffer (written only by the capture FSM below,
   // read over st_axil_*). Real BRAM cost -- see this file's module docstring.
-  logic [7:0] tmpl_buf [0:MAX_PKT_BYTES-1];
-  logic [7:0] cap_buf  [0:MAX_PKT_BYTES-1];
+  // tmpl_buf is MIRRORED (tmpl_word_cp/tmpl_word_gen) because it has 3
+  // independent concurrent accessors (CP write, CP read, generator/vary
+  // read) -- one more than a single BRAM's 2-port ceiling; both copies are
+  // always written identically so they can never diverge. cap_buf only
+  // ever has 2 accessors (capture-FSM write, CP read), no mirroring needed.
+  // PACKED byte dimension ([KEEP_W-1:0][7:0], not a fully-unpacked 2D array) --
+  // this specific shape is what Quartus's byte-enable RAM inference template
+  // actually matches (Intel's "Recommended HDL Coding Styles" doc, Example
+  // 12-26) -- a fully-unpacked `[0:N-1][0:M-1]` array is syntactically valid
+  // but is never even ATTEMPTED for RAM inference by real Quartus.
+  logic [KEEP_W-1:0][7:0] tmpl_word_cp  [0:TMPL_ROWS-1];
+  logic [KEEP_W-1:0][7:0] tmpl_word_gen [0:TMPL_ROWS-1];
+  logic [KEEP_W-1:0][7:0] cap_word      [0:CAP_ROWS-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
-    for (int i = 0; i < MAX_PKT_BYTES; i++) tmpl_buf[i] = 8'd0;
-    for (int i = 0; i < MAX_PKT_BYTES; i++) cap_buf[i]  = 8'd0;
+    for (int i = 0; i < TMPL_ROWS; i++) tmpl_word_cp[i]  = '0;
+    for (int i = 0; i < TMPL_ROWS; i++) tmpl_word_gen[i] = '0;
+    for (int i = 0; i < CAP_ROWS; i++)  cap_word[i]      = '0;
   end
   // synthesis translate_on
   `endif
@@ -98,10 +113,30 @@ module fiveTuple_selftest_top #(
   logic [31:0] gen_ipg_reg;
 
   // ── Packet generator ─────────────────────────────────────────────────────
-  typedef enum logic [1:0] {
-    GEN_IDLE = 2'd0,
-    GEN_SEND = 2'd1,
-    GEN_GAP  = 2'd2
+  // tmpl_word_gen is real BRAM now (1-cycle registered read: an address held
+  // during cycle T produces data at cycle T+1, unconditionally, every cycle --
+  // see gen_rd_addr/gen_rd_data below). The invariant this whole FSM maintains
+  // is "gen_rd_addr == beat_idx+1" throughout GEN_SEND (gen_rd_addr always one
+  // beat AHEAD of what is currently being presented) -- both the initial priming
+  // (GEN_VARY_WAIT/GEN_VARY_EXTRACT/GEN_PRIME_NEXT) and the steady-state advance
+  // (self-incrementing gen_rd_addr, NOT deriving it from beat_idx -- deriving it
+  // from beat_idx in the SAME cycle beat_idx itself advances makes them equal
+  // instead of one-ahead, landing data exactly one cycle late) exist only to
+  // establish and preserve that invariant. GEN_PRIME_NEXT is shared by burst
+  // start (after GEN_VARY_EXTRACT) and every inter-packet transition (after
+  // GEN_GAP, or directly from GEN_SEND's own tlast branch when IPG==0) -- both
+  // cases need the identical "advance gen_rd_addr from beat 0's already-primed
+  // row to beat 1's" step immediately before GEN_SEND. IPG==0 back-to-back
+  // packets therefore always pay a minimum 1-cycle gap now (unavoidable real
+  // BRAM latency) -- fine, T5's check is gap>=gen_ipg, satisfied trivially at
+  // gen_ipg==0 by any nonnegative gap.
+  typedef enum logic [2:0] {
+    GEN_IDLE        = 3'd0,
+    GEN_VARY_WAIT   = 3'd1,
+    GEN_VARY_EXTRACT = 3'd2,
+    GEN_PRIME_NEXT  = 3'd3,
+    GEN_SEND        = 3'd4,
+    GEN_GAP         = 3'd5
   } gen_st_t;
   gen_st_t gen_st;
 
@@ -116,6 +151,15 @@ module fiveTuple_selftest_top #(
   logic [7:0]  vary_val;
   logic        gen_busy, gen_done;
 
+  // Real-BRAM prefetch: gen_rd_addr is the row about to be fetched (issued one
+  // cycle ahead of when gen_rd_data needs to hold it), unconditional every
+  // cycle -- the FSM below only ever controls WHEN gen_rd_addr changes.
+  // Backpressure is free: when gen_axis_tready==0, gen_rd_addr simply isn't
+  // rewritten, so the already-prefetched row holds steady.
+  logic [8:0] gen_rd_addr;
+  logic [AXI_DATA_W-1:0] gen_rd_data;
+  always_ff @(posedge clk) gen_rd_data <= tmpl_word_gen[gen_rd_addr];
+
   logic [31:0] gen_nbeats_c;
   assign gen_nbeats_c = (pkt_len_r + KEEP_W - 1) / KEEP_W;
   assign gen_axis_tvalid = (gen_st == GEN_SEND);
@@ -128,7 +172,7 @@ module fiveTuple_selftest_top #(
         if (vary_enable_r && ((beat_idx * KEEP_W + i) == vary_offset_r))
           gen_axis_tdata[i*8 +: 8] = vary_val;
         else
-          gen_axis_tdata[i*8 +: 8] = tmpl_buf[beat_idx * KEEP_W + i];
+          gen_axis_tdata[i*8 +: 8] = gen_rd_data[i*8 +: 8];
       end else begin
         gen_axis_tkeep[i] = 1'b0;
         gen_axis_tdata[i*8 +: 8] = 8'h00;
@@ -153,6 +197,7 @@ module fiveTuple_selftest_top #(
       beat_idx    <= '0;
       vary_val    <= 8'd0;
       ipg_cnt     <= 32'd0;
+      gen_rd_addr <= '0;
     end else begin
       case (gen_st)
         GEN_IDLE: begin
@@ -162,7 +207,6 @@ module fiveTuple_selftest_top #(
             vary_offset_r <= gen_vary_offset_reg;
             vary_enable_r <= gen_vary_enable_reg;
             ipg_r         <= gen_ipg_reg;
-            vary_val      <= tmpl_buf[gen_vary_offset_reg];
             pkt_idx       <= 32'd0;
             beat_idx      <= '0;
             sent_count    <= 32'd0;
@@ -171,10 +215,35 @@ module fiveTuple_selftest_top #(
               gen_busy <= 1'b0;
               gen_done <= 1'b1;
             end else begin
-              gen_busy <= 1'b1;
-              gen_st   <= GEN_SEND;
+              gen_busy    <= 1'b1;
+              gen_rd_addr <= 9'(gen_vary_offset_reg[12:5]);
+              gen_st      <= GEN_VARY_WAIT;
             end
           end
+        end
+        GEN_VARY_WAIT: begin
+          // Pure wait: gen_rd_data does NOT yet hold the vary-offset's row here
+          // (the read using the address set in GEN_IDLE only lands at the START
+          // of the NEXT cycle) -- must not touch gen_rd_addr this cycle, or the
+          // in-flight fetch is lost before it ever lands.
+          gen_st <= GEN_VARY_EXTRACT;
+        end
+        GEN_VARY_EXTRACT: begin
+          // gen_rd_data NOW holds the vary-offset's row. Extract the byte, then
+          // issue beat 0's prefetch on the same shared read port (safe -- these
+          // two reads never overlap, this FSM issues them strictly in sequence).
+          vary_val    <= gen_rd_data[vary_offset_r[4:0] * 8 +: 8];
+          gen_rd_addr <= '0;
+          gen_st      <= GEN_PRIME_NEXT;
+        end
+        GEN_PRIME_NEXT: begin
+          // Shared by burst-start and every inter-packet transition: gen_rd_addr
+          // currently holds beat 0's row address (primed by whichever state got
+          // us here), about to become gen_rd_data at the start of GEN_SEND --
+          // advance it to beat 1's address now, establishing the steady-state
+          // "gen_rd_addr == beat_idx+1" invariant before GEN_SEND ever checks it.
+          gen_rd_addr <= gen_rd_addr + 9'd1;
+          gen_st      <= GEN_SEND;
         end
         GEN_SEND: begin
           if (gen_axis_tvalid && gen_axis_tready) begin
@@ -187,20 +256,31 @@ module fiveTuple_selftest_top #(
                 gen_busy <= 1'b0;
                 gen_done <= 1'b1;
                 gen_st   <= GEN_IDLE;
-              end else if (ipg_r == 32'd0) begin
-                gen_st <= GEN_SEND;
               end else begin
-                ipg_cnt <= ipg_r;
-                gen_st  <= GEN_GAP;
+                // Prime beat 0 of the next packet now -- held steady (never
+                // re-advanced) for however long GEN_GAP takes, if any; only the
+                // final GEN_PRIME_NEXT step (right before GEN_SEND resumes)
+                // advances it again. This is why parking here for a long gap is
+                // safe: the read keeps re-settling on the SAME correct address.
+                gen_rd_addr <= '0;
+                if (ipg_r == 32'd0) begin
+                  gen_st <= GEN_PRIME_NEXT;
+                end else begin
+                  ipg_cnt <= ipg_r;
+                  gen_st  <= GEN_GAP;
+                end
               end
             end else begin
-              beat_idx <= beat_idx + 9'd1;
+              beat_idx    <= beat_idx + 9'd1;
+              gen_rd_addr <= gen_rd_addr + 9'd1;
             end
           end
         end
         GEN_GAP: begin
+          // gen_rd_addr stays parked at beat 0's row throughout -- see the
+          // comment where it was set, above.
           if (ipg_cnt <= 32'd1) begin
-            gen_st <= GEN_SEND;
+            gen_st <= GEN_PRIME_NEXT;
           end else begin
             ipg_cnt <= ipg_cnt - 32'd1;
           end
@@ -239,6 +319,12 @@ module fiveTuple_selftest_top #(
       if (cap_axis_tkeep[i]) cap_valid_bytes = cap_valid_bytes + 8'd1;
   end
 
+  // write_cursor only ever advances by a full KEEP_W (every non-last beat
+  // carries a full tkeep -- only the tlast beat is ever partial), so it is
+  // always exactly row-aligned at the moment of every real write -- cap_row
+  // is a pure bit-select (KEEP_W is a power of 2), not a division.
+  wire [31:0] cap_row = write_cursor[31:5];
+
   logic r_cap_start;  // one-cycle strobe, set by the self-test AXIL decoder below
 
   always_ff @(posedge clk) begin
@@ -253,10 +339,50 @@ module fiveTuple_selftest_top #(
       cap_byte_count <= 32'd0;
       cap_done       <= 1'b0;
     end else if (cap_st == CAP_ARMED && cap_axis_tvalid) begin
-      for (int i = 0; i < KEEP_W; i = i + 1) begin
-        if (cap_axis_tkeep[i] && ((write_cursor + i) < MAX_PKT_BYTES))
-          cap_buf[write_cursor + i] <= cap_axis_tdata[i*8 +: 8];
-      end
+      // No separate "cap_row < CAP_ROWS" bounds guard here (unlike the old
+      // per-lane code this replaced): write_cursor is structurally bounded to
+      // MAX_PKT_BEATS-1 beats (the wrapped core never presents more, by its own
+      // MAX_PKT_BEATS), so cap_row can never reach CAP_ROWS -- an extra guard
+      // level here was found to stop Quartus's byte-enable RAM inference
+      // template from matching at all (0 bits inferred despite an otherwise
+      // correct packed declaration and byte-indexed write).
+      // Statically unrolled (not a `for` loop, even though KEEP_W is compile-
+      // time-known and this is logically identical either way): Quartus's
+      // byte-enable RAM inference template was found NOT to match a `for`-loop
+      // form of this write, only a literal, explicit if-per-byte sequence
+      // (matching Intel's own "Recommended HDL Coding Styles" example exactly).
+      if (cap_axis_tkeep[0]) cap_word[cap_row][0] <= cap_axis_tdata[0 +: 8];
+      if (cap_axis_tkeep[1]) cap_word[cap_row][1] <= cap_axis_tdata[8 +: 8];
+      if (cap_axis_tkeep[2]) cap_word[cap_row][2] <= cap_axis_tdata[16 +: 8];
+      if (cap_axis_tkeep[3]) cap_word[cap_row][3] <= cap_axis_tdata[24 +: 8];
+      if (cap_axis_tkeep[4]) cap_word[cap_row][4] <= cap_axis_tdata[32 +: 8];
+      if (cap_axis_tkeep[5]) cap_word[cap_row][5] <= cap_axis_tdata[40 +: 8];
+      if (cap_axis_tkeep[6]) cap_word[cap_row][6] <= cap_axis_tdata[48 +: 8];
+      if (cap_axis_tkeep[7]) cap_word[cap_row][7] <= cap_axis_tdata[56 +: 8];
+      if (cap_axis_tkeep[8]) cap_word[cap_row][8] <= cap_axis_tdata[64 +: 8];
+      if (cap_axis_tkeep[9]) cap_word[cap_row][9] <= cap_axis_tdata[72 +: 8];
+      if (cap_axis_tkeep[10]) cap_word[cap_row][10] <= cap_axis_tdata[80 +: 8];
+      if (cap_axis_tkeep[11]) cap_word[cap_row][11] <= cap_axis_tdata[88 +: 8];
+      if (cap_axis_tkeep[12]) cap_word[cap_row][12] <= cap_axis_tdata[96 +: 8];
+      if (cap_axis_tkeep[13]) cap_word[cap_row][13] <= cap_axis_tdata[104 +: 8];
+      if (cap_axis_tkeep[14]) cap_word[cap_row][14] <= cap_axis_tdata[112 +: 8];
+      if (cap_axis_tkeep[15]) cap_word[cap_row][15] <= cap_axis_tdata[120 +: 8];
+      if (cap_axis_tkeep[16]) cap_word[cap_row][16] <= cap_axis_tdata[128 +: 8];
+      if (cap_axis_tkeep[17]) cap_word[cap_row][17] <= cap_axis_tdata[136 +: 8];
+      if (cap_axis_tkeep[18]) cap_word[cap_row][18] <= cap_axis_tdata[144 +: 8];
+      if (cap_axis_tkeep[19]) cap_word[cap_row][19] <= cap_axis_tdata[152 +: 8];
+      if (cap_axis_tkeep[20]) cap_word[cap_row][20] <= cap_axis_tdata[160 +: 8];
+      if (cap_axis_tkeep[21]) cap_word[cap_row][21] <= cap_axis_tdata[168 +: 8];
+      if (cap_axis_tkeep[22]) cap_word[cap_row][22] <= cap_axis_tdata[176 +: 8];
+      if (cap_axis_tkeep[23]) cap_word[cap_row][23] <= cap_axis_tdata[184 +: 8];
+      if (cap_axis_tkeep[24]) cap_word[cap_row][24] <= cap_axis_tdata[192 +: 8];
+      if (cap_axis_tkeep[25]) cap_word[cap_row][25] <= cap_axis_tdata[200 +: 8];
+      if (cap_axis_tkeep[26]) cap_word[cap_row][26] <= cap_axis_tdata[208 +: 8];
+      if (cap_axis_tkeep[27]) cap_word[cap_row][27] <= cap_axis_tdata[216 +: 8];
+      if (cap_axis_tkeep[28]) cap_word[cap_row][28] <= cap_axis_tdata[224 +: 8];
+      if (cap_axis_tkeep[29]) cap_word[cap_row][29] <= cap_axis_tdata[232 +: 8];
+      if (cap_axis_tkeep[30]) cap_word[cap_row][30] <= cap_axis_tdata[240 +: 8];
+      if (cap_axis_tkeep[31]) cap_word[cap_row][31] <= cap_axis_tdata[248 +: 8];
       if (cap_axis_tlast) begin
         cap_byte_count <= write_cursor + {24'd0, cap_valid_bytes};
         write_cursor   <= 32'd0;  // ready for the next packet, if any
@@ -278,6 +404,12 @@ module fiveTuple_selftest_top #(
   } st_axil_st_t;
   st_axil_st_t st_axil_st;
   logic [ST_AXIL_ADDR_W-1:0] st_axil_awaddr_r;
+
+  // Row/word-within-row split for the tmpl_buf CP write below -- WORDS_PER_ROW
+  // (KEEP_W/4) 4-byte AXI4-Lite words fit in one KEEP_W-byte BRAM row; both are
+  // powers of 2 so this is a pure bit-select, never a division.
+  wire [13:0] wr_word_idx = st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16;
+  wire [13:0] wr_row = wr_word_idx[13:3];
 
   assign st_axil_awready = (st_axil_st == ST_AXIL_IDLE);
   assign st_axil_bvalid  = (st_axil_st == ST_AXIL_BRESP);
@@ -318,11 +450,92 @@ module fiveTuple_selftest_top #(
                 default: ; // 6,7,9,10,11 read-only; 12-15 reserved
               endcase
             end else if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd2064) begin
-              // template buffer word write -- big-endian byte packing (see register map)
-              tmpl_buf[(st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+0] <= st_axil_wdata[31:24];
-              tmpl_buf[(st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+1] <= st_axil_wdata[23:16];
-              tmpl_buf[(st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+2] <= st_axil_wdata[15:8];
-              tmpl_buf[(st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+3] <= st_axil_wdata[7:0];
+              // template buffer word write -- big-endian byte packing (see register
+              // map). Both mirrored copies written identically every cycle so they
+              // can never diverge -- see the buffer declaration comment.
+              case (wr_word_idx[2:0])
+                3'd0: begin
+                  tmpl_word_cp[wr_row][0] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][1] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][2] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][3] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][0] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][1] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][2] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][3] <= st_axil_wdata[7:0];
+                end
+                3'd1: begin
+                  tmpl_word_cp[wr_row][4] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][5] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][6] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][7] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][4] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][5] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][6] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][7] <= st_axil_wdata[7:0];
+                end
+                3'd2: begin
+                  tmpl_word_cp[wr_row][8] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][9] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][10] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][11] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][8] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][9] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][10] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][11] <= st_axil_wdata[7:0];
+                end
+                3'd3: begin
+                  tmpl_word_cp[wr_row][12] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][13] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][14] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][15] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][12] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][13] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][14] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][15] <= st_axil_wdata[7:0];
+                end
+                3'd4: begin
+                  tmpl_word_cp[wr_row][16] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][17] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][18] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][19] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][16] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][17] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][18] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][19] <= st_axil_wdata[7:0];
+                end
+                3'd5: begin
+                  tmpl_word_cp[wr_row][20] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][21] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][22] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][23] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][20] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][21] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][22] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][23] <= st_axil_wdata[7:0];
+                end
+                3'd6: begin
+                  tmpl_word_cp[wr_row][24] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][25] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][26] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][27] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][24] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][25] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][26] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][27] <= st_axil_wdata[7:0];
+                end
+                3'd7: begin
+                  tmpl_word_cp[wr_row][28] <= st_axil_wdata[31:24];
+                  tmpl_word_cp[wr_row][29] <= st_axil_wdata[23:16];
+                  tmpl_word_cp[wr_row][30] <= st_axil_wdata[15:8];
+                  tmpl_word_cp[wr_row][31] <= st_axil_wdata[7:0];
+                  tmpl_word_gen[wr_row][28] <= st_axil_wdata[31:24];
+                  tmpl_word_gen[wr_row][29] <= st_axil_wdata[23:16];
+                  tmpl_word_gen[wr_row][30] <= st_axil_wdata[15:8];
+                  tmpl_word_gen[wr_row][31] <= st_axil_wdata[7:0];
+                end
+                default: ;
+              endcase
             end
             // cap_buf region (and beyond): write ignored, still BRESP'd below
             st_axil_st <= ST_AXIL_BRESP;
@@ -342,13 +555,39 @@ module fiveTuple_selftest_top #(
   // sample it UNDELAYED at that same edge, not one edge later, since
   // st_axil_rready is expected to be tied high by most drivers (see this
   // project's own tb_fiveTuple_top.sv axil_read task and its comments for the
-  // exact race this caught previously).
-  typedef enum logic {
-    ST_AXIL_R_IDLE = 1'd0,
-    ST_AXIL_R_DATA = 1'd1
+  // exact race this caught previously). ST_AXIL_R_WAIT is NEW: tmpl_buf/cap_buf
+  // are real BRAM now (1-cycle registered read: an address held during cycle T
+  // produces data at cycle T+1), so those addresses need TWO extra cycles
+  // between issuing the row read and presenting it -- ST_AXIL_R_WAIT is a pure
+  // wait (the row read issued on the R_IDLE->R_WAIT edge is only IN FLIGHT
+  // during R_WAIT, not yet valid -- touching st_r_row here would lose it before
+  // it lands), ST_AXIL_R_EXTRACT is where tmpl_word_cp_rdata/cap_word_rdata
+  // actually hold the requested row and get sliced into st_r_rdata. Control-
+  // register reads are unaffected, still resolved same-cycle straight to
+  // R_DATA, preserving the undelayed-sampling invariant above for every address
+  // class.
+  typedef enum logic [1:0] {
+    ST_AXIL_R_IDLE    = 2'd0,
+    ST_AXIL_R_WAIT    = 2'd1,
+    ST_AXIL_R_EXTRACT = 2'd2,
+    ST_AXIL_R_DATA    = 2'd3
   } st_axil_rst_t;
   st_axil_rst_t st_axil_rst;
   logic [31:0] st_r_rdata;
+  logic [13:0] st_r_row;
+  logic [2:0] st_r_word_off;
+  logic        st_r_is_cap;
+
+  // Unconditional registered row read -- always-on, consumed only while
+  // st_axil_rst==ST_AXIL_R_WAIT. Reading both arrays every cycle regardless of
+  // which is actually needed is harmless (plain BRAM reads, no side effects)
+  // and avoids needing extra muxing on the address feeding this port.
+  logic [AXI_DATA_W-1:0] tmpl_word_cp_rdata;
+  logic [AXI_DATA_W-1:0] cap_word_rdata;
+  always_ff @(posedge clk) begin
+    tmpl_word_cp_rdata <= tmpl_word_cp[st_r_row];
+    cap_word_rdata     <= cap_word[st_r_row];
+  end
 
   assign st_axil_arready = (st_axil_rst == ST_AXIL_R_IDLE);
   assign st_axil_rdata   = st_r_rdata;
@@ -371,21 +610,75 @@ module fiveTuple_selftest_top #(
                 14'd11: st_r_rdata <= 32'd8192;
                 default: st_r_rdata <= 32'd0;
               endcase
+              st_axil_rst <= ST_AXIL_R_DATA;
             end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd2064) begin
-              st_r_rdata <= {tmpl_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+0],
-                             tmpl_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+1],
-                             tmpl_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+2],
-                             tmpl_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16)*4+3]};
+              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16) >> 3;
+              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16) & 14'd7;
+              st_r_is_cap <= 1'b0;
+              st_axil_rst <= ST_AXIL_R_WAIT;
             end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd4112) begin
-              st_r_rdata <= {cap_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064)*4+0],
-                             cap_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064)*4+1],
-                             cap_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064)*4+2],
-                             cap_buf[(st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064)*4+3]};
+              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064) >> 3;
+              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064) & 14'd7;
+              st_r_is_cap <= 1'b1;
+              st_axil_rst <= ST_AXIL_R_WAIT;
             end else begin
               st_r_rdata <= 32'd0;
+              st_axil_rst <= ST_AXIL_R_DATA;
             end
-            st_axil_rst <= ST_AXIL_R_DATA;
           end
+        end
+        ST_AXIL_R_WAIT: begin
+          // Pure wait: the row read issued on the R_IDLE->R_WAIT edge is only
+          // in flight here, not yet valid in tmpl_word_cp_rdata/cap_word_rdata --
+          // must not touch st_r_row this cycle, or the in-flight fetch is lost.
+          st_axil_rst <= ST_AXIL_R_EXTRACT;
+        end
+        ST_AXIL_R_EXTRACT: begin
+          // tmpl_word_cp_rdata/cap_word_rdata NOW hold row st_r_row.
+          case (st_r_word_off)
+            3'd0: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[0 +: 8], cap_word_rdata[8 +: 8], cap_word_rdata[16 +: 8], cap_word_rdata[24 +: 8]}
+                : {tmpl_word_cp_rdata[0 +: 8], tmpl_word_cp_rdata[8 +: 8], tmpl_word_cp_rdata[16 +: 8], tmpl_word_cp_rdata[24 +: 8]};
+            end
+            3'd1: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[32 +: 8], cap_word_rdata[40 +: 8], cap_word_rdata[48 +: 8], cap_word_rdata[56 +: 8]}
+                : {tmpl_word_cp_rdata[32 +: 8], tmpl_word_cp_rdata[40 +: 8], tmpl_word_cp_rdata[48 +: 8], tmpl_word_cp_rdata[56 +: 8]};
+            end
+            3'd2: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[64 +: 8], cap_word_rdata[72 +: 8], cap_word_rdata[80 +: 8], cap_word_rdata[88 +: 8]}
+                : {tmpl_word_cp_rdata[64 +: 8], tmpl_word_cp_rdata[72 +: 8], tmpl_word_cp_rdata[80 +: 8], tmpl_word_cp_rdata[88 +: 8]};
+            end
+            3'd3: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[96 +: 8], cap_word_rdata[104 +: 8], cap_word_rdata[112 +: 8], cap_word_rdata[120 +: 8]}
+                : {tmpl_word_cp_rdata[96 +: 8], tmpl_word_cp_rdata[104 +: 8], tmpl_word_cp_rdata[112 +: 8], tmpl_word_cp_rdata[120 +: 8]};
+            end
+            3'd4: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[128 +: 8], cap_word_rdata[136 +: 8], cap_word_rdata[144 +: 8], cap_word_rdata[152 +: 8]}
+                : {tmpl_word_cp_rdata[128 +: 8], tmpl_word_cp_rdata[136 +: 8], tmpl_word_cp_rdata[144 +: 8], tmpl_word_cp_rdata[152 +: 8]};
+            end
+            3'd5: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[160 +: 8], cap_word_rdata[168 +: 8], cap_word_rdata[176 +: 8], cap_word_rdata[184 +: 8]}
+                : {tmpl_word_cp_rdata[160 +: 8], tmpl_word_cp_rdata[168 +: 8], tmpl_word_cp_rdata[176 +: 8], tmpl_word_cp_rdata[184 +: 8]};
+            end
+            3'd6: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[192 +: 8], cap_word_rdata[200 +: 8], cap_word_rdata[208 +: 8], cap_word_rdata[216 +: 8]}
+                : {tmpl_word_cp_rdata[192 +: 8], tmpl_word_cp_rdata[200 +: 8], tmpl_word_cp_rdata[208 +: 8], tmpl_word_cp_rdata[216 +: 8]};
+            end
+            3'd7: begin
+              st_r_rdata <= st_r_is_cap
+                ? {cap_word_rdata[224 +: 8], cap_word_rdata[232 +: 8], cap_word_rdata[240 +: 8], cap_word_rdata[248 +: 8]}
+                : {tmpl_word_cp_rdata[224 +: 8], tmpl_word_cp_rdata[232 +: 8], tmpl_word_cp_rdata[240 +: 8], tmpl_word_cp_rdata[248 +: 8]};
+            end
+            default: st_r_rdata <= 32'd0;
+          endcase
+          st_axil_rst <= ST_AXIL_R_DATA;
         end
         ST_AXIL_R_DATA: begin
           if (st_axil_rready) st_axil_rst <= ST_AXIL_R_IDLE;

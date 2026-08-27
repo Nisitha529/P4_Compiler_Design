@@ -28,11 +28,11 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
-    extract_ipv4 = 0;
-    extract_eth = 0;
-    extract_udp = 0;
     extract_vlan_0 = 0;
+    extract_udp = 0;
+    extract_eth = 0;
     extract_vlan_1 = 0;
+    extract_ipv4 = 0;
     extract_ipv4opt = 0;
     done = 0;
     next_state = state;

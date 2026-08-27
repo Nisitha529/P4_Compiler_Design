@@ -7,6 +7,13 @@ avst.AV_B 0 1 0 1 0
 avst.AV_AR 1 0 0 1 0 
 avst.AV_R 0 0 0 1 1 
 
+State Machine - |de2115_fiveTuple_top|fiveTuple_selftest_top:u_pipeline|st_axil_rst
+Name st_axil_rst.ST_AXIL_R_DATA st_axil_rst.ST_AXIL_R_EXTRACT st_axil_rst.ST_AXIL_R_WAIT st_axil_rst.ST_AXIL_R_IDLE 
+st_axil_rst.ST_AXIL_R_IDLE 0 0 0 0 
+st_axil_rst.ST_AXIL_R_WAIT 0 0 1 1 
+st_axil_rst.ST_AXIL_R_EXTRACT 0 1 0 1 
+st_axil_rst.ST_AXIL_R_DATA 1 0 0 1 
+
 State Machine - |de2115_fiveTuple_top|fiveTuple_selftest_top:u_pipeline|st_axil_st
 Name st_axil_st.ST_AXIL_IDLE st_axil_st.ST_AXIL_BRESP st_axil_st.ST_AXIL_WDATA 
 st_axil_st.ST_AXIL_IDLE 0 0 0 
@@ -14,10 +21,13 @@ st_axil_st.ST_AXIL_WDATA 1 0 1
 st_axil_st.ST_AXIL_BRESP 1 1 0 
 
 State Machine - |de2115_fiveTuple_top|fiveTuple_selftest_top:u_pipeline|gen_st
-Name gen_st.GEN_IDLE gen_st.GEN_GAP gen_st.GEN_SEND 
-gen_st.GEN_IDLE 0 0 0 
-gen_st.GEN_SEND 1 0 1 
-gen_st.GEN_GAP 1 1 0 
+Name gen_st.GEN_GAP gen_st.GEN_SEND gen_st.GEN_PRIME_NEXT gen_st.GEN_VARY_EXTRACT gen_st.GEN_VARY_WAIT gen_st.GEN_IDLE 
+gen_st.GEN_IDLE 0 0 0 0 0 0 
+gen_st.GEN_VARY_WAIT 0 0 0 0 1 1 
+gen_st.GEN_VARY_EXTRACT 0 0 0 1 0 1 
+gen_st.GEN_PRIME_NEXT 0 0 1 0 0 1 
+gen_st.GEN_SEND 0 1 0 0 0 1 
+gen_st.GEN_GAP 1 0 0 0 0 1 
 
 State Machine - |de2115_fiveTuple_top|fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|axil_st
 Name axil_st.AXIL_IDLE axil_st.AXIL_BRESP axil_st.AXIL_WDATA 
