@@ -40,6 +40,18 @@
 set_global_assignment -name FAMILY "Cyclone IV E"
 set_global_assignment -name DEVICE EP4CE115F29C7
 set_global_assignment -name TOP_LEVEL_ENTITY de2115_fiveTuple_top
+
+# ── Pin/clock constraints, added for real hardware bring-up ────────────────
+# CLOCK_50: cross-checked against two independent DE2-115 pin-assignment
+# references (PIN_Y2, 3.3-V LVTTL) -- still worth a final check against your
+# own board's silkscreen / Terasic System CD before programming.
+# KEY0 (active-low pushbutton reset): PIN_M23, 2.5 V, from the same
+# Quartus-format pin-assignment CSV.
+set_location_assignment PIN_Y2 -to CLOCK_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
+set_location_assignment PIN_M23 -to KEY0
+set_instance_assignment -name IO_STANDARD "2.5 V" -to KEY0
+set_global_assignment -name SDC_FILE de2_115_setup.sdc
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 25.1STD.0
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "16:52:46  අගෝස්තු 26, 2026"
 set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
