@@ -10,7 +10,7 @@ from ir import (
     IR, Header, HeaderField, HeaderInstance, MetadataField,
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
-    ControlBlock, Deparser, LocalVar, RegisterDecl,
+    ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
     IfStatement, TableApply,
 )
 
@@ -584,13 +584,14 @@ def _collect_name_maps(body_text):
 
 def _parse_control_body(body_text, ctrl_name):
     """
-    Returns (local_vars, registers, actions, tables, apply_text, name_map).
+    Returns (local_vars, registers, counters, actions, tables, apply_text, name_map).
     actions : [(local_name, Action, is_hidden)]
     tables  : [(local_name, Table|None, is_hidden, default_action_local_name)]
     """
     text = body_text
     local_vars = []
     registers = []
+    counters = []
     actions_out = []
     tables_out = []
     apply_text = ''
@@ -626,6 +627,28 @@ def _parse_control_body(body_text, ctrl_name):
         canon = _extract_name_annotation(ann_text) or local_name
         canon = name_map.get(local_name, canon)
         registers.append(RegisterDecl(canon, dw, sz))
+
+    # ── Counter externs ──────────────────────────────────────────────────────
+    # Match: @ann Counter<bit<W>, bit<S>>(N_COUNTERS, CounterType_t.TYPE) name;
+    # By the time p4test's MidEnd dump reaches here, typedef'd index types and
+    # const sizes are already resolved to literal bit<N>/digits (verified
+    # against generated output: a typedef'd index type shows its resolved
+    # width directly), so no constant-folding is needed here -- same as
+    # register's SIZE literal above.
+    for m in re.finditer(
+        r'(' + _ANN + r')\bCounter\s*<\s*bit<(\d+)>\s*,\s*bit<(\d+)>\s*>\s*'
+        r'\(\s*(\d+)\s*,\s*CounterType_t\.(\w+)\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text = m.group(1)
+        dw = int(m.group(2))
+        # group(3) = index width -- not stored; addr width is re-derived from
+        # size downstream, the same way RegisterDecl's addr width is.
+        n_counters = int(m.group(4))
+        ctype = m.group(5)
+        local_name = m.group(6)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        counters.append(CounterDecl(canon, dw, n_counters, ctype))
 
     # ── Actions ───────────────────────────────────────────────────────────────
     for m in re.finditer(r'(' + _ANN + r')\baction\s+(\w+)\s*\(', text):
@@ -714,7 +737,7 @@ def _parse_control_body(body_text, ctrl_name):
 
             tables_out.append((local_name, tbl, False, None))
 
-    return local_vars, registers, actions_out, tables_out, apply_text, name_map
+    return local_vars, registers, counters, actions_out, tables_out, apply_text, name_map
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -852,7 +875,7 @@ def ingest_p4ir(p4_text: str) -> IR:
     # 5. Match-action control (ingress)
     ctrl_body = _find_control_body(text, ingress_name)
     if ctrl_body:
-        local_vars, registers, actions_raw, tables_raw, apply_text, name_map = \
+        local_vars, registers, counters, actions_raw, tables_raw, apply_text, name_map = \
             _parse_control_body(ctrl_body, ingress_name)
 
         ctrl = ControlBlock(ingress_name)
@@ -862,6 +885,9 @@ def ingest_p4ir(p4_text: str) -> IR:
 
         for reg in registers:
             ctrl.add_register(reg)
+
+        for cnt in counters:
+            ctrl.add_counter(cnt)
 
         # Build action lookup dicts
         actions_by_local = {}

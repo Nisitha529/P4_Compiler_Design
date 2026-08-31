@@ -452,6 +452,49 @@ def _build_axil_regmap(ctrl, amap, fwmap):
         })
         base += TABLE_AXIL_SZ
 
+    # Counter externs get their own register-map entry, reusing the same
+    # generic AXI4-Lite staging/write-FSM/read-FSM machinery in
+    # _emit_axil_decoder as tables -- but with a smaller, read-only shape
+    # (query-only, no cp_wr_en/commit word, no delete, no "hit" concept: an
+    # index is always valid). Marked 'is_counter' so _emit_axil_decoder and
+    # the u_proc wiring below skip the table-only cp_wr/cp_query_del/hit_out
+    # ports a counter doesn't have -- a counter's storage lives in its own
+    # separate {Name}_counter module (see emit_counters.py), not inside
+    # processing_generated, so it isn't wired through u_proc's table ports
+    # at all.
+    for cnt in ctrl.counters:
+        cname = cnt.name
+        idx_w = max(1, math.ceil(math.log2(max(cnt.size, 2))))
+        has_pkt  = cnt.counter_type in ('PACKETS', 'PACKETS_AND_BYTES')
+        has_byte = cnt.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
+
+        regs = [
+            ('query_idx',    f'{cname}_cp_query_idx', idx_w),
+            ('query_commit', f'{cname}_cp_query_en',  1),
+        ]
+        read_regs = [('query_status', None, 32)]
+        if has_pkt:
+            read_regs += [('value_pkt_lo', f'{cname}_cp_query_pkt_value[31:0]',  32),
+                          ('value_pkt_hi', f'{cname}_cp_query_pkt_value[63:32]', 32)]
+        if has_byte:
+            read_regs += [('value_byte_lo', f'{cname}_cp_query_byte_value[31:0]',  32),
+                          ('value_byte_hi', f'{cname}_cp_query_byte_value[63:32]', 32)]
+
+        result.append({
+            'tname': cname,
+            'base':  base,
+            'regs':  regs,
+            'read_regs': read_regs,
+            'idx_w': idx_w,
+            'act_w': 0,
+            'params': [],
+            'supports_query': True,
+            'is_counter': True,
+            'has_pkt': has_pkt,
+            'has_byte': has_byte,
+        })
+        base += TABLE_AXIL_SZ
+
     return result
 
 
@@ -470,7 +513,7 @@ def _emit_axil_decoder(f, regmap):
             if rname in ('commit', 'query_commit', 'delete_commit'):
                 continue
             f.write(f'  logic [{width-1}:0] r_{cp_sig};\n')
-        if ti['supports_query']:
+        if ti['supports_query'] and not ti.get('is_counter'):
             f.write(f'  logic r_{tname}_cp_query_del;\n')
 
     # cp_wr_en / cp_query_en per-table
@@ -562,9 +605,13 @@ def _emit_axil_decoder(f, regmap):
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
                         f"r_{tname}_cp_wr_en <= 1'b1; // {tname} commit\n")
             elif rname == 'query_commit':
-                f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
-                        f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b0; "
-                        f"end // {tname} query\n")
+                if ti.get('is_counter'):
+                    f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
+                            f"r_{tname}_cp_query_en <= 1'b1; // {tname} query\n")
+                else:
+                    f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
+                            f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b0; "
+                            f"end // {tname} query\n")
             elif rname == 'delete_commit':
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
                         f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b1; "
@@ -625,7 +672,10 @@ def _emit_axil_decoder(f, regmap):
         for idx, (rname, cp_sig, width) in enumerate(ti['read_regs']):
             word_addr = (base + (n_write_words + idx) * 4) >> 2
             if rname == 'query_status':
-                expr = f'{{30\'d0, {tname}_cp_query_hit, {tname}_cp_query_busy}}'
+                if ti.get('is_counter'):
+                    expr = f'{{31\'d0, {tname}_cp_query_busy}}'
+                else:
+                    expr = f'{{30\'d0, {tname}_cp_query_hit, {tname}_cp_query_busy}}'
             else:
                 expr = _rdata_expr(cp_sig, width)
             f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: r_rdata <= {expr}; // {tname} {rname}\n")
@@ -916,6 +966,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         )
     HDR_MAX_BEATS = HDR_MAX_BYTES // KEEP_W
 
+    # Whether any counter extern needs the packet's total byte length (only
+    # BYTES/PACKETS_AND_BYTES counters do) -- gates whether pkt_byte_len is
+    # emitted at all, so apps with no such counter (or no counters) get
+    # byte-identical output to before this feature existed.
+    needs_byte_len = any(c.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
+                          for c in ctrl.counters)
+
     # ── Module header ──────────────────────────────────────────────────────────
     f.write(f'module {app_name}_top #(\n')
     f.write(f'    parameter int AXI_DATA_W  = {BEAT_W},\n')
@@ -1080,6 +1137,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic proc_committed;\n')
     f.write('  logic tx_active;\n')
     f.write(f'  logic [{BEAT_CNT_W-1}:0] rx_beat_cnt;\n')
+    if needs_byte_len:
+        # Total packet byte length, for BYTES-type counters -- freezes
+        # automatically once rx_done latches, same rationale as rx_beat_cnt
+        # above (increment is gated on accept_beat, which itself can't fire
+        # once s_axis_tready=!rx_done drops).
+        f.write('  logic [15:0] pkt_byte_len;\n')
     f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_beat_cnt;\n')
     f.write('  logic tx_out_valid;\n')
     f.write(f'  logic [{KEEP_W*8-1}:0] tx_out_data;\n')
@@ -1198,13 +1261,24 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # reference ITS registers) resolves this direction of the same
     # cross-toolchain forward-reference class fixed above for header fields.
     for ti in regmap:
-        if ti['supports_query']:
-            tname = ti['tname']
+        if not ti['supports_query']:
+            continue
+        tname = ti['tname']
+        if ti.get('is_counter'):
+            # Counter query results come from the separate {tname}_counter
+            # module (see emit_counters.py), not from processing_generated --
+            # no _hit/_action_id/params concept, just busy + the value(s).
             f.write(f'  wire {tname}_cp_query_busy;\n')
-            f.write(f'  wire {tname}_cp_query_hit;\n')
-            f.write(f'  wire [{ti["act_w"]-1}:0] {tname}_cp_query_action_id;\n')
-            for pname, pw in ti['params']:
-                f.write(f'  wire [{pw-1}:0] {tname}_cp_query_p_{pname};\n')
+            if ti.get('has_pkt'):
+                f.write(f'  wire [63:0] {tname}_cp_query_pkt_value;\n')
+            if ti.get('has_byte'):
+                f.write(f'  wire [63:0] {tname}_cp_query_byte_value;\n')
+            continue
+        f.write(f'  wire {tname}_cp_query_busy;\n')
+        f.write(f'  wire {tname}_cp_query_hit;\n')
+        f.write(f'  wire [{ti["act_w"]-1}:0] {tname}_cp_query_action_id;\n')
+        for pname, pw in ti['params']:
+            f.write(f'  wire [{pw-1}:0] {tname}_cp_query_p_{pname};\n')
     f.write('\n')
 
     _emit_axil_decoder(f, regmap)
@@ -1224,8 +1298,19 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                 f.write(f'  wire [{width-1}:0] {cp_sig} = r_{cp_sig};\n')
         if ti['supports_query']:
             f.write(f'  wire {tname}_cp_query_en  = r_{tname}_cp_query_en;\n')
-            f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
-        f.write(f'  wire {tname}_hit_out;\n')
+            if not ti.get('is_counter'):
+                f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
+        if not ti.get('is_counter'):
+            f.write(f'  wire {tname}_hit_out;\n')
+
+    # Counter increment-request wires -- these connect u_proc's new
+    # {cname}_incr_en/_incr_idx output ports straight through to the
+    # separate {cname}_counter module instantiated below (after
+    # pkt_ready_to_clear, which that module also needs).
+    for cnt in ctrl.counters:
+        idx_w = max(1, math.ceil(math.log2(cnt.size))) if cnt.size > 1 else 1
+        f.write(f'  wire {cnt.name}_incr_en;\n')
+        f.write(f'  wire [{idx_w-1}:0] {cnt.name}_incr_idx;\n')
 
     f.write('\n')
     f.write('  processing_generated u_proc (\n')
@@ -1254,8 +1339,11 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fld in inst.header_type.fields:
             if fld.width:
                 f.write(f'    .out_{hname}_{fld.name}  (out_{hname}_{fld.name}),\n')
-    # cp_wr ports
+    # cp_wr ports (tables only -- counters have no cp_wr/cp_query/hit_out
+    # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
+        if ti.get('is_counter'):
+            continue
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
         for rname, cp_sig, width in ti['regs']:
@@ -1270,6 +1358,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             for pname, pw in ti['params']:
                 f.write(f'    .{tname}_cp_query_p_{pname} ({tname}_cp_query_p_{pname}),\n')
         f.write(f'    .{tname}_hit_out  ({tname}_hit_out),\n')
+    # Counter increment-request ports
+    for cnt in ctrl.counters:
+        f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
+        f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
     f.write('    .valid_out (proc_valid_out),\n')
     f.write('    .drop      (proc_drop)\n')
     f.write('  );\n\n')
@@ -1280,6 +1372,35 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // RX and TX (the single-packet-in-flight invariant -- avoids needing a\n')
     f.write('  // double-buffered pkt_buf).\n')
     f.write('  wire pkt_ready_to_clear = pkt_busy && rx_done && proc_committed && !tx_active;\n\n')
+
+    # ── Counter externs ────────────────────────────────────────────────────────
+    # Storage lives outside processing_generated (see emit_counters.py) since,
+    # unlike registers, nothing ever reads a counter back mid-packet -- the
+    # increment request is raised at proc_settle&&!proc_committed (same cycle
+    # write-back commits) but only APPLIED at pkt_ready_to_clear, once
+    # pkt_byte_len (needed for BYTES-type counters) is final. Deliberately
+    # NOT gated on !proc_drop: mark_to_drop() doesn't abort the P4 action, so
+    # a .count() elsewhere in the same action must still fire on a dropped
+    # packet -- the one place this intentionally diverges from the
+    # write-back timing it otherwise mirrors.
+    for cnt in ctrl.counters:
+        has_pkt  = cnt.counter_type in ('PACKETS', 'PACKETS_AND_BYTES')
+        has_byte = cnt.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
+        f.write(f'  {cnt.name}_counter #(.DEPTH({cnt.size})) u_{cnt.name} (\n')
+        f.write('    .clk (clk), .rst_n (rst_n),\n')
+        f.write(f'    .incr_req  ({cnt.name}_incr_en),\n')
+        f.write(f'    .incr_idx  ({cnt.name}_incr_idx),\n')
+        f.write('    .pkt_commit (proc_settle && !proc_committed),\n')
+        f.write('    .pkt_done   (pkt_ready_to_clear),\n')
+        f.write(f'    .pkt_byte_len ({"pkt_byte_len" if has_byte else "16\'d0"}),\n')
+        f.write(f'    .cp_query_en  ({cnt.name}_cp_query_en),\n')
+        f.write(f'    .cp_query_idx ({cnt.name}_cp_query_idx),\n')
+        f.write(f'    .cp_query_busy ({cnt.name}_cp_query_busy)')
+        if has_pkt:
+            f.write(f',\n    .cp_query_pkt_value ({cnt.name}_cp_query_pkt_value)')
+        if has_byte:
+            f.write(f',\n    .cp_query_byte_value ({cnt.name}_cp_query_byte_value)')
+        f.write('\n  );\n\n')
 
     # ── RX (ingest) ────────────────────────────────────────────────────────────
     f.write('  // ── RX (ingest) ──────────────────────────────────────────────────────────\n')
@@ -1293,9 +1414,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      rx_done     <= 1\'b0;\n')
     f.write('      rx_beat_cnt <= \'0;\n')
     f.write('      overflow    <= 1\'b0;\n')
+    if needs_byte_len:
+        f.write('      pkt_byte_len <= \'0;\n')
     f.write('    end else begin\n')
     f.write('      if (accept_beat) begin\n')
     f.write('        pkt_busy <= 1\'b1;\n')
+    if needs_byte_len:
+        f.write('        pkt_byte_len <= pkt_byte_len + 16\'($countones(s_axis_tkeep));\n')
     f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
     f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
     f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
@@ -1322,6 +1447,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('        rx_done     <= 1\'b0;\n')
     f.write('        rx_beat_cnt <= \'0;\n')
     f.write('        overflow    <= 1\'b0;\n')
+    if needs_byte_len:
+        f.write('        pkt_byte_len <= \'0;\n')
     f.write('      end\n')
     f.write('    end\n')
     f.write('  end\n\n')

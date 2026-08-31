@@ -499,6 +499,11 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
             f.write(f'{ind}{obj}_wr_addr = {addr};\n')
             f.write(f'{ind}{obj}_wr_data = {data};\n')
             return
+        if method == 'count' and len(stmt.args) >= 1:
+            idx = _subst(stmt.args[0], pmap, cmap)
+            f.write(f'{ind}{obj}_incr_en  = 1\'b1;\n')
+            f.write(f'{ind}{obj}_incr_idx = {idx};\n')
+            return
         f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {name}({", ".join(stmt.args)}) */\n')
         return
 
@@ -1085,6 +1090,19 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     for pname, pw in tw['params']:
                         f.write(f'  output logic [{pw-1}:0] {tname}_cp_query_p_{pname},\n')
 
+        # Counter increment-request outputs. Unlike registers (whose storage
+        # lives inside this module, since a register's own action body reads
+        # its value back same-cycle), a counter is never read back inside the
+        # apply block -- so its storage lives in a separate, top-level-
+        # instantiated {Name}_counter module (see emit_counters.py) and this
+        # module only needs to raise a one-cycle request.
+        if ctrl.counters:
+            f.write('\n  // Counter increment-request outputs (storage lives outside this module)\n')
+            for cnt in ctrl.counters:
+                idx_w = max(1, math.ceil(math.log2(cnt.size))) if cnt.size > 1 else 1
+                f.write(f'  output logic        {cnt.name}_incr_en,\n')
+                f.write(f'  output logic [{idx_w-1}:0] {cnt.name}_incr_idx,\n')
+
         f.write('\n  output logic        valid_out,\n')
         f.write('  output logic        drop\n')
         f.write(');\n\n')
@@ -1205,6 +1223,24 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             return 0
 
         reg_write_stage = {reg.name: _reg_write_stage(reg.name) for reg in registers}
+
+        def _stmts_contain_count(stmts, cnt_name):
+            for s in stmts:
+                if isinstance(s, ExternCall) and s.name == f'{cnt_name}.count':
+                    return True
+                if isinstance(s, IfStatement):
+                    if _stmts_contain_count(s.then_body, cnt_name) or \
+                       _stmts_contain_count(s.else_body, cnt_name):
+                        return True
+            return False
+
+        def _counter_incr_stage(cnt_name):
+            for i, stg in enumerate(stages):
+                if _stmts_contain_count(stg, cnt_name):
+                    return i
+            return 0
+
+        counter_incr_stage = {cnt.name: _counter_incr_stage(cnt.name) for cnt in ctrl.counters}
 
         def _stmts_contain_call(stmts, call_name):
             for s in stmts:
@@ -1512,6 +1548,10 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                         buf.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
                         buf.write(f'    {reg.name}_wr_addr = \'0;\n')
                         buf.write(f'    {reg.name}_wr_data = \'0;\n')
+                for cnt in ctrl.counters:
+                    if counter_incr_stage[cnt.name] == 0:
+                        buf.write(f'    {cnt.name}_incr_en  = 1\'b0;\n')
+                        buf.write(f'    {cnt.name}_incr_idx = \'0;\n')
                 if std_meta_outs:
                     buf.write('\n    // Standard metadata defaults\n')
                     for fname in sorted(std_meta_outs):
@@ -1534,6 +1574,10 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                         buf.write(f'    {reg.name}_wr_en   = 1\'b0;\n')
                         buf.write(f'    {reg.name}_wr_addr = \'0;\n')
                         buf.write(f'    {reg.name}_wr_data = \'0;\n')
+                for cnt in ctrl.counters:
+                    if counter_incr_stage[cnt.name] == k:
+                        buf.write(f'    {cnt.name}_incr_en  = 1\'b0;\n')
+                        buf.write(f'    {cnt.name}_incr_idx = \'0;\n')
                 for hname in hdr_valids:
                     buf.write(f'    out_{hname}_valid = out_{hname}_valid_s{k};\n')
                     buf.write(f'    {hname}_valid = {hname}_valid_s{k};\n')

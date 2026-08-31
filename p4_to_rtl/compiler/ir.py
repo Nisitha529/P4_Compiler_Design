@@ -201,6 +201,15 @@ class RegisterDecl:
         self.size       = size
 
 
+class CounterDecl:
+    """A Counter<bit<W>, IdxT>(n_counters, CounterType_t.TYPE) name; extern declaration."""
+    def __init__(self, name, data_width, size, counter_type):
+        self.name         = name
+        self.data_width   = data_width    # value width W (e.g. 64)
+        self.size         = size          # n_counters
+        self.counter_type = counter_type  # 'PACKETS' | 'BYTES' | 'PACKETS_AND_BYTES'
+
+
 class ControlBlock:
     def __init__(self, name):
         self.name = name
@@ -209,6 +218,7 @@ class ControlBlock:
         self.actions = []        # list[Action]      (local to this block)
         self.local_vars = []     # list[LocalVar]    (bit<N> x; declarations)
         self.registers  = []     # list[RegisterDecl]
+        self.counters   = []     # list[CounterDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -224,6 +234,9 @@ class ControlBlock:
 
     def add_register(self, reg):
         self.registers.append(reg)
+
+    def add_counter(self, cnt):
+        self.counters.append(cnt)
 
 
 # ============================================================
