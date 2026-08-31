@@ -210,6 +210,18 @@ class CounterDecl:
         self.counter_type = counter_type  # 'PACKETS' | 'BYTES' | 'PACKETS_AND_BYTES'
 
 
+class ChecksumUpdate:
+    """A real update_checksum(condition, {field_list}, dest, algo) call, from a
+    P4 MyComputeChecksum-style control block. Module-level (IR.checksum_updates),
+    not attached to any ControlBlock -- see IR.add_checksum_update()."""
+    def __init__(self, dest_header, dest_field, condition, algo, fields):
+        self.dest_header = dest_header   # e.g. 'ipv4'
+        self.dest_field  = dest_field    # e.g. 'hdrChecksum'
+        self.condition   = condition     # P4-string, e.g. 'hdr.ipv4.isValid()'
+        self.algo        = algo          # 'csum16' -- only algo implemented
+        self.fields      = fields        # list of raw 'hdr.X.Y' strings, in order
+
+
 class ControlBlock:
     def __init__(self, name):
         self.name = name
@@ -298,6 +310,11 @@ class IR:
         # Pipeline
         self.pipeline = Pipeline()
 
+        # Checksum updates (update_checksum() calls) -- module-level, not
+        # scoped to any single ControlBlock, since MyComputeChecksum is a
+        # separate control block whose data reaches the IR only here.
+        self.checksum_updates = []
+
     # ---------------- Parser ----------------
     def add_parser_state(self, state):
         self.parser_states[state.name] = state
@@ -342,6 +359,10 @@ class IR:
 
     def set_consts(self, c):
         self.consts = c
+
+    # ---------------- Checksum updates ----------------
+    def add_checksum_update(self, cku):
+        self.checksum_updates.append(cku)
 
     # ---------------- Pipeline ----------------
     def set_pipeline_stage(self, stage, ref):

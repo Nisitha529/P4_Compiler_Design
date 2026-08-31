@@ -122,6 +122,7 @@ module fiveTuple_top #(
   logic proc_committed;
   logic tx_active;
   logic [8:0] rx_beat_cnt;
+  logic [15:0] pkt_byte_len;
   logic [8:0] tx_beat_cnt;
   logic tx_out_valid;
   logic [255:0] tx_out_data;
@@ -286,6 +287,10 @@ module fiveTuple_top #(
   wire [2:0] FiveTuple_cp_query_p_pcp;
   wire [0:0] FiveTuple_cp_query_p_cfi;
   wire [11:0] FiveTuple_cp_query_p_vid;
+  wire PacketCounter_cp_query_busy;
+  wire [63:0] PacketCounter_cp_query_pkt_value;
+  wire ByteCounter_cp_query_busy;
+  wire [63:0] ByteCounter_cp_query_byte_value;
 
 
   // ── AXI4-Lite staging registers ─────────────────────────────────────────
@@ -306,8 +311,14 @@ module fiveTuple_top #(
   logic [15:0] r_FiveTuple_cp_query_key_table_key_sport;
   logic [15:0] r_FiveTuple_cp_query_key_table_key_dport;
   logic r_FiveTuple_cp_query_del;
+  logic [12:0] r_PacketCounter_cp_query_idx;
+  logic [12:0] r_ByteCounter_cp_query_idx;
   logic r_FiveTuple_cp_wr_en;
   logic r_FiveTuple_cp_query_en;
+  logic r_PacketCounter_cp_wr_en;
+  logic r_PacketCounter_cp_query_en;
+  logic r_ByteCounter_cp_wr_en;
+  logic r_ByteCounter_cp_query_en;
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -332,6 +343,8 @@ module fiveTuple_top #(
       14'd11: pending_commit_busy = FiveTuple_cp_query_busy;
       14'd17: pending_commit_busy = FiveTuple_cp_query_busy;
       14'd18: pending_commit_busy = FiveTuple_cp_query_busy;
+      14'd65: pending_commit_busy = PacketCounter_cp_query_busy;
+      14'd129: pending_commit_busy = ByteCounter_cp_query_busy;
       default: pending_commit_busy = 1'b0;
     endcase
   end
@@ -342,9 +355,17 @@ module fiveTuple_top #(
       axil_st <= AXIL_IDLE;
       r_FiveTuple_cp_wr_en <= 1'b0;
       r_FiveTuple_cp_query_en <= 1'b0;
+      r_PacketCounter_cp_wr_en <= 1'b0;
+      r_PacketCounter_cp_query_en <= 1'b0;
+      r_ByteCounter_cp_wr_en <= 1'b0;
+      r_ByteCounter_cp_query_en <= 1'b0;
     end else begin
       r_FiveTuple_cp_wr_en <= 1'b0;
       r_FiveTuple_cp_query_en <= 1'b0;
+      r_PacketCounter_cp_wr_en <= 1'b0;
+      r_PacketCounter_cp_query_en <= 1'b0;
+      r_ByteCounter_cp_wr_en <= 1'b0;
+      r_ByteCounter_cp_query_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -374,6 +395,10 @@ module fiveTuple_top #(
               14'd16: r_FiveTuple_cp_query_key_table_key_dport <= s_axil_wdata[15:0]; // query_key_table_key_dport
               14'd17: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b0; end // FiveTuple query
               14'd18: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b1; end // FiveTuple delete
+              14'd64: r_PacketCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx
+              14'd65: r_PacketCounter_cp_query_en <= 1'b1; // PacketCounter query
+              14'd128: r_ByteCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx
+              14'd129: r_ByteCounter_cp_query_en <= 1'b1; // ByteCounter query
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -415,6 +440,12 @@ module fiveTuple_top #(
               14'd22: r_rdata <= {29'd0, FiveTuple_cp_query_p_pcp}; // FiveTuple query_p_pcp
               14'd23: r_rdata <= {31'd0, FiveTuple_cp_query_p_cfi}; // FiveTuple query_p_cfi
               14'd24: r_rdata <= {20'd0, FiveTuple_cp_query_p_vid}; // FiveTuple query_p_vid
+              14'd66: r_rdata <= {31'd0, PacketCounter_cp_query_busy}; // PacketCounter query_status
+              14'd67: r_rdata <= PacketCounter_cp_query_pkt_value[31:0]; // PacketCounter value_pkt_lo
+              14'd68: r_rdata <= PacketCounter_cp_query_pkt_value[63:32]; // PacketCounter value_pkt_hi
+              14'd130: r_rdata <= {31'd0, ByteCounter_cp_query_busy}; // ByteCounter query_status
+              14'd131: r_rdata <= ByteCounter_cp_query_byte_value[31:0]; // ByteCounter value_byte_lo
+              14'd132: r_rdata <= ByteCounter_cp_query_byte_value[63:32]; // ByteCounter value_byte_hi
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;
@@ -448,6 +479,14 @@ module fiveTuple_top #(
   wire FiveTuple_cp_query_en  = r_FiveTuple_cp_query_en;
   wire FiveTuple_cp_query_del = r_FiveTuple_cp_query_del;
   wire FiveTuple_hit_out;
+  wire [12:0] PacketCounter_cp_query_idx = r_PacketCounter_cp_query_idx;
+  wire PacketCounter_cp_query_en  = r_PacketCounter_cp_query_en;
+  wire [12:0] ByteCounter_cp_query_idx = r_ByteCounter_cp_query_idx;
+  wire ByteCounter_cp_query_en  = r_ByteCounter_cp_query_en;
+  wire PacketCounter_incr_en;
+  wire [12:0] PacketCounter_incr_idx;
+  wire ByteCounter_incr_en;
+  wire [12:0] ByteCounter_incr_idx;
 
   processing_generated u_proc (
     .clk       (clk),
@@ -574,6 +613,10 @@ module fiveTuple_top #(
     .FiveTuple_cp_query_p_cfi (FiveTuple_cp_query_p_cfi),
     .FiveTuple_cp_query_p_vid (FiveTuple_cp_query_p_vid),
     .FiveTuple_hit_out  (FiveTuple_hit_out),
+    .PacketCounter_incr_en  (PacketCounter_incr_en),
+    .PacketCounter_incr_idx (PacketCounter_incr_idx),
+    .ByteCounter_incr_en  (ByteCounter_incr_en),
+    .ByteCounter_incr_idx (ByteCounter_incr_idx),
     .valid_out (proc_valid_out),
     .drop      (proc_drop)
   );
@@ -583,6 +626,31 @@ module fiveTuple_top #(
   // RX and TX (the single-packet-in-flight invariant -- avoids needing a
   // double-buffered pkt_buf).
   wire pkt_ready_to_clear = pkt_busy && rx_done && proc_committed && !tx_active;
+
+  PacketCounter_counter #(.DEPTH(8192)) u_PacketCounter (
+    .clk (clk), .rst_n (rst_n),
+    .incr_req  (PacketCounter_incr_en),
+    .incr_idx  (PacketCounter_incr_idx),
+    .pkt_commit (proc_settle && !proc_committed),
+    .pkt_done   (pkt_ready_to_clear),
+    .cp_query_en  (PacketCounter_cp_query_en),
+    .cp_query_idx (PacketCounter_cp_query_idx),
+    .cp_query_busy (PacketCounter_cp_query_busy),
+    .cp_query_pkt_value (PacketCounter_cp_query_pkt_value)
+  );
+
+  ByteCounter_counter #(.DEPTH(8192)) u_ByteCounter (
+    .clk (clk), .rst_n (rst_n),
+    .incr_req  (ByteCounter_incr_en),
+    .incr_idx  (ByteCounter_incr_idx),
+    .pkt_commit (proc_settle && !proc_committed),
+    .pkt_done   (pkt_ready_to_clear),
+    .pkt_byte_len (pkt_byte_len),
+    .cp_query_en  (ByteCounter_cp_query_en),
+    .cp_query_idx (ByteCounter_cp_query_idx),
+    .cp_query_busy (ByteCounter_cp_query_busy),
+    .cp_query_byte_value (ByteCounter_cp_query_byte_value)
+  );
 
   // ── RX (ingest) ──────────────────────────────────────────────────────────
   assign s_axis_tready = !rx_done;
@@ -595,9 +663,11 @@ module fiveTuple_top #(
       rx_done     <= 1'b0;
       rx_beat_cnt <= '0;
       overflow    <= 1'b0;
+      pkt_byte_len <= '0;
     end else begin
       if (accept_beat) begin
         pkt_busy <= 1'b1;
+        pkt_byte_len <= pkt_byte_len + ({15'd0, s_axis_tkeep[0]} + {15'd0, s_axis_tkeep[1]} + {15'd0, s_axis_tkeep[2]} + {15'd0, s_axis_tkeep[3]} + {15'd0, s_axis_tkeep[4]} + {15'd0, s_axis_tkeep[5]} + {15'd0, s_axis_tkeep[6]} + {15'd0, s_axis_tkeep[7]} + {15'd0, s_axis_tkeep[8]} + {15'd0, s_axis_tkeep[9]} + {15'd0, s_axis_tkeep[10]} + {15'd0, s_axis_tkeep[11]} + {15'd0, s_axis_tkeep[12]} + {15'd0, s_axis_tkeep[13]} + {15'd0, s_axis_tkeep[14]} + {15'd0, s_axis_tkeep[15]} + {15'd0, s_axis_tkeep[16]} + {15'd0, s_axis_tkeep[17]} + {15'd0, s_axis_tkeep[18]} + {15'd0, s_axis_tkeep[19]} + {15'd0, s_axis_tkeep[20]} + {15'd0, s_axis_tkeep[21]} + {15'd0, s_axis_tkeep[22]} + {15'd0, s_axis_tkeep[23]} + {15'd0, s_axis_tkeep[24]} + {15'd0, s_axis_tkeep[25]} + {15'd0, s_axis_tkeep[26]} + {15'd0, s_axis_tkeep[27]} + {15'd0, s_axis_tkeep[28]} + {15'd0, s_axis_tkeep[29]} + {15'd0, s_axis_tkeep[30]} + {15'd0, s_axis_tkeep[31]});
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
           pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
           rx_beat_cnt <= rx_beat_cnt + 9'd1;
@@ -624,6 +694,7 @@ module fiveTuple_top #(
         rx_done     <= 1'b0;
         rx_beat_cnt <= '0;
         overflow    <= 1'b0;
+        pkt_byte_len <= '0;
       end
     end
   end

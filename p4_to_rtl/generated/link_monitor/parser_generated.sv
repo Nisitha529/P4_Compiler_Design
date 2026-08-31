@@ -23,14 +23,15 @@ module parser_generated(
     ACCEPT
   } state_t;
 
+  (* fsm_encoding = "one_hot" *)
   state_t state, next_state;
 
   always_comb begin
-    extract_probe_fwd = 0;
-    extract_ethernet = 0;
-    extract_probe = 0;
-    extract_probe_data = 0;
     extract_ipv4 = 0;
+    extract_probe = 0;
+    extract_ethernet = 0;
+    extract_probe_fwd = 0;
+    extract_probe_data = 0;
     done = 0;
     next_state = state;
 

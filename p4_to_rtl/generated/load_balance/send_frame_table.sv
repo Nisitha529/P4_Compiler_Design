@@ -27,10 +27,14 @@ module send_frame_table #(
   logic [47:0] mem_p_smac[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 9-bit key -> 8-bit BRAM address
   function automatic logic [7:0] hash_key(input logic [15:0] k);

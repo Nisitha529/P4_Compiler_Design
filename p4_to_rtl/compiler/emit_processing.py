@@ -857,7 +857,8 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
 # Main emitter
 # ============================================================
 
-def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False):
+def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False,
+                     checksum_updates=None):
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
@@ -873,6 +874,13 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # frontend (see main.py) -- the bmv2 frontend has no bus wrapper to
     # drive these ports, so its output must stay byte-identical regardless
     # of table shape.
+    # checksum_updates: None (default) = no update_checksum() RTL emitted at
+    # all, output identical to before this parameter existed. Otherwise a
+    # list[ir.ChecksumUpdate] (see main.py) -- passed only to whichever of
+    # the ingress/egress emit_processing() calls represents this app's real
+    # LAST processing stage (the checksum needs the packet's final header
+    # state), never both.
+    checksum_updates = checksum_updates or []
 
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
@@ -1224,13 +1232,39 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
 
         reg_write_stage = {reg.name: _reg_write_stage(reg.name) for reg in registers}
 
+        def _table_contains_count(tbl, cnt_name):
+            for aname in tbl.actions:
+                action = amap.get(aname)
+                if action and _stmts_contain_count(action.body, cnt_name):
+                    return True
+            return False
+
         def _stmts_contain_count(stmts, cnt_name):
             for s in stmts:
                 if isinstance(s, ExternCall) and s.name == f'{cnt_name}.count':
                     return True
                 if isinstance(s, IfStatement):
+                    # Table dispatch is triggered here by matching the
+                    # condition STRING against `{table}.apply().{field}`
+                    # (see _emit_stmts's identical regex) -- not by a
+                    # TableApply statement node, which _split_stage already
+                    # consumes/drops at this point. The .count() call itself
+                    # lives inside one of the table's actions' own bodies
+                    # (ctrl.actions / amap), not directly in this statement
+                    # list, so a plain then/else recursion alone never finds
+                    # it for any counter only ever called from a
+                    # table-dispatched action (the common case:
+                    # InsertVLAN-style actions).
+                    for tm in re.finditer(r'(\w+)\.apply\(\)\.(\w+)', s.condition):
+                        tbl = next((t for t in ctrl.tables if t.name == tm.group(1)), None)
+                        if tbl and _table_contains_count(tbl, cnt_name):
+                            return True
                     if _stmts_contain_count(s.then_body, cnt_name) or \
                        _stmts_contain_count(s.else_body, cnt_name):
+                        return True
+                if isinstance(s, TableApply):
+                    tbl = next((t for t in ctrl.tables if t.name == s.table_name), None)
+                    if tbl and _table_contains_count(tbl, cnt_name):
                         return True
             return False
 
@@ -1326,6 +1360,61 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             f.write('  // Metadata shadow locals (writable copies of metadata inputs)\n')
             for mf in meta_fields:
                 f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w;\n')
+            f.write('\n')
+
+        # ── Checksum update RHS computation (update_checksum()) ─────────
+        # Plain module-scope continuous assigns, deliberately NOT inside any
+        # always_comb -- out_{hdr}_{field} (an output logic port) is legal to
+        # read from a continuous assign elsewhere in the same module, and
+        # since out_{hdr}_{field} is only ever driven bare/unsuffixed in the
+        # LAST stage (see _pool_a above), these assigns automatically pick
+        # up the true final per-packet value with zero staging interaction --
+        # a brand-new wire name here never matches _pool_a/_pool_b, so
+        # _stage_text (only applied to the per-stage `buf` content below,
+        # never to this section) can't touch it anyway.
+        # Real RFC 1071 one's-complement Internet checksum: zero-pad the
+        # concatenated field bits to a 16-bit boundary, split into 16-bit
+        # words, sum in a 32-bit accumulator (generous headroom for any
+        # realistic field-list size), fold twice (standard technique --
+        # each fold provably narrows the carry, terminating well within 2
+        # rounds for realistic word counts), then one's-complement. Real,
+        # not the existing hash() stub's XOR approximation
+        # (emit_processing.py's _emit_extern_stub) -- do not reuse that
+        # shortcut here.
+        checksum_ok = []
+        for i, cku in enumerate(checksum_updates):
+            terms = []
+            total_bits = 0
+            for fld in cku.fields:
+                m = re.match(r'^hdr\.(\w+)\.(\w+)$', fld)
+                if not m:
+                    terms = None
+                    break
+                hn, fn = m.group(1), m.group(2)
+                w = fwmap.get(f'{hn}_{fn}')
+                if w is None:
+                    terms = None
+                    break
+                terms.append(f'out_{hn}_{fn}')
+                total_bits += w
+            if terms is None:
+                f.write(f'  // checksum update {i} ({cku.dest_header}.{cku.dest_field}): '
+                        f'unsupported field list, skipped\n')
+                continue
+            n_words = math.ceil(total_bits / 16)
+            pad = n_words * 16 - total_bits
+            concat = ', '.join(terms) + (f", {pad}'d0" if pad else '')
+            f.write(f'  // update_checksum -> {cku.dest_header}.{cku.dest_field}\n')
+            f.write(f'  wire [{n_words*16-1}:0] chk{i}_concat = {{{concat}}};\n')
+            word_terms = [
+                f"{{16'd0, chk{i}_concat[{(n_words-1-w)*16+15}:{(n_words-1-w)*16}]}}"
+                for w in range(n_words)]
+            f.write(f'  wire [31:0] chk{i}_sum   = {" + ".join(word_terms)};\n')
+            f.write(f'  wire [16:0] chk{i}_fold1 = chk{i}_sum[15:0] + chk{i}_sum[31:16];\n')
+            f.write(f"  wire [16:0] chk{i}_fold2 = {{15'd0, chk{i}_fold1[16]}} + {{1'b0, chk{i}_fold1[15:0]}};\n")
+            f.write(f'  wire [15:0] chk{i}_value = ~chk{i}_fold2[15:0];\n')
+            checksum_ok.append(i)
+        if checksum_updates:
             f.write('\n')
 
         # ── Pipeline-stage forwarding registers + per-stage working copies ──
@@ -1593,6 +1682,14 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 stage_note = f' (stage {k} of {n_bounds})' if n_bounds else ''
                 buf.write(f'\n    // apply block{stage_note}\n')
                 _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables, stack_info)
+
+            if checksum_updates and k == n_bounds:
+                buf.write('\n    // update_checksum() writes -- final stage only,\n')
+                buf.write('    // needs the packet\'s fully-resolved header state\n')
+                for i in checksum_ok:
+                    cku = checksum_updates[i]
+                    buf.write(f"    if ({_map_cond(cku.condition, cmap)}) "
+                              f"out_{cku.dest_header}_{cku.dest_field} = chk{i}_value;\n")
 
             buf.write('  end\n')
             f.write(f'  // ---- Pipeline stage {k}'

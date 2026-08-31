@@ -54,6 +54,13 @@ module egress_processing_generated (
   output logic        drop
 );
 
+  // update_checksum -> ipv4.hdrChecksum
+  wire [143:0] chk0_concat = {out_ipv4_version, out_ipv4_ihl, out_ipv4_diffserv, out_ipv4_ecn, out_ipv4_totalLen, out_ipv4_identification, out_ipv4_flags, out_ipv4_fragOffset, out_ipv4_ttl, out_ipv4_protocol, out_ipv4_srcAddr, out_ipv4_dstAddr};
+  wire [31:0] chk0_sum   = {16'd0, chk0_concat[143:128]} + {16'd0, chk0_concat[127:112]} + {16'd0, chk0_concat[111:96]} + {16'd0, chk0_concat[95:80]} + {16'd0, chk0_concat[79:64]} + {16'd0, chk0_concat[63:48]} + {16'd0, chk0_concat[47:32]} + {16'd0, chk0_concat[31:16]} + {16'd0, chk0_concat[15:0]};
+  wire [16:0] chk0_fold1 = chk0_sum[15:0] + chk0_sum[31:16];
+  wire [16:0] chk0_fold2 = {15'd0, chk0_fold1[16]} + {1'b0, chk0_fold1[15:0]};
+  wire [15:0] chk0_value = ~chk0_fold2[15:0];
+
   // ---- Pipeline stage 0 ----
   always_comb begin
     drop = 0;
@@ -86,6 +93,10 @@ module egress_processing_generated (
         out_ipv4_ecn = 'h03;
       end
     end
+
+    // update_checksum() writes -- final stage only,
+    // needs the packet's fully-resolved header state
+    if (ipv4_valid) out_ipv4_hdrChecksum = chk0_value;
   end
 
   always_ff @(posedge clk) begin

@@ -30,10 +30,14 @@ module check_ports_table #(
   logic [0:0] mem_p_dir[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 18-bit key -> 10-bit BRAM address
   function automatic logic [9:0] hash_key(input logic [19:0] k);

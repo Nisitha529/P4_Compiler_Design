@@ -42,10 +42,14 @@ module flow_cache_table #(
   logic [47:0] mem_p_dst_eth_addr[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 72-bit key -> 16-bit BRAM address
   function automatic logic [15:0] hash_key(input logic [79:0] k);
@@ -117,12 +121,30 @@ module flow_cache_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_protocol == key_r_protocol) && (mem_key_r_srcAddr == key_r_srcAddr) && (mem_key_r_dstAddr == key_r_dstAddr);
-  assign action_id = hit ? action_id_r : 2'd3;
-  assign p_port = hit ? p_r_port : 9'b0;
-  assign p_decrement_ttl = hit ? p_r_decrement_ttl : 1'b0;
-  assign p_new_dscp = hit ? p_r_new_dscp : 6'b0;
-  assign p_dst_eth_addr = hit ? p_r_dst_eth_addr : 48'b0;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_protocol == key_r_protocol) && (mem_key_r_srcAddr == key_r_srcAddr) && (mem_key_r_dstAddr == key_r_dstAddr);
+  logic [1:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 2'd3;
+  logic [8:0] p_port_c;
+  assign p_port_c = hit_c ? p_r_port : 9'b0;
+  logic [0:0] p_decrement_ttl_c;
+  assign p_decrement_ttl_c = hit_c ? p_r_decrement_ttl : 1'b0;
+  logic [5:0] p_new_dscp_c;
+  assign p_new_dscp_c = hit_c ? p_r_new_dscp : 6'b0;
+  logic [47:0] p_dst_eth_addr_c;
+  assign p_dst_eth_addr_c = hit_c ? p_r_dst_eth_addr : 48'b0;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_port <= p_port_c;
+      p_decrement_ttl <= p_decrement_ttl_c;
+      p_new_dscp <= p_new_dscp_c;
+      p_dst_eth_addr <= p_dst_eth_addr_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

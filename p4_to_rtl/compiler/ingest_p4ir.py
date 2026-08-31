@@ -631,13 +631,15 @@ def _parse_control_body(body_text, ctrl_name):
     # ── Counter externs ──────────────────────────────────────────────────────
     # Match: @ann Counter<bit<W>, bit<S>>(N_COUNTERS, CounterType_t.TYPE) name;
     # By the time p4test's MidEnd dump reaches here, typedef'd index types and
-    # const sizes are already resolved to literal bit<N>/digits (verified
-    # against generated output: a typedef'd index type shows its resolved
-    # width directly), so no constant-folding is needed here -- same as
-    # register's SIZE literal above.
+    # const sizes are already resolved to literal bit<N>/digits, so no
+    # constant-folding is needed here -- same as register's SIZE literal
+    # above. One real difference confirmed against an actual dump, though:
+    # the constructor's n_counters argument (typed bit<32> by the extern's
+    # own signature) prints as a WIDTH-PREFIXED literal, e.g. `32w8192`, not
+    # plain `8192` -- the optional `(?:\d+w)?` below strips that prefix.
     for m in re.finditer(
         r'(' + _ANN + r')\bCounter\s*<\s*bit<(\d+)>\s*,\s*bit<(\d+)>\s*>\s*'
-        r'\(\s*(\d+)\s*,\s*CounterType_t\.(\w+)\s*\)\s+(\w+)\s*;', text
+        r'\(\s*(?:\d+w)?(\d+)\s*,\s*CounterType_t\.(\w+)\s*\)\s+(\w+)\s*;', text
     ):
         ann_text = m.group(1)
         dw = int(m.group(2))

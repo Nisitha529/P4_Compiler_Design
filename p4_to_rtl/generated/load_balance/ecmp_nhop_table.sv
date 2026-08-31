@@ -33,10 +33,14 @@ module ecmp_nhop_table #(
   logic [8:0] mem_p_port[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 32-bit key -> 1-bit BRAM address
   function automatic logic [0:0] hash_key(input logic [31:0] k);

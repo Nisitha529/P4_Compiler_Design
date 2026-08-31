@@ -28,7 +28,7 @@ from ir import (
     Table, TableKey,
     Action, ActionParam, Assignment, ExternCall,
     IfStatement, TableApply, ControlBlock, LocalVar, RegisterDecl,
-    Deparser,
+    Deparser, ChecksumUpdate,
 )
 
 
@@ -719,6 +719,29 @@ def ingest_bmv2(bm):
             ir.set_pipeline_stage('ingress', block)
         elif pipe['name'] == 'egress':
             ir.set_pipeline_stage('egress', block)
+
+    # ── 6b. Checksum updates (MyComputeChecksum's update_checksum() calls) ──
+    # p4c-bm2-ss lowers these into separate top-level `checksums`/
+    # `calculations` arrays, NOT into pipelines[] like ordinary primitives --
+    # never read by this file before now. verify_checksum (verify:true
+    # entries) is deliberately not ingested: no app in this project gives it
+    # a real body (every MyVerifyChecksum is `apply {}`), and unlike
+    # update_checksum it has no clean "write this field" target.
+    calcs_by_name = {c['name']: c for c in bm.get('calculations', [])}
+    for ck in bm.get('checksums', []):
+        if not ck.get('update'):
+            continue
+        calc = calcs_by_name.get(ck.get('calculation'))
+        if not calc or calc.get('algo') != 'csum16':
+            # Only real Internet (RFC 1071) checksum is implemented; crc16/
+            # crc32 never appear in this role in any app checked so far
+            # (they're used only via unrelated hash() extern calls).
+            continue
+        dest_hdr, dest_field = ck['target'][0], ck['target'][1]
+        cond   = _expr(ck.get('if_cond'), [])
+        fields = [_expr(inp, []) for inp in calc.get('input', [])]
+        ir.add_checksum_update(ChecksumUpdate(
+            _sanitize_stack_idx(dest_hdr), dest_field, cond, 'csum16', fields))
 
     # ── 7. Deparser ───────────────────────────────────────────────────
     deps = bm.get('deparsers', [])

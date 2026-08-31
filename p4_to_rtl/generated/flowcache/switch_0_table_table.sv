@@ -24,10 +24,14 @@ module switch_0_table_table #(
   logic [1:0] mem_action[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 8-bit key -> 1-bit BRAM address
   function automatic logic [0:0] hash_key(input logic [7:0] k);
@@ -77,8 +81,18 @@ module switch_0_table_table #(
     end
   end
 
-  assign hit       = valid_r && (mem_key_r_switch_0_key == key_r_switch_0_key);
-  assign action_id = hit ? action_id_r : 2'd2;
+  logic hit_c; assign hit_c = valid_r && (mem_key_r_switch_0_key == key_r_switch_0_key);
+  logic [1:0] action_id_c;
+  assign action_id_c = hit_c ? action_id_r : 2'd2;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+    end
+  end
 
   // Action ID encoding:
   //   0 = NoAction

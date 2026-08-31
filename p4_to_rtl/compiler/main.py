@@ -10,7 +10,8 @@ from ir import ActionParam, Assignment, ExternCall
 from emit_parser import emit_parser
 from emit_processing import emit_processing
 from emit_deparser import emit_deparser
-from emit_table import emit_tables
+from emit_table import emit_tables, _find_processing_ctrl
+from emit_counters import emit_counter_module
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
@@ -391,13 +392,37 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     emit_parser(ir, out_parser, board=board)
     print(f"[SUCCESS] Parser RTL       -> {out_parser}")
 
+    # update_checksum() needs the packet's FINAL header state, so it attaches
+    # to whichever of ingress/egress is this app's real last processing
+    # stage -- reusing the exact same "does egress have real content" check
+    # used below to decide whether egress gets emitted at all (every app
+    # checked so far has an empty MyEgress, so this resolves to ingress in
+    # practice, but stays correct for an app whose egress does real work).
+    eg = ir.pipeline.egress
+    has_real_egress = eg is not None and (eg.tables or eg.statements)
+
     if ir.controls:
         print("[INFO] Generating table RTL...")
         emit_tables(ir, out_dir, budget_levels=budget_levels, ways=ways, enable_query=enable_query)
 
         print("[INFO] Generating processing RTL...")
-        emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways, enable_query=enable_query)
+        emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways, enable_query=enable_query,
+                         checksum_updates=None if has_real_egress else ir.checksum_updates)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
+
+        # Counter externs (p4test/XilinxPipeline path only, for now -- see
+        # ingest_bmv2.py's lack of Counter<...> declaration support; bmv2
+        # apps have no AXI4-Lite bus to query them over anyway). Storage
+        # lives in its own standalone module per counter, instantiated
+        # directly by emit_top.py -- not part of processing_generated.
+        if frontend == 'p4test':
+            ingress_ctrl = _find_processing_ctrl(ir, 'ingress')
+            if ingress_ctrl and ingress_ctrl.counters:
+                print("[INFO] Generating counter RTL...")
+                for cnt in ingress_ctrl.counters:
+                    out_counter = os.path.join(out_dir, f"{cnt.name}_counter.sv")
+                    emit_counter_module(cnt, out_counter)
+                    print(f"[SUCCESS] Counter RTL      -> {out_counter}")
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
 
@@ -405,14 +430,14 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     # e.g. ecn.p4's ECN marking, mri.p4's swtrace hop-count table. Does NOT
     # cover multicast-style replication (egress running once per replica),
     # which needs a fan-out/queueing model this compiler doesn't have.
-    eg = ir.pipeline.egress
-    if eg is not None and (eg.tables or eg.statements):
+    if has_real_egress:
         out_egress_processing = os.path.join(out_dir, "egress_processing_generated.sv")
         print("[INFO] Generating egress table RTL...")
         emit_tables(ir, out_dir, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query)
 
         print("[INFO] Generating egress processing RTL...")
-        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query)
+        emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query,
+                         checksum_updates=ir.checksum_updates)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:

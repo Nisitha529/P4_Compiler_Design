@@ -1,5 +1,5 @@
 Analysis & Synthesis report for de2_115_setup
-Sun Aug 30 10:53:53 2026
+Tue Sep  1 01:44:53 2026
 Quartus Prime Version 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
 
 
@@ -83,42 +83,43 @@ Quartus Prime Version 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
  75. Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline
  76. Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core
  77. Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple
- 78. Parameter Settings for User Entity Instance: avmm_axil_lite_bridge:u_bridge
- 79. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_src_rtl_0
- 80. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_dst_rtl_0
- 81. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_protocol_rtl_0
- 82. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_table_key_sport_rtl_0
- 83. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_table_key_dport_rtl_0
- 84. Parameter Settings for Inferred Entity Instance: jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_sc_fifo:fifo|altsyncram:mem_rtl_0
- 85. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:tmpl_word_cp_rtl_0
- 86. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:cap_word_rtl_0
- 87. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:tmpl_word_gen_rtl_0
- 88. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|altsyncram:pkt_keep_rtl_0
- 89. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|altsyncram:pkt_buf_payload_rtl_0
- 90. altsyncram Parameter Settings by Entity Instance
- 91. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple"
- 92. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc"
- 93. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core"
- 94. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline"
- 95. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_reset_controller:rst_controller|altera_reset_synchronizer:alt_rst_req_sync_uq1"
- 96. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_reset_controller:rst_controller"
- 97. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_sc_fifo:fifo"
- 98. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_src_crosser:source_crosser|altera_jtag_control_signal_crosser:crosser"
- 99. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_avalon_st_idle_inserter:idle_inserter"
-100. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_avalon_st_idle_remover:idle_remover"
-101. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_sense_reset_n_synchronizer"
-102. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_to_sample_div2_synchronizer"
-103. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:reset_to_sample_synchronizer"
-104. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_sensor_synchronizer"
-105. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_std_synchronizer:synchronizer"
-106. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_sld_node:node|sld_virtual_jtag_basic:sld_virtual_jtag_component"
-107. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_sld_node:node"
-108. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master"
-109. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm"
-110. Post-Synthesis Netlist Statistics for Top Partition
-111. Elapsed Time Per Partition
-112. Analysis & Synthesis Messages
-113. Analysis & Synthesis Suppressed Messages
+ 78. Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter
+ 79. Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter
+ 80. Parameter Settings for User Entity Instance: avmm_axil_lite_bridge:u_bridge
+ 81. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_src_rtl_0
+ 82. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_dst_rtl_0
+ 83. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_protocol_rtl_0
+ 84. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_table_key_sport_rtl_0
+ 85. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|altsyncram:mem_key_table_key_dport_rtl_0
+ 86. Parameter Settings for Inferred Entity Instance: jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_sc_fifo:fifo|altsyncram:mem_rtl_0
+ 87. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:tmpl_word_cp_rtl_0
+ 88. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:cap_word_rtl_0
+ 89. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|altsyncram:tmpl_word_gen_rtl_0
+ 90. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|altsyncram:pkt_keep_rtl_0
+ 91. Parameter Settings for Inferred Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|altsyncram:pkt_buf_payload_rtl_0
+ 92. altsyncram Parameter Settings by Entity Instance
+ 93. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc"
+ 94. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core"
+ 95. Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline"
+ 96. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_reset_controller:rst_controller|altera_reset_synchronizer:alt_rst_req_sync_uq1"
+ 97. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_reset_controller:rst_controller"
+ 98. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_sc_fifo:fifo"
+ 99. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_src_crosser:source_crosser|altera_jtag_control_signal_crosser:crosser"
+100. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_avalon_st_idle_inserter:idle_inserter"
+101. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_avalon_st_idle_remover:idle_remover"
+102. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_sense_reset_n_synchronizer"
+103. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_to_sample_div2_synchronizer"
+104. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:reset_to_sample_synchronizer"
+105. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_jtag_streaming:jtag_streaming|altera_std_synchronizer:clock_sensor_synchronizer"
+106. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_dc_streaming:normal.jtag_dc_streaming|altera_std_synchronizer:synchronizer"
+107. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_sld_node:node|sld_virtual_jtag_basic:sld_virtual_jtag_component"
+108. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master|altera_jtag_sld_node:node"
+109. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm|jtag_to_avalon_mst_brg_01_master_0:master_0|altera_avalon_st_jtag_interface:jtag_phy_embedded_in_jtag_master"
+110. Port Connectivity Checks: "jtag_to_avalon_mst_brg_01:u_jtag_avmm"
+111. Post-Synthesis Netlist Statistics for Top Partition
+112. Elapsed Time Per Partition
+113. Analysis & Synthesis Messages
+114. Analysis & Synthesis Suppressed Messages
 
 
 
@@ -145,7 +146,7 @@ on the Quartus Prime software download page.
 +--------------------------------------------------------------------------------------+
 ; Analysis & Synthesis Summary                                                         ;
 +------------------------------------+-------------------------------------------------+
-; Analysis & Synthesis Status        ; Successful - Sun Aug 30 10:53:53 2026           ;
+; Analysis & Synthesis Status        ; Successful - Tue Sep  1 01:44:53 2026           ;
 ; Quartus Prime Version              ; 25.1std.0 Build 1129 10/21/2025 SC Lite Edition ;
 ; Revision Name                      ; de2_115_setup                                   ;
 ; Top-level Entity Name              ; de2115_fiveTuple_top                            ;
@@ -300,6 +301,8 @@ on the Quartus Prime software download page.
 ; jtag_to_avalon_mst_brg_01/synthesis/submodules/altera_avalon_st_idle_inserter.v                  ; yes             ; User Verilog HDL File                        ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/quartus_setup/de2_115_setup/jtag_to_avalon_mst_brg_01/synthesis/submodules/altera_avalon_st_idle_inserter.v                  ; jtag_to_avalon_mst_brg_01 ;
 ; ../../p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv                                             ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv                                                                               ;                           ;
 ; ../../p4_to_rtl/generated/fiveTuple/FiveTuple_table.sv                                           ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/FiveTuple_table.sv                                                                             ;                           ;
+; ../../p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv                                     ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv                                                                       ;                           ;
+; ../../p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv                                       ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv                                                                         ;                           ;
 ; ../../p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv                                    ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv                                                                      ;                           ;
 ; ../../p4_to_rtl/generated/fiveTuple/board/de2115_fiveTuple_top.sv                                ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/board/de2115_fiveTuple_top.sv                                                                  ;                           ;
 ; ../../p4_to_rtl/rtl/common/avmm_axil_lite_bridge.sv                                              ; yes             ; User SystemVerilog HDL File                  ; /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/rtl/common/avmm_axil_lite_bridge.sv                                                                                ;                           ;
@@ -645,8 +648,12 @@ Encoding Type:  One-Hot
 +---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------+
 ; Register name                                                                                                                                                                                                                                           ; Reason for Removal                                                                                                                                    ;
 +---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------+
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_ByteCounter_cp_query_en                                                                                                                                                                        ; Stuck at GND due to stuck port data_in                                                                                                                ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_PacketCounter_cp_query_en                                                                                                                                                                      ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_FiveTuple_cp_query_en                                                                                                                                                                          ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_FiveTuple_cp_wr_en                                                                                                                                                                             ; Stuck at GND due to stuck port data_in                                                                                                                ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter|q_pend_valid                                                                                                                                                   ; Lost fanout                                                                                                                                           ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter|q_pend_valid                                                                                                                                               ; Lost fanout                                                                                                                                           ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|hit_s1[0]                                                                                                                                                            ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|drop_s1                                                                                                                                                              ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|q_pend_valid                                                                                                                             ; Stuck at GND due to stuck port data_in                                                                                                                ;
@@ -656,6 +663,10 @@ Encoding Type:  One-Hot
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|hit_s2[0]                                                                                                                                                            ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_FiveTuple_cp_query_del                                                                                                                                                                         ; Lost fanout                                                                                                                                           ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|axil_awaddr_r[2..15]                                                                                                                                                                             ; Lost fanout                                                                                                                                           ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter|byte_clr_idx[0..12]                                                                                                                                            ; Lost fanout                                                                                                                                           ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter|byte_clearing                                                                                                                                                  ; Lost fanout                                                                                                                                           ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter|pkt_clr_idx[0..12]                                                                                                                                         ; Lost fanout                                                                                                                                           ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter|pkt_clearing                                                                                                                                               ; Lost fanout                                                                                                                                           ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|q_rd_key_table_key_dport[0..15]                                                                                                          ; Lost fanout                                                                                                                                           ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|q_rd_key_table_key_sport[0..15]                                                                                                          ; Lost fanout                                                                                                                                           ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|q_rd_key_protocol[0..7]                                                                                                                  ; Lost fanout                                                                                                                                           ;
@@ -5637,15 +5648,7 @@ Encoding Type:  One-Hot
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3563                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3564                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3565                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3566                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3567                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3568                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3569                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3570                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3571                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3572                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|mem_valid~3573                                                                                                                           ; Stuck at GND due to stuck port data_in                                                                                                                ;
-; Total Number of Removed Registers = 9940                                                                                                                                                                                                                ;                                                                                                                                                       ;
+; Total Number of Removed Registers = 9972                                                                                                                                                                                                                ;                                                                                                                                                       ;
 +---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------+
 * Table truncated at 5000 items. To change the number of removed registers reported, set the "Number of Removed Registers Reported" option under Assignments->Settings->Analysis and Synthesis Settings->More Settings
 
@@ -5715,6 +5718,10 @@ Encoding Type:  One-Hot
 ;                                                                                                                                                                                                                                                       ;                           ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|clearing,                                                                                                                             ;
 ;                                                                                                                                                                                                                                                       ;                           ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|clr_idx[0],                                                                                                                           ;
 ;                                                                                                                                                                                                                                                       ;                           ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple|clr_idx[1]                                                                                                                            ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_ByteCounter_cp_query_en                                                                                                                                                                      ; Stuck at GND              ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter|byte_clearing                                                                                                                                               ;
+;                                                                                                                                                                                                                                                       ; due to stuck port data_in ;                                                                                                                                                                                                                                                      ;
+; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|r_PacketCounter_cp_query_en                                                                                                                                                                    ; Stuck at GND              ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter|pkt_clearing                                                                                                                                            ;
+;                                                                                                                                                                                                                                                       ; due to stuck port data_in ;                                                                                                                                                                                                                                                      ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|hit_s1[0]                                                                                                                                                          ; Stuck at GND              ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|hit_s2[0]                                                                                                                                                         ;
 ;                                                                                                                                                                                                                                                       ; due to stuck port data_in ;                                                                                                                                                                                                                                                      ;
 ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|drop_s1                                                                                                                                                            ; Stuck at GND              ; fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|drop_s2                                                                                                                                                           ;
@@ -6896,6 +6903,26 @@ Note: In order to hide this table in the UI and the text report file, please set
 Note: In order to hide this table in the UI and the text report file, please set the "Show Parameter Settings in Synthesis Report" option in "Analysis and Synthesis Settings -> More Settings" to "Off".
 
 
++-------------------------------------------------------------------------------------------------------------------------------------------+
+; Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter ;
++----------------+-------+------------------------------------------------------------------------------------------------------------------+
+; Parameter Name ; Value ; Type                                                                                                             ;
++----------------+-------+------------------------------------------------------------------------------------------------------------------+
+; DEPTH          ; 8192  ; Signed Integer                                                                                                   ;
++----------------+-------+------------------------------------------------------------------------------------------------------------------+
+Note: In order to hide this table in the UI and the text report file, please set the "Show Parameter Settings in Synthesis Report" option in "Analysis and Synthesis Settings -> More Settings" to "Off".
+
+
++---------------------------------------------------------------------------------------------------------------------------------------+
+; Parameter Settings for User Entity Instance: fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter ;
++----------------+-------+--------------------------------------------------------------------------------------------------------------+
+; Parameter Name ; Value ; Type                                                                                                         ;
++----------------+-------+--------------------------------------------------------------------------------------------------------------+
+; DEPTH          ; 8192  ; Signed Integer                                                                                               ;
++----------------+-------+--------------------------------------------------------------------------------------------------------------+
+Note: In order to hide this table in the UI and the text report file, please set the "Show Parameter Settings in Synthesis Report" option in "Analysis and Synthesis Settings -> More Settings" to "Off".
+
+
 +-----------------------------------------------------------------------------+
 ; Parameter Settings for User Entity Instance: avmm_axil_lite_bridge:u_bridge ;
 +----------------+-------+----------------------------------------------------+
@@ -7707,15 +7734,6 @@ Note: In order to hide this table in the UI and the text report file, please set
 +-------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------+
 
 
-+--------------------------------------------------------------------------------------------------------------------------------------------+
-; Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple" ;
-+-----------------+--------+----------+------------------------------------------------------------------------------------------------------+
-; Port            ; Type   ; Severity ; Details                                                                                              ;
-+-----------------+--------+----------+------------------------------------------------------------------------------------------------------+
-; p_counter_index ; Output ; Info     ; Connected to dangling logic. Logic that only feeds a dangling port will be removed.                  ;
-+-----------------+--------+----------+------------------------------------------------------------------------------------------------------+
-
-
 +------------------------------------------------------------------------------------------------------------------------------+
 ; Port Connectivity Checks: "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc"               ;
 +--------------------+--------+----------+-------------------------------------------------------------------------------------+
@@ -8049,7 +8067,7 @@ Note: In order to hide this table in the UI and the text report file, please set
 +----------------+--------------+
 ; Partition Name ; Elapsed Time ;
 +----------------+--------------+
-; Top            ; 00:01:18     ;
+; Top            ; 00:01:24     ;
 +----------------+--------------+
 
 
@@ -8059,19 +8077,33 @@ Note: In order to hide this table in the UI and the text report file, please set
 Info: *******************************************************************
 Info: Running Quartus Prime Analysis & Synthesis
     Info: Version 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
-    Info: Processing started: Sun Aug 30 10:52:09 2026
-Info: Command: quartus_map --read_settings_files=on --write_settings_files=off de2_115_setup -c de2_115_setup
+    Info: Copyright (C) 2025  Altera Corporation. All rights reserved.
+    Info: Your use of Altera Corporation's design tools, logic functions 
+    Info: and other software and tools, and any partner logic 
+    Info: functions, and any output files from any of the foregoing 
+    Info: (including device programming or simulation files), and any 
+    Info: associated documentation or information are expressly subject 
+    Info: to the terms and conditions of the Altera Program License 
+    Info: Subscription Agreement, the Altera Quartus Prime License Agreement,
+    Info: the Altera IP License Agreement, or other applicable license
+    Info: agreement, including, without limitation, that your use is for
+    Info: the sole purpose of programming logic devices manufactured by
+    Info: Altera and sold by Altera or its authorized distributors.  Please
+    Info: refer to the Altera Software License Subscription Agreements 
+    Info: on the Quartus Prime software download page.
+    Info: Processing started: Tue Sep  1 01:43:01 2026
+Info: Command: quartus_map de2_115_setup
 Warning (18236): Number of processors has not been specified which may cause overloading on shared machines.  Set the global assignment NUM_PARALLEL_PROCESSORS in your QSF to an appropriate value for best performance.
 Info (20030): Parallel compilation is enabled and will use 10 of the 10 processors detected
 Info (12248): Elaborating Platform Designer system entity "jtag_to_avalon_mst_brg_01.qsys"
-Info (12250): 2026.08.30.10:52:15 Progress: Loading de2_115_setup/jtag_to_avalon_mst_brg_01.qsys
-Info (12250): 2026.08.30.10:52:15 Progress: Reading input file
-Info (12250): 2026.08.30.10:52:15 Progress: Adding master_0 [altera_jtag_avalon_master 25.1]
-Info (12250): 2026.08.30.10:52:15 Progress: Parameterizing module master_0
-Info (12250): 2026.08.30.10:52:15 Progress: Building connections
-Info (12250): 2026.08.30.10:52:15 Progress: Parameterizing connections
-Info (12250): 2026.08.30.10:52:15 Progress: Validating
-Info (12250): 2026.08.30.10:52:16 Progress: Done reading input file
+Info (12250): 2026.09.01.01:43:08 Progress: Loading de2_115_setup/jtag_to_avalon_mst_brg_01.qsys
+Info (12250): 2026.09.01.01:43:08 Progress: Reading input file
+Info (12250): 2026.09.01.01:43:08 Progress: Adding master_0 [altera_jtag_avalon_master 25.1]
+Info (12250): 2026.09.01.01:43:08 Progress: Parameterizing module master_0
+Info (12250): 2026.09.01.01:43:08 Progress: Building connections
+Info (12250): 2026.09.01.01:43:08 Progress: Parameterizing connections
+Info (12250): 2026.09.01.01:43:08 Progress: Validating
+Info (12250): 2026.09.01.01:43:09 Progress: Done reading input file
 Info (12250): Jtag_to_avalon_mst_brg_01: Generating "jtag_to_avalon_mst_brg_01" for QUARTUS_SYNTH
 Info (12250): Master_0: "jtag_to_avalon_mst_brg_01" instantiated altera_jtag_avalon_master "master_0"
 Info (12250): Jtag_phy_embedded_in_jtag_master: "master_0" instantiated altera_jtag_dc_streaming "jtag_phy_embedded_in_jtag_master"
@@ -8143,6 +8175,10 @@ Info (12021): Found 1 design units, including 1 entities, in source file /media/
     Info (12023): Found entity 1: fiveTuple_top File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 1
 Info (12021): Found 1 design units, including 1 entities, in source file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/FiveTuple_table.sv
     Info (12023): Found entity 1: FiveTuple_table File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/FiveTuple_table.sv Line: 1
+Info (12021): Found 1 design units, including 1 entities, in source file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv
+    Info (12023): Found entity 1: PacketCounter_counter File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv Line: 1
+Info (12021): Found 1 design units, including 1 entities, in source file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv
+    Info (12023): Found entity 1: ByteCounter_counter File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv Line: 1
 Info (12021): Found 1 design units, including 1 entities, in source file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv
     Info (12023): Found entity 1: fiveTuple_selftest_top File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv Line: 6
 Info (12021): Found 1 design units, including 0 entities, in source file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_pkg.sv
@@ -8252,67 +8288,73 @@ Info (12128): Elaborating entity "fiveTuple_selftest_top" for hierarchy "fiveTup
 Warning (10230): Verilog HDL assignment warning at fiveTuple_selftest_top.sv(616): truncated value with size 14 to match size of target (3) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv Line: 616
 Warning (10230): Verilog HDL assignment warning at fiveTuple_selftest_top.sv(621): truncated value with size 14 to match size of target (3) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv Line: 621
 Info (12128): Elaborating entity "fiveTuple_top" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv Line: 107
-Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(153): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 153
-Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(208): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 208
+Warning (10036): Verilog HDL or VHDL warning at fiveTuple_top.sv(318): object "r_PacketCounter_cp_wr_en" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 318
+Warning (10036): Verilog HDL or VHDL warning at fiveTuple_top.sv(320): object "r_ByteCounter_cp_wr_en" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 320
+Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(154): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 154
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(209): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 209
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(210): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 210
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(211): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 211
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(212): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 212
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(213): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 213
 Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(214): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 214
-Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(945): truncated value with size 32 to match size of target (9) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 945
-Info (12128): Elaborating entity "processing_generated" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 579
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(504): object "table_key_dport__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 504
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(505): object "table_key_sport__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 505
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(506): object "eth_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 506
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(507): object "new_vlan_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 507
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(509): object "ipv4_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 509
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(510): object "ipv4opt_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 510
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(511): object "tcp_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 511
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(512): object "tcpopt_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 512
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(513): object "udp_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 513
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(514): object "eth_dmac__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 514
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(515): object "eth_smac__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 515
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(517): object "new_vlan_pcp__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 517
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(518): object "new_vlan_cfi__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 518
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(519): object "new_vlan_vid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 519
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(520): object "new_vlan_tpid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 520
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(521): object "vlan_pcp__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 521
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(522): object "vlan_cfi__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 522
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(523): object "vlan_vid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 523
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(524): object "vlan_tpid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 524
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(525): object "ipv4_version__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 525
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(526): object "ipv4_hdr_len__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 526
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(527): object "ipv4_tos__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 527
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(528): object "ipv4_length__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 528
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(529): object "ipv4_id__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 529
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(530): object "ipv4_flags__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 530
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(531): object "ipv4_offset__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 531
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(532): object "ipv4_ttl__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 532
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(533): object "ipv4_protocol__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 533
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(534): object "ipv4_hdr_chk__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 534
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(535): object "ipv4_src__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 535
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(536): object "ipv4_dst__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 536
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(537): object "ipv4opt_options__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 537
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(538): object "tcp_src_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 538
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(539): object "tcp_dst_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 539
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(540): object "tcp_seqNum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 540
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(541): object "tcp_ackNum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 541
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(542): object "tcp_dataOffset__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 542
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(543): object "tcp_resv__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 543
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(544): object "tcp_flags__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 544
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(545): object "tcp_window__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 545
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(546): object "tcp_checksum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 546
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(547): object "tcp_urgPtr__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 547
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(548): object "tcpopt_options__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 548
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(549): object "udp_src_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 549
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(550): object "udp_dst_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 550
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(551): object "udp_length__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 551
-Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(552): object "udp_checksum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 552
-Info (12128): Elaborating entity "FiveTuple_table" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 603
+Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(215): truncated value with size 32 to match size of target (14) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 215
+Warning (10230): Verilog HDL assignment warning at fiveTuple_top.sv(1016): truncated value with size 32 to match size of target (9) File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 1016
+Info (12128): Elaborating entity "processing_generated" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 622
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(510): object "table_key_dport__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 510
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(511): object "table_key_sport__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 511
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(512): object "eth_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 512
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(513): object "new_vlan_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 513
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(515): object "ipv4_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 515
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(516): object "ipv4opt_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 516
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(517): object "tcp_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 517
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(518): object "tcpopt_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 518
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(519): object "udp_valid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 519
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(520): object "eth_dmac__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 520
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(521): object "eth_smac__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 521
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(523): object "new_vlan_pcp__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 523
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(524): object "new_vlan_cfi__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 524
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(525): object "new_vlan_vid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 525
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(526): object "new_vlan_tpid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 526
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(527): object "vlan_pcp__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 527
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(528): object "vlan_cfi__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 528
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(529): object "vlan_vid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 529
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(530): object "vlan_tpid__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 530
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(531): object "ipv4_version__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 531
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(532): object "ipv4_hdr_len__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 532
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(533): object "ipv4_tos__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 533
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(534): object "ipv4_length__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 534
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(535): object "ipv4_id__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 535
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(536): object "ipv4_flags__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 536
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(537): object "ipv4_offset__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 537
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(538): object "ipv4_ttl__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 538
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(539): object "ipv4_protocol__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 539
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(540): object "ipv4_hdr_chk__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 540
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(541): object "ipv4_src__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 541
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(542): object "ipv4_dst__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 542
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(543): object "ipv4opt_options__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 543
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(544): object "tcp_src_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 544
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(545): object "tcp_dst_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 545
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(546): object "tcp_seqNum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 546
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(547): object "tcp_ackNum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 547
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(548): object "tcp_dataOffset__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 548
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(549): object "tcp_resv__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 549
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(550): object "tcp_flags__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 550
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(551): object "tcp_window__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 551
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(552): object "tcp_checksum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 552
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(553): object "tcp_urgPtr__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 553
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(554): object "tcpopt_options__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 554
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(555): object "udp_src_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 555
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(556): object "udp_dst_port__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 556
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(557): object "udp_length__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 557
+Warning (10036): Verilog HDL or VHDL warning at processing_generated.sv(558): object "udp_checksum__st2" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 558
+Info (12128): Elaborating entity "FiveTuple_table" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|processing_generated:u_proc|FiveTuple_table:u_FiveTuple" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/processing_generated.sv Line: 609
+Info (12128): Elaborating entity "PacketCounter_counter" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|PacketCounter_counter:u_PacketCounter" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 640
+Warning (10036): Verilog HDL or VHDL warning at PacketCounter_counter.sv(96): object "q_pend_addr" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv Line: 96
+Info (12128): Elaborating entity "ByteCounter_counter" for hierarchy "fiveTuple_selftest_top:u_pipeline|fiveTuple_top:u_core|ByteCounter_counter:u_ByteCounter" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv Line: 653
+Warning (10036): Verilog HDL or VHDL warning at ByteCounter_counter.sv(107): object "q_pend_addr" assigned a value but never read File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv Line: 107
 Info (12128): Elaborating entity "avmm_axil_lite_bridge" for hierarchy "avmm_axil_lite_bridge:u_bridge" File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/board/de2115_fiveTuple_top.sv Line: 170
 Info (11170): Starting IP generation for the debug fabric: alt_sld_fab.
-Info (11172): 2026.08.30.10:52:26 Progress: Loading sld7a20f1e1/alt_sld_fab_wrapper_hw.tcl
+Info (11172): 2026.09.01.01:43:20 Progress: Loading sld7a20f1e1/alt_sld_fab_wrapper_hw.tcl
 Info (11172): Alt_sld_fab.alt_sld_fab: SLD fabric agents which did not specify prefer_host were connected to JTAG
 Info (11172): Alt_sld_fab: Generating "alt_sld_fab" for QUARTUS_SYNTH
 Info (11172): Alt_sld_fab: "alt_sld_fab" instantiated alt_sld_fab "alt_sld_fab"
@@ -8758,7 +8800,7 @@ Warning (12241): 3 hierarchies have connectivity warnings - see the Connectivity
 Info (13000): Registers with preset signals will power-up high File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/quartus_setup/de2_115_setup/jtag_to_avalon_mst_brg_01/synthesis/submodules/altera_reset_synchronizer.v Line: 62
 Info (13003): DEV_CLRn pin will set, and not reset, register with preset signal due to NOT Gate Push-Back
 Info (286031): Timing-Driven Synthesis is running on partition "Top"
-Info (17049): 304 registers lost all their fanouts during netlist optimizations.
+Info (17049): 334 registers lost all their fanouts during netlist optimizations.
 Info (144001): Generated suppressed messages file /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/quartus_setup/de2_115_setup/output_files/de2_115_setup.map.smsg
 Info (16010): Generating hard_block partition "hard_block:auto_generated_inst"
     Info (16011): Adding 0 node(s), including 0 DDIO, 0 PLL, 0 transceiver and 0 LCELL
@@ -8767,11 +8809,11 @@ Info (21057): Implemented 18653 device resources after synthesis - the final res
     Info (21059): Implemented 1 output pins
     Info (21061): Implemented 17582 logic cells
     Info (21064): Implemented 1064 RAM segments
-Info: Quartus Prime Analysis & Synthesis was successful. 0 errors, 170 warnings
-    Info: Peak virtual memory: 851 megabytes
-    Info: Processing ended: Sun Aug 30 10:53:53 2026
-    Info: Elapsed time: 00:01:44
-    Info: Total CPU time (on all processors): 00:02:16
+Info: Quartus Prime Analysis & Synthesis was successful. 0 errors, 174 warnings
+    Info: Peak virtual memory: 830 megabytes
+    Info: Processing ended: Tue Sep  1 01:44:53 2026
+    Info: Elapsed time: 00:01:52
+    Info: Total CPU time (on all processors): 00:02:25
 
 
 +------------------------------------------+

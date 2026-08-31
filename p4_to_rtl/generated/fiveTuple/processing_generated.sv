@@ -138,6 +138,12 @@ module processing_generated (
   output logic [0:0] FiveTuple_cp_query_p_cfi,
   output logic [11:0] FiveTuple_cp_query_p_vid,
 
+  // Counter increment-request outputs (storage lives outside this module)
+  output logic        PacketCounter_incr_en,
+  output logic [12:0] PacketCounter_incr_idx,
+  output logic        ByteCounter_incr_en,
+  output logic [12:0] ByteCounter_incr_idx,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -1003,6 +1009,10 @@ module processing_generated (
     hit__st2 = hit_s2;
     table_key_dport__st2 = table_key_dport_s2;
     table_key_sport__st2 = table_key_sport_s2;
+    PacketCounter_incr_en  = 1'b0;
+    PacketCounter_incr_idx = '0;
+    ByteCounter_incr_en  = 1'b0;
+    ByteCounter_incr_idx = '0;
     out_eth_valid = out_eth_valid_s2;
     eth_valid__st2 = eth_valid_s2;
     out_new_vlan_valid = out_new_vlan_valid_s2;
@@ -1111,8 +1121,10 @@ module processing_generated (
               out_new_vlan_cfi = FiveTuple_p_cfi;
               out_new_vlan_vid = FiveTuple_p_vid;
               out_new_vlan_tpid = eth_type__st2;
-              /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
-              /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+              PacketCounter_incr_en  = 1'b1;
+              PacketCounter_incr_idx = FiveTuple_p_counter_index;
+              ByteCounter_incr_en  = 1'b1;
+              ByteCounter_incr_idx = FiveTuple_p_counter_index;
             end
             default: ; // default = NoAction
           endcase
@@ -1136,8 +1148,10 @@ module processing_generated (
                 out_new_vlan_cfi = FiveTuple_p_cfi;
                 out_new_vlan_vid = FiveTuple_p_vid;
                 out_new_vlan_tpid = eth_type__st2;
-                /* UNIMPLEMENTED EXTERN: PacketCounter.count(counter_index) */
-                /* UNIMPLEMENTED EXTERN: ByteCounter.count(counter_index) */
+                PacketCounter_incr_en  = 1'b1;
+                PacketCounter_incr_idx = FiveTuple_p_counter_index;
+                ByteCounter_incr_en  = 1'b1;
+                ByteCounter_incr_idx = FiveTuple_p_counter_index;
               end
               default: ; // default = NoAction
             endcase

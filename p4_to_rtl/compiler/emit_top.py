@@ -1392,7 +1392,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'    .incr_idx  ({cnt.name}_incr_idx),\n')
         f.write('    .pkt_commit (proc_settle && !proc_committed),\n')
         f.write('    .pkt_done   (pkt_ready_to_clear),\n')
-        f.write(f'    .pkt_byte_len ({"pkt_byte_len" if has_byte else "16\'d0"}),\n')
+        if has_byte:
+            f.write('    .pkt_byte_len (pkt_byte_len),\n')
         f.write(f'    .cp_query_en  ({cnt.name}_cp_query_en),\n')
         f.write(f'    .cp_query_idx ({cnt.name}_cp_query_idx),\n')
         f.write(f'    .cp_query_busy ({cnt.name}_cp_query_busy)')
@@ -1420,7 +1421,16 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      if (accept_beat) begin\n')
     f.write('        pkt_busy <= 1\'b1;\n')
     if needs_byte_len:
-        f.write('        pkt_byte_len <= pkt_byte_len + 16\'($countones(s_axis_tkeep));\n')
+        # $countones is an iverilog/simulator-only system function -- real
+        # Quartus synthesis rejects it outright ("Unsupported Feature error
+        # ... system function '$countones' is not supported for synthesis",
+        # confirmed via a real quartus_map run). Population count via a flat,
+        # Python-unrolled per-bit sum instead -- synthesizes to an ordinary
+        # adder tree, no different in kind from every other explicit-sum
+        # idiom already used elsewhere in this file/project for the same
+        # reason (avoid runtime SV constructs Quartus doesn't accept).
+        popcount_terms = ' + '.join(f"{{15'd0, s_axis_tkeep[{i}]}}" for i in range(KEEP_W))
+        f.write(f'        pkt_byte_len <= pkt_byte_len + ({popcount_terms});\n')
     f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
     f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
     f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')

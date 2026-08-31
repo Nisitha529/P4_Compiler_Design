@@ -79,6 +79,8 @@ set_global_assignment -name QSYS_FILE jtag_to_avalon_mst_brg_01.qsys
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/parser_generated.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/fiveTuple_top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/FiveTuple_table.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/PacketCounter_counter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/ByteCounter_counter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/fiveTuple_selftest_top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/fiveTuple_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../p4_to_rtl/generated/fiveTuple/deparser_generated.sv
