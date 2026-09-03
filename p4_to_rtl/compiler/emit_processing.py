@@ -504,6 +504,14 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
             f.write(f'{ind}{obj}_incr_en  = 1\'b1;\n')
             f.write(f'{ind}{obj}_incr_idx = {idx};\n')
             return
+        if method in ('clear', 'add', 'subtract', 'get'):
+            # InternetChecksum -- the real value is computed entirely by
+            # the checksum wires built from ir.checksum_updates (see
+            # _write_module's "Checksum update RHS computation" section),
+            # driven by ingest_p4ir.py's _extract_checksum_updates, not by
+            # per-statement emission here.
+            f.write(f'{ind}// {name} -- real value computed via checksum wires above\n')
+            return
         f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {name}({", ".join(stmt.args)}) */\n')
         return
 
@@ -1386,7 +1394,16 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             terms = []
             total_bits = 0
             for fld in cku.fields:
-                m = re.match(r'^hdr\.(\w+)\.(\w+)$', fld)
+                # A leading '~' is ingest_p4ir.py's own marker for a
+                # subtracted field (InternetChecksum.subtract()) -- RFC
+                # 1624: subtracting a word from a one's-complement running
+                # sum is equivalent to adding its bitwise complement, so
+                # the term itself just gets wrapped in bitwise-NOT here
+                # (same width as the un-negated signal, legal inside the
+                # concat below).
+                neg = fld.startswith('~')
+                fld_clean = fld[1:] if neg else fld
+                m = re.match(r'^hdr\.(\w+)\.(\w+)$', fld_clean)
                 if not m:
                     terms = None
                     break
@@ -1395,7 +1412,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 if w is None:
                     terms = None
                     break
-                terms.append(f'out_{hn}_{fn}')
+                term = f'out_{hn}_{fn}'
+                terms.append(f'(~{term})' if neg else term)
                 total_bits += w
             if terms is None:
                 f.write(f'  // checksum update {i} ({cku.dest_header}.{cku.dest_field}): '

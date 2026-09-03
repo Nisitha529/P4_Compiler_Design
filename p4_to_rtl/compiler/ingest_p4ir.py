@@ -11,7 +11,7 @@ from ir import (
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
     ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
-    IfStatement, TableApply,
+    IfStatement, TableApply, ChecksumUpdate,
 )
 
 
@@ -59,6 +59,23 @@ def _read_matching_paren(text, open_pos):
         if text[i] == '(':
             depth += 1
         elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return text[open_pos + 1:i], i + 1
+        i += 1
+    return text[open_pos + 1:], len(text)
+
+
+def _read_matching_angle(text, open_pos):
+    """Return (inner, end_pos) for the <...> block whose opening < is at
+    open_pos. Depth-counted, so it correctly handles nested generics like
+    <bit<16>> (a naive non-greedy <.*?> would stop at the first '>')."""
+    depth = 0
+    i = open_pos
+    while i < len(text):
+        if text[i] == '<':
+            depth += 1
+        elif text[i] == '>':
             depth -= 1
             if depth == 0:
                 return text[open_pos + 1:i], i + 1
@@ -343,6 +360,28 @@ def _parse_action_body(body_text, name_map=None):
         if re.match(r'verify\s*\(', raw):
             continue
 
+        # EXTERN.method<TYPE>(ARGS) -- InternetChecksum's .clear()/.add<T>()/
+        # .subtract<T>()/.get<T>() carry a generic type argument between the
+        # method name and '(' in the real MidEnd dump (confirmed empirically
+        # against p4test's actual output); the plain EXTERN.method(ARGS)
+        # regex below can't match this at all, and .add()'s tuple-literal
+        # argument shape (p4c synthesizes '(tuple_0){f0 = x, f1 = y, ...}'
+        # for a multi-field {a,b,c} list) contains its own '=' signs, so an
+        # unmatched call either corrupts the Assignment fallback below or
+        # (for .get(), which has no '=' at all) silently vanishes with no
+        # statement produced whatsoever -- both confirmed empirically, not
+        # hypothetical. Args are kept raw/unconverted here; real
+        # interpretation happens in _extract_checksum_updates.
+        m = re.match(r'(\w+)\s*\.\s*(clear|add|subtract|get)\b\s*', raw)
+        if m:
+            obj, method, pos = m.group(1), m.group(2), m.end()
+            if pos < len(raw) and raw[pos] == '<':
+                _, pos = _read_matching_angle(raw, pos)
+            if pos < len(raw) and raw[pos] == '(':
+                inner, _ = _read_matching_paren(raw, pos)
+                stmts.append(ExternCall(f'{obj}.{method}', [inner.strip()]))
+                continue
+
         # EXTERN.method(ARGS)
         m = re.match(r'(\w+)\s*\.\s*(\w+)\s*\(([^)]*)\)', raw)
         if m:
@@ -359,6 +398,64 @@ def _parse_action_body(body_text, name_map=None):
             stmts.append(Assignment(lhs, rhs))
 
     return stmts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# InternetChecksum extraction (clear()/add()/subtract()/get() -> ChecksumUpdate)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_tuple_literal_fields(raw_arg):
+    """'(tuple_0){f0 = hdr.ipv4.version,f1 = hdr.ipv4.ihl,...}' -> ordered
+    list of raw field-expression strings. Falls back to a single-element
+    list for a bare single-field .add(x) call (p4c only synthesizes a
+    tuple wrapper when the P4 source's own {a,b,c} list has >1 element)."""
+    m = re.match(r'^\(\s*\w+\s*\)\s*\{(.*)\}$', raw_arg.strip(), re.DOTALL)
+    if not m:
+        return [raw_arg.strip()]
+    fields = []
+    for part in m.group(1).split(','):
+        part = part.strip()
+        if not part:
+            continue
+        eq = part.find('=')
+        fields.append(part[eq+1:].strip() if eq >= 0 else part)
+    return fields
+
+
+def _extract_checksum_updates(stmts, csum_state, ir):
+    """Walk an action body (recursively through IfStatement) tracking each
+    InternetChecksum instance's accumulated add/subtract field list since
+    its last clear(), and calling ir.add_checksum_update() once per get()
+    encountered. csum_state is shared across a whole control block's
+    actions -- instance names are unique per control block, and P4-16's
+    imperative clear()->add()*->get() sequencing means state only ever
+    needs to persist within the actions that reference the same instance."""
+    for s in stmts:
+        if isinstance(s, ExternCall) and '.' in s.name:
+            obj, method = s.name.rsplit('.', 1)
+            if method == 'clear':
+                csum_state[obj] = []
+            elif method in ('add', 'subtract'):
+                fields = _parse_tuple_literal_fields(s.args[0]) if s.args else []
+                if method == 'subtract':
+                    # RFC 1624: subtracting a word from a one's-complement
+                    # running sum is equivalent to adding its bitwise
+                    # complement -- '~' here is this pass's own negation
+                    # marker, stripped and turned into a real bitwise-NOT
+                    # term by emit_processing.py's checksum wire-builder.
+                    fields = [f'~{fld}' for fld in fields]
+                csum_state.setdefault(obj, []).extend(fields)
+            elif method == 'get':
+                dest = s.args[0].strip() if s.args else ''
+                m = re.match(r'^hdr\.(\w+)\.(\w+)$', dest)
+                if m:
+                    ir.add_checksum_update(ChecksumUpdate(
+                        m.group(1), m.group(2), "1'b1", 'csum16',
+                        list(csum_state.get(obj, []))))
+                csum_state[obj] = []
+        elif isinstance(s, IfStatement):
+            _extract_checksum_updates(s.then_body, csum_state, ir)
+            _extract_checksum_updates(s.else_body, csum_state, ir)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -899,6 +996,15 @@ def ingest_p4ir(p4_text: str) -> IR:
             actions_by_canon[action.name] = action
             ctrl.add_action(action)
             ir.add_action(action)
+
+        # InternetChecksum: real .clear()/.add()/.subtract()/.get() sequences
+        # get hoisted by p4c's own MidEnd into ordinary (often @hidden)
+        # actions -- ctrl.actions is now fully populated (hidden actions
+        # included, e.g. a checksum computation guarded by an
+        # if(hdr.X.isValid()) block), so this can run once, here.
+        csum_state = {}
+        for action in ctrl.actions:
+            _extract_checksum_updates(action.body, csum_state, ir)
 
         # Build table maps
         real_tables = {}     # local_name → Table
