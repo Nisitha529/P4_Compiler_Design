@@ -4,6 +4,7 @@ import re
 
 from ir import Assignment, ExternCall, IfStatement, TableApply, ActionParam
 from timing_model import estimate_expr_delay, table_tree_stages, exact_match_tag_compare_stages
+from crc_model import crc_masks
 
 # ============================================================
 # Standard-metadata field widths (v1model definitions)
@@ -109,11 +110,87 @@ def _lhs_sig(lhs):
         return _out(lhs)
     fn = _std_meta_fname(lhs)
     if fn:
+        # standard_metadata.drop is the XSA/xsa.p4 architecture's own way to
+        # drop a packet (it has no v1model-style mark_to_drop() extern, and
+        # its standard_metadata_t declares a real `drop` bit). Route it to the
+        # module's actual `drop` output -- the signal emit_top.py consumes as
+        # proc_drop -- rather than to an out_std_meta_drop port nothing reads,
+        # which would make every drop in an XSA app a silent no-op. `drop` is
+        # already a pool-A name for _stage_text, so staged/unstaged naming
+        # stays correct without further handling.
+        if fn == 'drop':
+            return 'drop'
         return f'out_std_meta_{fn}'
     mfn = _meta_fname(lhs)
     if mfn:
         return f'meta_{mfn}_w'        # writable shadow of the metadata input
     return re.sub(r'[.\[\]]', '_', lhs)
+
+
+def _operand_width(expr, fwmap):
+    """Width of a plain P4 operand (header field / metadata field / control-
+    local), or None if it isn't a shape we can size. Keys match
+    _build_field_width_map's own conventions."""
+    e = expr.strip()
+    m = re.match(r'^hdr\.(\w+)\.(\w+)$', e)
+    if m:
+        return fwmap.get(f'{m.group(1)}_{m.group(2)}')
+    m = re.match(r'^meta\.(\w+)$', e)
+    if m:
+        return fwmap.get(f'meta_{m.group(1)}')
+    m = re.match(r'^standard_metadata\.(\w+)$', e)
+    if m:
+        return _STD_META_WIDTHS.get(m.group(1))
+    return fwmap.get(e)
+
+
+def _walk_extern_calls(stmts):
+    """Yield every ExternCall in a statement list, descending into nested
+    IfStatement branches (same recursion shape as the register/counter
+    stage-detection walkers below)."""
+    for s in stmts:
+        if isinstance(s, ExternCall):
+            yield s
+        elif isinstance(s, IfStatement):
+            yield from _walk_extern_calls(s.then_body)
+            yield from _walk_extern_calls(s.else_body)
+
+
+def _collect_hash_sites(ctrl, fwmap):
+    """Find every Checksum<H>.apply(dest, fields...) call and resolve the
+    widths its emitted CRC function needs. Returns
+    {inst_name: (algo, n_bits, out_width)}; instances whose operands can't be
+    sized are dropped (and reported by the caller) rather than mis-emitted."""
+    algos = {h.name: h.algo for h in getattr(ctrl, 'hashes', [])}
+    if not algos:
+        return {}, []
+
+    stmts = list(ctrl.statements)
+    for a in ctrl.actions:
+        stmts.extend(a.body)
+
+    sites, unsupported = {}, []
+    for st in _walk_extern_calls(stmts):
+        if '.' not in st.name:
+            continue
+        obj, method = st.name.rsplit('.', 1)
+        if method != 'apply' or obj not in algos or len(st.args) < 2:
+            continue
+        out_w = _operand_width(st.args[0], fwmap)
+        widths = [_operand_width(a, fwmap) for a in st.args[1:]]
+        if out_w is None or any(w is None for w in widths):
+            unsupported.append(obj)
+            continue
+        n_bits = sum(widths)
+        prev = sites.get(obj)
+        if prev and prev[1:] != (n_bits, out_w):
+            # Same instance applied to differently-shaped data in two places:
+            # one emitted function can't serve both. Rare and unsupported --
+            # report rather than silently emitting a wrong-width network.
+            unsupported.append(obj)
+            continue
+        sites[obj] = (algos[obj], n_bits, out_w)
+    return sites, unsupported
 
 
 def _map_cond(cond, cmap=None):
@@ -164,7 +241,11 @@ def _collect_std_meta_outputs(ctrl):
         for stmt in action.body:
             if isinstance(stmt, Assignment):
                 fn = _std_meta_fname(stmt.lhs)
-                if fn:
+                # 'drop' is deliberately excluded: _lhs_sig routes
+                # standard_metadata.drop to the module's real `drop` output
+                # (xsa.p4's own drop mechanism), so an out_std_meta_drop port
+                # would be a permanently-zero vestigial output.
+                if fn and fn != 'drop':
                     fields[fn] = _STD_META_WIDTHS.get(fn, 32)
     return fields
 
@@ -377,10 +458,17 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None):
                 f.write(f'{ind}end\n')
 
 
-def _subst(text, pmap, cmap):
+def _subst_params(text, pmap):
+    """Substitute action-parameter names with their table-supplied signals,
+    leaving the expression otherwise in P4 form (so it can still be routed
+    through _lhs_sig for a write target rather than _map_expr for a read)."""
     for pname, psig in pmap.items():
         text = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, text)
-    return _map_expr(text, cmap)
+    return text
+
+
+def _subst(text, pmap, cmap):
+    return _map_expr(_subst_params(text, pmap), cmap)
 
 
 def _sanitize_reg_dest(raw):
@@ -503,6 +591,16 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
             idx = _subst(stmt.args[0], pmap, cmap)
             f.write(f'{ind}{obj}_incr_en  = 1\'b1;\n')
             f.write(f'{ind}{obj}_incr_idx = {idx};\n')
+            return
+        if method == 'apply' and len(stmt.args) >= 2:
+            # Checksum<H>.apply(dest, field, field, ...) -- ingest normalizes
+            # the (data, result) pair into dest-first flat operands. The CRC
+            # network itself is a module-scope function emitted once; calling
+            # it here keeps the operands subject to the normal per-stage
+            # renaming, so the hash reads this stage's values.
+            dest = _lhs_sig(_subst_params(stmt.args[0], pmap))
+            operands = ', '.join(_subst(a, pmap, cmap) for a in stmt.args[1:])
+            f.write(f'{ind}{dest} = {obj}_hash({{{operands}}});\n')
             return
         if method in ('clear', 'add', 'subtract', 'get'):
             # InternetChecksum -- the real value is computed entirely by
@@ -993,6 +1091,15 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
 
     registers = ctrl.registers
 
+    # Checksum<H> hash instances and the operand widths their emitted CRC
+    # functions need. Empty for every app that declares none, so this is a
+    # no-op for existing apps.
+    hash_sites, hash_unsupported = _collect_hash_sites(ctrl, fwmap)
+    for inst in sorted(set(hash_unsupported)):
+        print(f"[WARN]  Checksum '{inst}': operands could not be sized, or the "
+              f"same instance is applied to differently-shaped data in more "
+              f"than one place -- no hash RTL emitted for it")
+
     with open(output_path, 'w') as f:
 
         # ── Module declaration ──────────────────────────────────────────
@@ -1369,6 +1476,47 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             for mf in meta_fields:
                 f.write(f'  logic [{mf.width-1}:0] meta_{mf.name}_w;\n')
             f.write('\n')
+
+        # ── Checksum<H> hash functions (xsa.p4's generic hash extern) ───
+        # Emitted as module-scope automatic functions (same idiom as
+        # emit_table.py's hash_key()) rather than as wires, because unlike
+        # update_checksum's final-stage output write, a hash result feeds
+        # downstream logic -- typically a later table's key -- so it must be
+        # computed inline at the call site, where the normal staging machinery
+        # renames its operands to the correct pipeline stage. A function keeps
+        # that call site to one line while the (large) constant XOR network
+        # lives here once.
+        #
+        # A fixed-length CRC is affine over GF(2): each output bit is the XOR
+        # of a fixed subset of the input bits, plus a constant from the
+        # algorithm's init/xorout. Both are compile-time constants, so this is
+        # a flat combinational network -- no LFSR, no state, no runtime loop.
+        # See crc_model.py, whose reference implementation is verified against
+        # the algorithms' published check values.
+        for inst, (algo, n_bits, out_w) in sorted(hash_sites.items()):
+            masks, width, const = crc_masks(algo, n_bits)
+            if out_w > width:
+                f.write(f'  // {inst}: {algo} produces {width} bits but the '
+                        f'destination is {out_w} -- zero-extended\n')
+            f.write(f'  // {inst}: Checksum<H>(HashAlgorithm_t.{algo}) over '
+                    f'{n_bits} bits -> {out_w} bits\n')
+            f.write(f'  function automatic logic [{out_w-1}:0] {inst}_hash'
+                    f'(input logic [{n_bits-1}:0] d);\n')
+            # Build the result MSB-first, taking the low out_w bits of the CRC
+            # (zero-extending if the destination is wider than the algorithm).
+            terms = []
+            for j in range(out_w - 1, -1, -1):
+                if j >= width:
+                    terms.append("1'b0")
+                elif masks[j] == 0:
+                    terms.append(f"1'b{(const >> j) & 1}")
+                else:
+                    t = f"(^(d & {n_bits}'h{masks[j]:0{(n_bits + 3) // 4}X}))"
+                    if (const >> j) & 1:
+                        t = f'(~{t})'
+                    terms.append(t)
+            f.write(f'    {inst}_hash = {{{", ".join(terms)}}};\n')
+            f.write('  endfunction\n\n')
 
         # ── Checksum update RHS computation (update_checksum()) ─────────
         # Plain module-scope continuous assigns, deliberately NOT inside any

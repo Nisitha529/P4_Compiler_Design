@@ -13,7 +13,7 @@ module parser_generated(
   typedef enum logic [1:0] {
     START,
     PARSE_IPV4,
-    TCP,
+    PARSE_TCP,
     ACCEPT
   } state_t;
 
@@ -21,8 +21,8 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
-    extract_ipv4 = 0;
     extract_ethernet = 0;
+    extract_ipv4 = 0;
     extract_tcp = 0;
     done = 0;
     next_state = state;
@@ -40,12 +40,12 @@ module parser_generated(
       PARSE_IPV4: begin
         extract_ipv4 = 1;
         case (ipv4_protocol)
-          8'h06: next_state = TCP;
+          8'd6: next_state = PARSE_TCP;
           default: next_state = ACCEPT;
         endcase
       end
 
-      TCP: begin
+      PARSE_TCP: begin
         extract_tcp = 1;
         next_state = ACCEPT;
       end

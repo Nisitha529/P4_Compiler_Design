@@ -210,6 +210,19 @@ class CounterDecl:
         self.counter_type = counter_type  # 'PACKETS' | 'BYTES' | 'PACKETS_AND_BYTES'
 
 
+class HashDecl:
+    """A Checksum<bit<W>>(HashAlgorithm_t.ALGO) name; extern declaration
+    (xsa.p4's generic hash-algorithm-parameterized checksum extern -- distinct
+    from InternetChecksum, which is the fixed one's-complement one). Its
+    .apply<T,W>(data, result) call is a pure combinational function of the
+    field list, so unlike ChecksumUpdate this is emitted inline at the call
+    site rather than as a final-stage output write -- the result typically
+    feeds downstream logic (e.g. a later table's key), not an output port."""
+    def __init__(self, name, algo):
+        self.name = name    # instance name, e.g. 'ecmp_hash'
+        self.algo = algo    # 'CRC16' | 'CRC32' | 'ONES_COMPLEMENT16'
+
+
 class ChecksumUpdate:
     """A real update_checksum(condition, {field_list}, dest, algo) call, from a
     P4 MyComputeChecksum-style control block. Module-level (IR.checksum_updates),
@@ -231,6 +244,7 @@ class ControlBlock:
         self.local_vars = []     # list[LocalVar]    (bit<N> x; declarations)
         self.registers  = []     # list[RegisterDecl]
         self.counters   = []     # list[CounterDecl]
+        self.hashes     = []     # list[HashDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -249,6 +263,9 @@ class ControlBlock:
 
     def add_counter(self, cnt):
         self.counters.append(cnt)
+
+    def add_hash(self, h):
+        self.hashes.append(h)
 
 
 # ============================================================

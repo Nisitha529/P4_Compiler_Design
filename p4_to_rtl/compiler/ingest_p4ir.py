@@ -11,7 +11,7 @@ from ir import (
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
     ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
-    IfStatement, TableApply, ChecksumUpdate,
+    IfStatement, TableApply, ChecksumUpdate, HashDecl,
 )
 
 
@@ -66,6 +66,29 @@ def _read_matching_paren(text, open_pos):
     return text[open_pos + 1:], len(text)
 
 
+def _split_top_level_commas(text):
+    """Split on commas that are not nested inside (), [] or {}. Needed for
+    extern calls whose argument list contains a p4c-synthesized tuple literal
+    -- '(tuple_0){f0 = a,f1 = b}, dest' must split into exactly two args, not
+    three. Angle brackets are deliberately NOT tracked: a '<' inside an
+    argument is a less-than operator, not a type-argument bracket (type args
+    appear before the '(' and are consumed separately)."""
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if ''.join(cur).strip():
+        parts.append(''.join(cur))
+    return [p.strip() for p in parts if p.strip()]
+
+
 def _read_matching_angle(text, open_pos):
     """Return (inner, end_pos) for the <...> block whose opening < is at
     open_pos. Depth-counted, so it correctly handles nested generics like
@@ -115,9 +138,41 @@ def _sanitize_stack_idx(name):
     return re.sub(r'\[(\d+)\]', r'_\1', name)
 
 
+_CAST_RE = re.compile(r'\(\s*bit\s*<\s*(\d+)\s*>\s*\)\s*')
+
+
+def _convert_casts(expr):
+    """Rewrite P4 width casts `(bit<N>)x` as SystemVerilog size casts `N'(x)`.
+
+    Left untranslated, the P4 spelling reaches the generated RTL verbatim and
+    is a hard syntax error there. The operand is always re-parenthesized, since
+    `N'x` without parentheses is sized-literal syntax and would mean something
+    entirely different."""
+    out, i = [], 0
+    while True:
+        m = _CAST_RE.search(expr, i)
+        if not m:
+            out.append(expr[i:])
+            return ''.join(out)
+        out.append(expr[i:m.start()])
+        width, j = m.group(1), m.end()
+        if j < len(expr) and expr[j] == '(':
+            inner, end = _read_matching_paren(expr, j)
+            out.append(f"{width}'({inner})")
+            i = end
+        else:
+            k = j
+            while k < len(expr) and (expr[k].isalnum() or expr[k] in '_.$'):
+                k += 1
+            operand = expr[j:k]
+            out.append(f"{width}'({operand})" if operand else '')
+            i = k
+
+
 def _convert_expr(expr):
     """Convert P4 expression literals to SV-ready strings."""
     expr = expr.strip()
+    expr = _convert_casts(expr)
     # P4 boolean literals
     if expr == 'true':
         return "1'b1"
@@ -372,15 +427,29 @@ def _parse_action_body(body_text, name_map=None):
         # statement produced whatsoever -- both confirmed empirically, not
         # hypothetical. Args are kept raw/unconverted here; real
         # interpretation happens in _extract_checksum_updates.
-        m = re.match(r'(\w+)\s*\.\s*(clear|add|subtract|get)\b\s*', raw)
+        m = re.match(r'(\w+)\s*\.\s*(clear|add|subtract|get|apply)\b\s*', raw)
         if m:
             obj, method, pos = m.group(1), m.group(2), m.end()
-            if pos < len(raw) and raw[pos] == '<':
+            has_type_args = pos < len(raw) and raw[pos] == '<'
+            if has_type_args:
                 _, pos = _read_matching_angle(raw, pos)
-            if pos < len(raw) and raw[pos] == '(':
-                inner, _ = _read_matching_paren(raw, pos)
-                stmts.append(ExternCall(f'{obj}.{method}', [inner.strip()]))
-                continue
+            # `apply` is only ever an extern call here when it carries a
+            # generic type-argument block (Checksum<H>.apply<T,W>(data, out)).
+            # A bare `tbl.apply()` is a table application and must fall through
+            # to the normal table handling, never be captured as an ExternCall.
+            if method != 'apply' or has_type_args:
+                if pos < len(raw) and raw[pos] == '(':
+                    inner, _ = _read_matching_paren(raw, pos)
+                    args = _split_top_level_commas(inner)
+                    if method == 'apply' and len(args) == 2:
+                        # Checksum<H>.apply(data, result) -- normalize to
+                        # [dest, field, field, ...] so the emit side gets a
+                        # flat operand list and needs no tuple parsing of its
+                        # own. Dest-first matches the existing .read(dest, idx)
+                        # convention already used for register reads.
+                        args = [args[1]] + _parse_tuple_literal_fields(args[0])
+                    stmts.append(ExternCall(f'{obj}.{method}', args))
+                    continue
 
         # EXTERN.method(ARGS)
         m = re.match(r'(\w+)\s*\.\s*(\w+)\s*\(([^)]*)\)', raw)
@@ -681,7 +750,7 @@ def _collect_name_maps(body_text):
 
 def _parse_control_body(body_text, ctrl_name):
     """
-    Returns (local_vars, registers, counters, actions, tables, apply_text, name_map).
+    Returns (local_vars, registers, counters, hashes, actions, tables, apply_text, name_map).
     actions : [(local_name, Action, is_hidden)]
     tables  : [(local_name, Table|None, is_hidden, default_action_local_name)]
     """
@@ -748,6 +817,23 @@ def _parse_control_body(body_text, ctrl_name):
         canon = _extract_name_annotation(ann_text) or local_name
         canon = name_map.get(local_name, canon)
         counters.append(CounterDecl(canon, dw, n_counters, ctype))
+
+    # ── Checksum<H> hash externs ─────────────────────────────────────────────
+    # Match: @ann Checksum<bit<W>>(HashAlgorithm_t.ALGO) name;
+    # (xsa.p4's generic hash extern -- distinct from InternetChecksum. Only the
+    # algorithm is kept; the result width comes from the .apply() call site's
+    # own destination, so W here is not needed downstream.)
+    hashes = []
+    for m in re.finditer(
+        r'(' + _ANN + r')\bChecksum\s*<[^;{]*>\s*'
+        r'\(\s*HashAlgorithm_t\.(\w+)\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text = m.group(1)
+        algo = m.group(2)
+        local_name = m.group(3)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        hashes.append(HashDecl(canon, algo))
 
     # ── Actions ───────────────────────────────────────────────────────────────
     for m in re.finditer(r'(' + _ANN + r')\baction\s+(\w+)\s*\(', text):
@@ -836,20 +922,36 @@ def _parse_control_body(body_text, ctrl_name):
 
             tables_out.append((local_name, tbl, False, None))
 
-    return local_vars, registers, counters, actions_out, tables_out, apply_text, name_map
+    return local_vars, registers, counters, hashes, actions_out, tables_out, apply_text, name_map
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Top-level block finders
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _normalize_std_meta_name(signature, body):
+    """The standard_metadata parameter's name is arbitrary P4 -- fiveTuple.p4
+    and echo.p4 both call it `smeta`, not `standard_metadata`. Every downstream
+    consumer (emit_processing.py's _std_meta_fname, _map_expr, _map_cond)
+    matches the literal prefix `standard_metadata.`, so an app using any other
+    parameter name would have its standard-metadata accesses silently turn
+    into bogus control-local signals -- e.g. `smeta.drop = 1` becoming a dead
+    32-bit `smeta_drop` local instead of driving the real drop output. Rewrite
+    the parameter name to the canonical one here, where the signature that
+    declares it is still in scope."""
+    m = re.search(r'\bstandard_metadata_t\s+(\w+)', signature)
+    if not m or m.group(1) == 'standard_metadata':
+        return body
+    return re.sub(r'\b' + re.escape(m.group(1)) + r'\b', 'standard_metadata', body)
+
+
 def _find_control_body(text, ctrl_name):
-    m = re.search(r'\bcontrol\s+' + re.escape(ctrl_name) + r'\s*\([^)]*\)\s*\{', text)
+    m = re.search(r'\bcontrol\s+' + re.escape(ctrl_name) + r'\s*\(([^)]*)\)\s*\{', text)
     if not m:
         return None
     brace_pos = text.index('{', m.start())
     body, _ = _find_block(text, brace_pos)
-    return body
+    return _normalize_std_meta_name(m.group(1), body)
 
 
 def _find_parser_body(text, parser_name):
@@ -974,7 +1076,7 @@ def ingest_p4ir(p4_text: str) -> IR:
     # 5. Match-action control (ingress)
     ctrl_body = _find_control_body(text, ingress_name)
     if ctrl_body:
-        local_vars, registers, counters, actions_raw, tables_raw, apply_text, name_map = \
+        local_vars, registers, counters, hashes, actions_raw, tables_raw, apply_text, name_map = \
             _parse_control_body(ctrl_body, ingress_name)
 
         ctrl = ControlBlock(ingress_name)
@@ -987,6 +1089,9 @@ def ingest_p4ir(p4_text: str) -> IR:
 
         for cnt in counters:
             ctrl.add_counter(cnt)
+
+        for h in hashes:
+            ctrl.add_hash(h)
 
         # Build action lookup dicts
         actions_by_local = {}

@@ -417,6 +417,20 @@ def _build_axil_regmap(ctrl, amap, fwmap):
             kw    = fwmap.get(kname, 32)
             key_regs.append((kbase, kw))
             regs.append((f'key_{kbase}', f'{tname}_cp_wr_key_{kbase}', kw))
+        # LPM/ternary tables carry one extra control-plane input each beyond
+        # the plain key words -- emit_processing.py already declares these as
+        # real ports (cp_wr_pfx_len / cp_wr_mask_{field}) and wires them into
+        # the table instance, but nothing here ever exposed or connected them,
+        # so on this frontend an LPM table's prefix length sat permanently
+        # undriven and the table could never be correctly populated. Widths
+        # below mirror emit_processing.py's own port declarations exactly.
+        if mt == 'lpm':
+            key_w = key_regs[0][1] if key_regs else 32
+            pfx_w = max(1, math.ceil(math.log2(key_w + 1)))
+            regs.append(('wr_pfx_len', f'{tname}_cp_wr_pfx_len', pfx_w))
+        elif mt == 'ternary':
+            for kbase, kw in key_regs:
+                regs.append((f'wr_mask_{kbase}', f'{tname}_cp_wr_mask_{kbase}', kw))
         for pname, pw in params:
             regs.append((f'p_{pname}', f'{tname}_cp_wr_p_{pname}', pw))
         regs.append(('commit', f'{tname}_cp_wr_en', 1))   # sentinel
