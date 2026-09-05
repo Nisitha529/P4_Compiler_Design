@@ -159,18 +159,11 @@ module processing_generated (
     if (srcRoutes_0_valid) begin
       if ((srcRoutes_0_bos == 'h01)) begin
         out_ethernet_etherType = 'h0800;
-        out_std_meta_egress_spec = ((srcRoutes_0_port & 'h01FF) & 'h01FF);
-        /* UNIMPLEMENTED EXTERN: _bmv2_pop(0, 'h1) */
-        if (ipv4_valid) begin
-          out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
-        end
       end
-      else begin
-        out_std_meta_egress_spec = ((srcRoutes_0_port & 'h01FF) & 'h01FF);
-        /* UNIMPLEMENTED EXTERN: _bmv2_pop(0, 'h1) */
-        if (ipv4_valid) begin
-          out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
-        end
+      out_std_meta_egress_spec = ((srcRoutes_0_port & 'h01FF) & 'h01FF);
+      /* UNIMPLEMENTED EXTERN: _bmv2_pop(0, 'h1) */
+      if (ipv4_valid) begin
+        out_ipv4_ttl = ((ipv4_ttl + 'hFF) & 'hFF);
       end
     end
     else begin

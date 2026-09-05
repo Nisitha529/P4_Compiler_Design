@@ -691,7 +691,19 @@ def _tbl_refs_in_cond(cond):
     return {m.group(1) for m in re.finditer(r'(\w+)\.apply\(\)\.(\w+)', cond)}
 
 
-def _split_stage(stmts, split_name, fwd_counter):
+def _split_stage(stmts, split_name, fwd_counter, reg_read=False):
+    """Split a statement list in two at `split_name`, so the matched
+    statement and everything after it run one stage later.
+
+    reg_read=False (default): split_name is a table; the split point is its
+    TableApply (or an IfStatement whose condition consumes its result).
+
+    reg_read=True: split_name is a *register*, and the split point is its
+    `.read()` call. Used only when register memories are emitted with a real
+    synchronous (RAM-inferable) read: the address is presented in the stage
+    before the boundary, the RAM captures it on that clock edge, and the read
+    statement -- which is what actually consumes the data -- lands in the
+    stage after, where the registered data is valid."""
     before, after = [], []
     forwards = []
     found = False
@@ -701,19 +713,24 @@ def _split_stage(stmts, split_name, fwd_counter):
             after.append(s)
             continue
 
-        if isinstance(s, TableApply) and s.table_name == split_name:
+        if reg_read:
+            if isinstance(s, ExternCall) and s.name == f'{split_name}.read':
+                found = True
+                after.append(s)
+                continue
+        elif isinstance(s, TableApply) and s.table_name == split_name:
             found = True
             after.append(s)
             continue
 
         if isinstance(s, IfStatement):
-            if split_name in _tbl_refs_in_cond(s.condition):
+            if not reg_read and split_name in _tbl_refs_in_cond(s.condition):
                 found = True
                 after.append(s)
                 continue
 
-            sb_then, sa_then, sf_then, f_then = _split_stage(s.then_body, split_name, fwd_counter)
-            sb_else, sa_else, sf_else, f_else = _split_stage(s.else_body, split_name, fwd_counter)
+            sb_then, sa_then, sf_then, f_then = _split_stage(s.then_body, split_name, fwd_counter, reg_read)
+            sb_else, sa_else, sf_else, f_else = _split_stage(s.else_body, split_name, fwd_counter, reg_read)
 
             if f_then or f_else:
                 found = True
@@ -876,6 +893,62 @@ def _budget_split_flat(stmts, budget, cmap, width_of):
     return sub_stages
 
 
+def _find_first_reg_read(stmts, reg_names):
+    """Name of the first register whose .read() appears in this statement
+    list (descending into IfStatement branches), or None."""
+    for s in stmts:
+        if isinstance(s, ExternCall) and '.' in s.name:
+            obj, method = s.name.rsplit('.', 1)
+            if method == 'read' and obj in reg_names:
+                return obj
+        elif isinstance(s, IfStatement):
+            r = _find_first_reg_read(s.then_body, reg_names)
+            if r:
+                return r
+            r = _find_first_reg_read(s.else_body, reg_names)
+            if r:
+                return r
+    return None
+
+
+def _split_stages_for_reg_reads(stages, boundary_forwards, reg_names, fwd_counter):
+    """Insert a pipeline boundary in front of every register .read(), so a
+    synchronous RAM read has a cycle to land before its consumer runs.
+
+    Same bookkeeping shape as _budget_split_stages: each stage may expand into
+    several, new internal boundaries get their own forward lists (a split
+    inside an IfStatement needs a condition-forwarding register, which
+    _split_stage produces), and the incoming boundary_forwards entry for a
+    stage transition is preserved verbatim on the transition it belongs to.
+
+    Only needed when registers are emitted as real RAMs; with the default
+    asynchronous read the data is combinationally available in the same stage
+    and no boundary is required."""
+    new_stages, new_bounds = [], []
+    for i, stg in enumerate(stages):
+        remaining = stg
+        pending = set(reg_names)
+        while True:
+            target = _find_first_reg_read(remaining, pending) if remaining else None
+            if target is None:
+                new_stages.append(remaining)
+                break
+            before, after, fwd, found = _split_stage(
+                remaining, target, fwd_counter, reg_read=True)
+            if not found:
+                new_stages.append(remaining)
+                break
+            new_stages.append(before)
+            new_bounds.append(fwd)
+            # Each register only needs one boundary per stage; without this the
+            # loop would re-split forever on a second read of the same register.
+            pending.discard(target)
+            remaining = after
+        if i < len(boundary_forwards):
+            new_bounds.append(boundary_forwards[i])
+    return new_stages, new_bounds
+
+
 def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_of):
     """Refines Phase A's (stages, boundary_forwards) by budget-splitting
     each non-empty stage. Phase A's empty no-op pass-through stages (one
@@ -964,7 +1037,7 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
 # ============================================================
 
 def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False,
-                     checksum_updates=None):
+                     checksum_updates=None, register_ram=False):
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
@@ -986,6 +1059,13 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # the ingress/egress emit_processing() calls represents this app's real
     # LAST processing stage (the checksum needs the packet's final header
     # state), never both.
+    # register_ram: False (default) = registers keep today's asynchronous
+    # (combinational) read, output byte-identical to before this parameter
+    # existed. True = emit them as real synchronous-read memories so block RAM
+    # can actually be inferred (an asynchronous read cannot map to Cyclone IV
+    # M9K and falls back to flip-flops, which does not scale past small
+    # arrays). Costs one pipeline stage per register read -- see
+    # _split_stages_for_reg_reads -- so it is opt-in rather than automatic.
     checksum_updates = checksum_updates or []
 
     ctrl = _find_processing_ctrl(ir, stage)
@@ -1255,6 +1335,15 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             for tw in table_wires if not tw.get('is_keyless')
         }
         stages, boundary_forwards = _schedule_stages(ctrl.statements, table_noop_stages)
+
+        # Register RAM mode (opt-in, default off): a real synchronous read
+        # needs a cycle between presenting the address and consuming the data,
+        # so every register .read() gets its own stage boundary. With the
+        # default asynchronous read the data is combinationally available in
+        # the same stage and nothing is inserted here.
+        if register_ram and registers:
+            stages, boundary_forwards = _split_stages_for_reg_reads(
+                stages, boundary_forwards, {r.name for r in registers}, [10000])
 
         # Phase B (opt-in, default off): refine Phase A's stages against an
         # estimated per-stage logic-level budget. budget_levels is None
@@ -1655,25 +1744,50 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             f.write(f'  logic        {reg.name}_wr_en;\n')
             f.write(f'  logic [{addr_w-1}:0] {reg.name}_wr_addr;\n')
             f.write(f'  logic [{reg.data_width-1}:0] {reg.name}_wr_data;\n')
+        reg_read_ports = []   # (reg_name, dest_id, addr_expr) for register_ram
         if registers:
+            # Simulation-only zero-fill, excluded from synthesis. Quartus has
+            # been observed to reject a procedural initial-block loop outright
+            # ("Loop error ... must terminate within 5000 iterations") on large
+            # arrays, and translate_off -- not `ifndef SYNTHESIS -- is the
+            # mechanism it actually honours here; same rationale as the packet
+            # buffers in emit_top.py.
             f.write('\n  // Zero all register memories at simulation start\n')
+            f.write('  // synthesis translate_off\n')
             f.write('  initial begin\n')
             for reg in registers:
                 f.write(f'    for (int _si = 0; _si < {reg.size}; _si++)\n')
                 f.write(f'      {reg.name}_mem[_si] = {reg.data_width}\'b0;\n')
-            f.write('  end\n\n')
+            f.write('  end\n')
+            f.write('  // synthesis translate_on\n\n')
 
             reg_reads = _collect_reg_reads(ctrl)
             if reg_reads:
-                f.write('  // Register read wires (isolated via assign)\n')
+                if register_ram:
+                    f.write('  // Register read data (registered -- see the RAM\n')
+                    f.write('  // read/write block below)\n')
+                else:
+                    f.write('  // Register read wires (isolated via assign)\n')
                 for reg_name, raw_out, raw_addr in reg_reads:
                     reg_obj = next((r for r in registers if r.name == reg_name), None)
                     dw = reg_obj.data_width if reg_obj else 1
                     read_stage = _reg_read_stage(reg_name)
-                    addr_expr = _stage_text(_map_expr(raw_addr), read_stage)
                     dest_id = _sanitize_reg_dest(raw_out)
                     f.write(f'  logic [{dw-1}:0] {reg_name}_rd_{dest_id};\n')
-                    f.write(f'  assign {reg_name}_rd_{dest_id} = {reg_name}_mem[{addr_expr}];\n')
+                    if register_ram:
+                        # The address is presented one stage EARLIER than the
+                        # read statement: the RAM captures it on that stage's
+                        # closing clock edge, so the data is valid in the stage
+                        # where the read statement now lives (see
+                        # _split_stages_for_reg_reads, which created that
+                        # boundary).
+                        addr_expr = _stage_text(_map_expr(raw_addr),
+                                                max(0, read_stage - 1))
+                        reg_read_ports.append((reg_name, dest_id, addr_expr))
+                    else:
+                        addr_expr = _stage_text(_map_expr(raw_addr), read_stage)
+                        f.write(f'  assign {reg_name}_rd_{dest_id} = '
+                                f'{reg_name}_mem[{addr_expr}];\n')
                 f.write('\n')
 
         # ── Table lookup result wires ──────────────────────────────────
@@ -1901,11 +2015,23 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
 
         # ── Register write-back ────────────────────────────────────────
         if registers:
-            f.write('  // Register write-back (initialized via initial block above)\n')
+            if register_ram:
+                f.write('  // Register RAM: write and registered read in one\n')
+                f.write('  // always_ff -- this is the shape block-RAM inference\n')
+                f.write('  // requires. An asynchronous (combinational) read\n')
+                f.write('  // cannot map to M9K and would fall back to\n')
+                f.write('  // flip-flops, which does not scale past small arrays.\n')
+            else:
+                f.write('  // Register write-back (initialized via initial block above)\n')
             for reg in registers:
                 f.write(f'  always_ff @(posedge clk) begin\n')
                 f.write(f'    if ({reg.name}_wr_en)\n')
                 f.write(f'      {reg.name}_mem[{reg.name}_wr_addr] <= {reg.name}_wr_data;\n')
+                if register_ram:
+                    for reg_name, dest_id, addr_expr in reg_read_ports:
+                        if reg_name == reg.name:
+                            f.write(f'    {reg_name}_rd_{dest_id} <= '
+                                    f'{reg_name}_mem[{addr_expr}];\n')
                 f.write(f'  end\n')
             f.write('\n')
 

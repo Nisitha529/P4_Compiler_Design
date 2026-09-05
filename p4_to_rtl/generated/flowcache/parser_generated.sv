@@ -22,8 +22,8 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
-    extract_ethernet = 0;
     extract_packet_out = 0;
+    extract_ethernet = 0;
     extract_ipv4 = 0;
     done = 0;
     next_state = state;

@@ -782,9 +782,19 @@ def _parse_control_body(body_text, ctrl_name):
         local_vars.append(LocalVar(canon, type_str, width))
 
     # ── Register externs ──────────────────────────────────────────────────────
-    # Match: @ann register<bit<N>>(SIZE) name;  (nested <> handled by [^;{]*)
+    # Match: @ann register<bit<N>>(SIZE) name;
+    # SIZE is the constructor's `bit<32> size` argument, and p4test's MidEnd
+    # dump prints it as a WIDTH-PREFIXED literal -- `32w4096`, not `4096`
+    # (confirmed against a real dump: `register<bit<1>>(32w4096) bloom;`).
+    # The optional `(?:\d+w)?` strips that prefix; without it the whole
+    # declaration silently fails to match, the register is never added to the
+    # ControlBlock, and yet `.read`/`.write` call sites still parse normally --
+    # so emission proceeds and produces RTL referencing undeclared
+    # `<name>_rd_*`/`<name>_mem` signals. Exactly the Counter constructor's
+    # `32w8192` case, fixed the same way.
     for m in re.finditer(
-        r'(' + _ANN + r')\bregister\s*<\s*bit<(\d+)>\s*>\s*\((\d+)\)\s+(\w+)\s*;', text
+        r'(' + _ANN + r')\bregister\s*<\s*bit<(\d+)>\s*>\s*'
+        r'\(\s*(?:\d+w)?(\d+)\s*\)\s+(\w+)\s*;', text
     ):
         ann_text = m.group(1)
         dw = int(m.group(2))

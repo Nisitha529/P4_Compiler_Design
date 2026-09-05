@@ -1204,12 +1204,14 @@ module processing_generated (
   logic [47:0] last_time_reg_wr_data;
 
   // Zero all register memories at simulation start
+  // synthesis translate_off
   initial begin
     for (int _si = 0; _si < 8; _si++)
       byte_cnt_reg_mem[_si] = 32'b0;
     for (int _si = 0; _si < 8; _si++)
       last_time_reg_mem[_si] = 48'b0;
   end
+  // synthesis translate_on
 
   // Table lookup result wires
   logic        ipv4_lpm_hit;

@@ -34,10 +34,14 @@ module qos_policy_table #(
   logic [2:0] mem_p_prio[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   always_ff @(posedge clk) begin
     if (cp_wr_en) begin

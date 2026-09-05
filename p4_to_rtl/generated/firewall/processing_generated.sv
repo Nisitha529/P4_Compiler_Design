@@ -973,12 +973,14 @@ module processing_generated (
   logic [0:0] bloom_filter_2_wr_data;
 
   // Zero all register memories at simulation start
+  // synthesis translate_off
   initial begin
     for (int _si = 0; _si < 4096; _si++)
       bloom_filter_1_mem[_si] = 1'b0;
     for (int _si = 0; _si < 4096; _si++)
       bloom_filter_2_mem[_si] = 1'b0;
   end
+  // synthesis translate_on
 
   // Register read wires (isolated via assign)
   logic [0:0] bloom_filter_1_rd_reg_val_one_0;

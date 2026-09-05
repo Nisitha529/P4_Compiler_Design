@@ -30,10 +30,14 @@ module mpls_swap_table #(
   logic [19:0] mem_p_label[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   // XOR-fold hash: 20-bit key -> 9-bit BRAM address
   function automatic logic [8:0] hash_key(input logic [26:0] k);

@@ -301,7 +301,8 @@ def debug_ir(ir):
 # ============================================================
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
-                  axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False):
+                  axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
+                  register_ram=False):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -407,7 +408,8 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
         print("[INFO] Generating processing RTL...")
         emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways, enable_query=enable_query,
-                         checksum_updates=None if has_real_egress else ir.checksum_updates)
+                         checksum_updates=None if has_real_egress else ir.checksum_updates,
+                         register_ram=register_ram)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
 
         # Counter externs (p4test/XilinxPipeline path only, for now -- see
@@ -437,7 +439,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
         print("[INFO] Generating egress processing RTL...")
         emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query,
-                         checksum_updates=ir.checksum_updates)
+                         checksum_updates=ir.checksum_updates, register_ram=register_ram)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
@@ -545,6 +547,20 @@ def main():
         choices=sorted(DEVICE_FACTOR),
         default='artix7',
         help="Target device family for --target-freq-mhz budget scaling (default: artix7)",
+    )
+    parser.add_argument(
+        "--register-ram",
+        action="store_true",
+        help=(
+            "Emit P4 register externs as real synchronous-read memories so "
+            "block RAM can be inferred. Default: off -- registers keep an "
+            "asynchronous (combinational) read, output identical to not "
+            "passing this flag at all. An asynchronous read cannot map to "
+            "Cyclone IV M9K and falls back to flip-flops, which does not "
+            "scale past small arrays; the tradeoff is that a synchronous read "
+            "costs one extra pipeline stage per register read, so this "
+            "changes the design's cycle latency."
+        ),
     )
     parser.add_argument(
         "--exact-match-ways",
@@ -684,6 +700,7 @@ def main():
         axi_data_width=args.axi_data_width,
         board=board,
         self_test=args.self_test,
+        register_ram=args.register_ram,
     )
 
 

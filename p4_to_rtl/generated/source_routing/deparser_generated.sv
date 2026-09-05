@@ -59,63 +59,52 @@ module deparser_generated (
 
   always_comb begin
     pkt_hdr_out = '0;
-    pkt_hdr_len = 0;
 
     if (ethernet_valid) begin
       pkt_hdr_out[415:304] = {ethernet_dstAddr, ethernet_srcAddr, ethernet_etherType};
-      pkt_hdr_len = pkt_hdr_len + 16'd112;
     end
 
     if (srcRoutes_0_valid) begin
       pkt_hdr_out[303:288] = {srcRoutes_0_bos, srcRoutes_0_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_1_valid) begin
       pkt_hdr_out[287:272] = {srcRoutes_1_bos, srcRoutes_1_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_2_valid) begin
       pkt_hdr_out[271:256] = {srcRoutes_2_bos, srcRoutes_2_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_3_valid) begin
       pkt_hdr_out[255:240] = {srcRoutes_3_bos, srcRoutes_3_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_4_valid) begin
       pkt_hdr_out[239:224] = {srcRoutes_4_bos, srcRoutes_4_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_5_valid) begin
       pkt_hdr_out[223:208] = {srcRoutes_5_bos, srcRoutes_5_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_6_valid) begin
       pkt_hdr_out[207:192] = {srcRoutes_6_bos, srcRoutes_6_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_7_valid) begin
       pkt_hdr_out[191:176] = {srcRoutes_7_bos, srcRoutes_7_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (srcRoutes_8_valid) begin
       pkt_hdr_out[175:160] = {srcRoutes_8_bos, srcRoutes_8_port};
-      pkt_hdr_len = pkt_hdr_len + 16'd16;
     end
 
     if (ipv4_valid) begin
       pkt_hdr_out[159:0] = {ipv4_version, ipv4_ihl, ipv4_diffserv, ipv4_totalLen, ipv4_identification, ipv4_flags, ipv4_fragOffset, ipv4_ttl, ipv4_protocol, ipv4_hdrChecksum, ipv4_srcAddr, ipv4_dstAddr};
-      pkt_hdr_len = pkt_hdr_len + 16'd160;
     end
 
+    pkt_hdr_len = (ethernet_valid ? 16'd112 : 16'd0) + (srcRoutes_0_valid ? 16'd16 : 16'd0) + (srcRoutes_1_valid ? 16'd16 : 16'd0) + (srcRoutes_2_valid ? 16'd16 : 16'd0) + (srcRoutes_3_valid ? 16'd16 : 16'd0) + (srcRoutes_4_valid ? 16'd16 : 16'd0) + (srcRoutes_5_valid ? 16'd16 : 16'd0) + (srcRoutes_6_valid ? 16'd16 : 16'd0) + (srcRoutes_7_valid ? 16'd16 : 16'd0) + (srcRoutes_8_valid ? 16'd16 : 16'd0) + (ipv4_valid ? 16'd160 : 16'd0);
   end
 
   always_ff @(posedge clk) begin

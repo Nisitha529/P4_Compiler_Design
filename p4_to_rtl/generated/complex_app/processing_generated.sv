@@ -2179,10 +2179,12 @@ module processing_generated (
   logic [7:0] conn_state_wr_data;
 
   // Zero all register memories at simulation start
+  // synthesis translate_off
   initial begin
     for (int _si = 0; _si < 1024; _si++)
       conn_state_mem[_si] = 8'b0;
   end
+  // synthesis translate_on
 
   // Register read wires (isolated via assign)
   logic [7:0] conn_state_rd_meta_ttl;

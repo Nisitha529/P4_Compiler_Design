@@ -29,10 +29,14 @@ module ipv4_route_table #(
   logic [31:0] mem_p_next_hop[0:DEPTH-1];
 
   integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
   initial begin
     for (_i = 0; _i < DEPTH; _i = _i + 1)
       mem_valid[_i] = 1'b0;
   end
+  // synthesis translate_on
+  `endif
 
   always_ff @(posedge clk) begin
     if (cp_wr_en) begin
