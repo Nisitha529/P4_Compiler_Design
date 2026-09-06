@@ -120,6 +120,10 @@ module processing_generated (
   // Standard metadata outputs
   output logic [8:0] out_std_meta_egress_spec,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [15:0] out_meta__ingress_metadata_count0,
+  output logic [15:0] out_meta__parser_metadata_remaining1,
+
   // Control-plane write ports for table instances
   input  logic        ipv4_lpm_cp_wr_en,
   input  logic [7:0] ipv4_lpm_cp_wr_idx,
@@ -613,6 +617,10 @@ module processing_generated (
 
   // Table hit outputs
   assign ipv4_lpm_hit_out = ipv4_lpm_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta__ingress_metadata_count0 = meta__ingress_metadata_count0_w__st2;
+  assign out_meta__parser_metadata_remaining1 = meta__parser_metadata_remaining1_w__st2;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin

@@ -1221,6 +1221,23 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 fw = std_meta_outs[fname]
                 f.write(f'  output logic [{fw-1}:0] out_std_meta_{fname},\n')
 
+        # User metadata is `inout` on the MatchAction control, so -- exactly
+        # like header fields -- every field needs an OUTPUT as well as an
+        # input. Without these, anything a control block computes into
+        # metadata cannot leave the module and synthesis deletes the logic
+        # feeding it as dead. On v1model that is masked, because the
+        # forwarding decision lands in standard_metadata.egress_spec (which
+        # IS an output); but xsa.p4's standard_metadata_t has no egress_spec
+        # at all, so user metadata is the ONLY channel an XSA app has for a
+        # forwarding decision. Emitted for every field (pass-through), which
+        # is the header convention, rather than only for written fields (the
+        # std-meta convention) -- `inout` means whatever came in goes out,
+        # possibly modified.
+        if meta_fields:
+            f.write('\n  // Metadata outputs (final value after the last stage)\n')
+            for mf in meta_fields:
+                f.write(f'  output logic [{mf.width-1}:0] out_meta_{mf.name},\n')
+
         # CP write ports for each table
         if table_wires:
             f.write('\n  // Control-plane write ports for table instances\n')
@@ -1891,6 +1908,24 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             for tw in table_wires:
                 tname = tw['table'].name
                 f.write(f'  assign {tname}_hit_out = {tw["hit_sig"]};\n')
+            f.write('\n')
+
+        # ── Metadata output assignments ────────────────────────────────
+        # meta_x_w is already carried across every pipeline boundary by the
+        # normal pool-B forwarding machinery, so the field's final value is
+        # simply the LAST stage's working copy. Pool-B names are bare in
+        # stage 0 and `__stK` in stage K (see _stage_text), and `stages` has
+        # n_bounds+1 entries, so the last stage index is n_bounds. Taking the
+        # value here -- one continuous assign at module scope -- rather than
+        # threading out_meta_* through the staging machinery as a pool-A
+        # signal keeps this change additive: no existing stage emission
+        # changes, so every app's existing RTL is untouched apart from the
+        # new ports.
+        if meta_fields:
+            suf = '' if n_bounds == 0 else f'__st{n_bounds}'
+            f.write('  // Metadata outputs (final value after the last stage)\n')
+            for mf in meta_fields:
+                f.write(f'  assign out_meta_{mf.name} = meta_{mf.name}_w{suf};\n')
             f.write('\n')
 
         # ── Combinational logic (staged) ────────────────────────────────

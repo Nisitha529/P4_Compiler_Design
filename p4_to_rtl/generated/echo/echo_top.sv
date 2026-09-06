@@ -36,7 +36,10 @@ module echo_top #(
     output logic [31:0]               s_axil_rdata,
     output logic [1:0]                s_axil_rresp,
     output logic                      s_axil_rvalid,
-    input  logic                      s_axil_rready
+    input  logic                      s_axil_rready,
+
+    // Metadata sideband (valid while m_axis_tvalid for the packet)
+    output logic [15:0] out_meta_echo_port
 );
 
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
@@ -244,6 +247,7 @@ module echo_top #(
   wire [15:0] out_udp_checksum;
   wire proc_valid_out;
   wire proc_drop;
+  wire [15:0] proc_out_meta_echo_port;
 
 
 
@@ -285,6 +289,7 @@ module echo_top #(
     .udp_dst_port  (w_udp_dst_port),
     .udp_length  (w_udp_length),
     .udp_checksum  (w_udp_checksum),
+    .meta_echo_port  (16'b0),
     .out_eth_valid     (out_eth_valid),
     .out_vlan_0_valid     (out_vlan_0_valid),
     .out_ipv4_valid     (out_ipv4_valid),
@@ -319,6 +324,7 @@ module echo_top #(
     .out_udp_dst_port  (out_udp_dst_port),
     .out_udp_length  (out_udp_length),
     .out_udp_checksum  (out_udp_checksum),
+    .out_meta_echo_port  (proc_out_meta_echo_port),
     .valid_out (proc_valid_out),
     .drop      (proc_drop)
   );
@@ -592,6 +598,15 @@ module echo_top #(
         proc_settle && !proc_committed && !proc_drop)
       $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");
   `endif
+  end
+
+  // ── Metadata sideband capture ──────────────────────────────────────────
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      out_meta_echo_port <= '0;
+    end else if (proc_settle && !proc_committed && !proc_drop) begin
+      out_meta_echo_port <= proc_out_meta_echo_port;
+    end
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────

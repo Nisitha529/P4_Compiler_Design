@@ -32,13 +32,13 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
-    extract_tcp = 0;
-    extract_udp = 0;
-    extract_mpls_2 = 0;
-    extract_mpls_0 = 0;
-    extract_ipv4 = 0;
-    extract_ethernet = 0;
     extract_mpls_1 = 0;
+    extract_tcp = 0;
+    extract_ipv4 = 0;
+    extract_mpls_2 = 0;
+    extract_ethernet = 0;
+    extract_mpls_0 = 0;
+    extract_udp = 0;
     done = 0;
     next_state = state;
 

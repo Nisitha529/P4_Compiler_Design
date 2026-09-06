@@ -69,6 +69,11 @@ module egress_processing_generated (
   output logic [31:0] out_ipv4_srcAddr,
   output logic [31:0] out_ipv4_dstAddr,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [8:0] out_meta_ingress_port,
+  output logic [7:0] out_meta_punt_reason,
+  output logic [7:0] out_meta_opcode,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -86,6 +91,11 @@ module egress_processing_generated (
   wire [16:0] chk0_fold1 = chk0_sum[15:0] + chk0_sum[31:16];
   wire [16:0] chk0_fold2 = {15'd0, chk0_fold1[16]} + {1'b0, chk0_fold1[15:0]};
   wire [15:0] chk0_value = ~chk0_fold2[15:0];
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_ingress_port = meta_ingress_port_w;
+  assign out_meta_punt_reason = meta_punt_reason_w;
+  assign out_meta_opcode = meta_opcode_w;
 
   // ---- Pipeline stage 0 ----
   always_comb begin

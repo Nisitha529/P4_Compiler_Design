@@ -75,6 +75,9 @@ module processing_generated (
   // Standard metadata outputs
   output logic [8:0] out_std_meta_egress_spec,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [13:0] out_meta_ecmp_select,
+
   // Control-plane write ports for table instances
   input  logic        ecmp_group_cp_wr_en,
   input  logic [7:0] ecmp_group_cp_wr_idx,
@@ -710,6 +713,9 @@ module processing_generated (
   // Table hit outputs
   assign ecmp_group_hit_out = ecmp_group_hit;
   assign ecmp_nhop_hit_out = ecmp_nhop_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_ecmp_select = meta_ecmp_select_w__st4;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin

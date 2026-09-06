@@ -1023,7 +1023,20 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    output logic [31:0]               s_axil_rdata,\n')
     f.write('    output logic [1:0]                s_axil_rresp,\n')
     f.write('    output logic                      s_axil_rvalid,\n')
-    f.write('    input  logic                      s_axil_rready\n')
+    f.write('    input  logic                      s_axil_rready')
+    # Metadata sideband. User metadata is the only channel an XSA app has for a
+    # per-packet decision -- xsa.p4's standard_metadata_t has no egress_spec /
+    # egress_port / ingress_port at all -- so it has to leave the shell. Exposed
+    # as plain outputs rather than packed into m_axis_tuser: that keeps the
+    # shell's AXI4-Stream contract untouched and lets an integrator map the
+    # fields to tuser (or anywhere else) themselves.
+    if ir.metadata_fields:
+        f.write(',\n\n    // Metadata sideband (valid while m_axis_tvalid for the packet)\n')
+        for i, mf in enumerate(ir.metadata_fields):
+            comma = ',' if i < len(ir.metadata_fields) - 1 else ''
+            f.write(f'    output logic [{mf.width-1}:0] out_meta_{mf.name}{comma}\n')
+    else:
+        f.write('\n')
     f.write(');\n\n')
 
     # ── Local parameters ───────────────────────────────────────────────────────
@@ -1262,7 +1275,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             if fld.width:
                 f.write(f'  wire [{fld.width-1}:0] out_{hname}_{fld.name};\n')
     f.write('  wire proc_valid_out;\n')
-    f.write('  wire proc_drop;\n\n')
+    f.write('  wire proc_drop;\n')
+    for mf in ir.metadata_fields:
+        f.write(f'  wire [{mf.width-1}:0] proc_out_meta_{mf.name};\n')
+    f.write('\n')
 
     # Plain (no-initializer) query-result wires declared here, BEFORE the
     # AXI4-Lite decoder -- the decoder's own read-side logic (query_status/
@@ -1342,6 +1358,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fld in inst.header_type.fields:
             if fld.width:
                 f.write(f'    .{hname}_{fld.name}  (w_{hname}_{fld.name}),\n')
+    # Metadata inputs. P4 user metadata is zero-initialized -- the parser
+    # never writes it on this path (parser_generated has no metadata ports at
+    # all), and xsa.p4 defines no architectural producer for it, so there is
+    # nothing else that could legitimately drive these.
+    for mf in ir.metadata_fields:
+        f.write(f'    .meta_{mf.name}  ({mf.width}\'b0),\n')
     # valid flag outputs
     for hname in all_hdr_names:
         f.write(f'    .out_{hname}_valid     (out_{hname}_valid),\n')
@@ -1353,6 +1375,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fld in inst.header_type.fields:
             if fld.width:
                 f.write(f'    .out_{hname}_{fld.name}  (out_{hname}_{fld.name}),\n')
+    for mf in ir.metadata_fields:
+        f.write(f'    .out_meta_{mf.name}  (proc_out_meta_{mf.name}),\n')
     # cp_wr ports (tables only -- counters have no cp_wr/cp_query/hit_out
     # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
@@ -1570,6 +1594,25 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");\n')
     f.write('  `endif\n')
     f.write('  end\n\n')
+
+    # ── Metadata sideband capture ──────────────────────────────────────────
+    # Latched at exactly the instant the processed headers are committed to
+    # pkt_buf_hdr -- the same one-shot condition -- so the sideband is stable
+    # for the whole TX of the packet it belongs to, rather than tracking
+    # u_proc's combinational output into the next packet. Dropped packets
+    # never commit, so a drop leaves the previous packet's value untouched
+    # (there is no TX to read it).
+    if ir.metadata_fields:
+        f.write('  // ── Metadata sideband capture ──────────────────────────────────────────\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        for mf in ir.metadata_fields:
+            f.write(f'      out_meta_{mf.name} <= \'0;\n')
+        f.write('    end else if (proc_settle && !proc_committed && !proc_drop) begin\n')
+        for mf in ir.metadata_fields:
+            f.write(f'      out_meta_{mf.name} <= proc_out_meta_{mf.name};\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
     # ── TX (egress) ────────────────────────────────────────────────────────────
     f.write('  // ── TX (egress) ──────────────────────────────────────────────────────────\n')

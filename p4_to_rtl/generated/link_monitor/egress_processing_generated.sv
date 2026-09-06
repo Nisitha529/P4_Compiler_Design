@@ -238,6 +238,10 @@ module egress_processing_generated (
   output logic [7:0] out_probe_fwd_8_egress_spec,
   output logic [7:0] out_probe_fwd_9_egress_spec,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [7:0] out_meta__egress_spec0,
+  output logic [7:0] out_meta__parser_metadata_remaining1,
+
   // Control-plane write ports for table instances
   input  logic        swid_cp_wr_en,
   input  logic [0:0] swid_cp_wr_action,
@@ -287,6 +291,10 @@ module egress_processing_generated (
 
   // Table hit outputs
   assign swid_hit_out = swid_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta__egress_spec0 = meta__egress_spec0_w;
+  assign out_meta__parser_metadata_remaining1 = meta__parser_metadata_remaining1_w;
 
   // ---- Pipeline stage 0 ----
   always_comb begin

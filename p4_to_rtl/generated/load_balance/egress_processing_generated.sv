@@ -75,6 +75,9 @@ module egress_processing_generated (
   output logic [15:0] out_tcp_checksum,
   output logic [15:0] out_tcp_urgentPtr,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [13:0] out_meta_ecmp_select,
+
   // Control-plane write ports for table instances
   input  logic        send_frame_cp_wr_en,
   input  logic [7:0] send_frame_cp_wr_idx,
@@ -376,6 +379,9 @@ module egress_processing_generated (
 
   // Table hit outputs
   assign send_frame_hit_out = send_frame_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_ecmp_select = meta_ecmp_select_w__st2;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin

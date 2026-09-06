@@ -133,6 +133,26 @@ module processing_generated (
   // Standard metadata outputs
   output logic [8:0] out_std_meta_egress_port,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [8:0] out_meta_ingress_port,
+  output logic [8:0] out_meta_egress_port,
+  output logic [31:0] out_meta_packet_length,
+  output logic [2:0] out_meta_priority,
+  output logic [15:0] out_meta_mcast_grp,
+  output logic [15:0] out_meta_egress_rid,
+  output logic [0:0] out_meta_checksum_error,
+  output logic [31:0] out_meta_enq_timestamp,
+  output logic [18:0] out_meta_enq_qdepth,
+  output logic [31:0] out_meta_deq_timedelta,
+  output logic [18:0] out_meta_deq_qdepth,
+  output logic [47:0] out_meta_ingress_global_timestamp,
+  output logic [47:0] out_meta_egress_global_timestamp,
+  output logic [7:0] out_meta_ttl,
+  output logic [31:0] out_meta_next_hop,
+  output logic [15:0] out_meta_mpls_label_swap,
+  output logic [0:0] out_meta_drop,
+  output logic [0:0] out_meta_ecmp_select,
+
   // Control-plane write ports for table instances
   input  logic        port_policy_cp_wr_en,
   input  logic [5:0] port_policy_cp_wr_idx,
@@ -2286,6 +2306,26 @@ module processing_generated (
   assign qos_policy_hit_out = qos_policy_hit;
   assign ipv4_route_hit_out = ipv4_route_hit;
   assign ecmp_group_hit_out = ecmp_group_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_ingress_port = meta_ingress_port_w__st8;
+  assign out_meta_egress_port = meta_egress_port_w__st8;
+  assign out_meta_packet_length = meta_packet_length_w__st8;
+  assign out_meta_priority = meta_priority_w__st8;
+  assign out_meta_mcast_grp = meta_mcast_grp_w__st8;
+  assign out_meta_egress_rid = meta_egress_rid_w__st8;
+  assign out_meta_checksum_error = meta_checksum_error_w__st8;
+  assign out_meta_enq_timestamp = meta_enq_timestamp_w__st8;
+  assign out_meta_enq_qdepth = meta_enq_qdepth_w__st8;
+  assign out_meta_deq_timedelta = meta_deq_timedelta_w__st8;
+  assign out_meta_deq_qdepth = meta_deq_qdepth_w__st8;
+  assign out_meta_ingress_global_timestamp = meta_ingress_global_timestamp_w__st8;
+  assign out_meta_egress_global_timestamp = meta_egress_global_timestamp_w__st8;
+  assign out_meta_ttl = meta_ttl_w__st8;
+  assign out_meta_next_hop = meta_next_hop_w__st8;
+  assign out_meta_mpls_label_swap = meta_mpls_label_swap_w__st8;
+  assign out_meta_drop = meta_drop_w__st8;
+  assign out_meta_ecmp_select = meta_ecmp_select_w__st8;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin

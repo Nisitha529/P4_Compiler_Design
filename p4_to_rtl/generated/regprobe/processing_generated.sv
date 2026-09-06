@@ -23,6 +23,10 @@ module processing_generated (
   output logic [47:0] out_eth_src,
   output logic [15:0] out_eth_etype,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [0:0] out_meta_v1,
+  output logic [31:0] out_meta_pos,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -48,6 +52,10 @@ module processing_generated (
   // Register read wires (isolated via assign)
   logic [0:0] bloom_1_rd_meta_v1;
   assign bloom_1_rd_meta_v1 = bloom_1_mem[eth_dst[31:0]];
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_v1 = meta_v1_w;
+  assign out_meta_pos = meta_pos_w;
 
   // ---- Pipeline stage 0 ----
   always_comb begin
@@ -75,7 +83,6 @@ module processing_generated (
       bloom_1_wr_data = eth_dst[0:0];
     end
     meta_v1_w = bloom_1_rd_meta_v1;
-    out_eth_etype = 16'(meta_v1_w);
   end
 
   // Register write-back (initialized via initial block above)

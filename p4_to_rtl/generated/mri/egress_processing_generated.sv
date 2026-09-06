@@ -120,6 +120,10 @@ module egress_processing_generated (
   output logic [31:0] out_swtraces_8_swid,
   output logic [31:0] out_swtraces_8_qdepth,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [15:0] out_meta__ingress_metadata_count0,
+  output logic [15:0] out_meta__parser_metadata_remaining1,
+
   // Control-plane write ports for table instances
   input  logic        swtrace_cp_wr_en,
   input  logic [0:0] swtrace_cp_wr_action,
@@ -162,6 +166,10 @@ module egress_processing_generated (
 
   // Table hit outputs
   assign swtrace_hit_out = swtrace_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta__ingress_metadata_count0 = meta__ingress_metadata_count0_w;
+  assign out_meta__parser_metadata_remaining1 = meta__parser_metadata_remaining1_w;
 
   // ---- Pipeline stage 0 ----
   always_comb begin

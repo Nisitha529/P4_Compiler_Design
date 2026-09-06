@@ -82,6 +82,9 @@ module processing_generated (
   output logic [15:0] out_udp_length,
   output logic [15:0] out_udp_checksum,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [15:0] out_meta_echo_port,
+
   output logic        valid_out,
   output logic        drop
 );
@@ -92,6 +95,9 @@ module processing_generated (
 
   // Metadata shadow locals (writable copies of metadata inputs)
   logic [15:0] meta_echo_port_w;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_echo_port = meta_echo_port_w;
 
   // ---- Pipeline stage 0 ----
   always_comb begin

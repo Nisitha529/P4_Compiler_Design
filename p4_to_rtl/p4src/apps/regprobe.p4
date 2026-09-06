@@ -14,16 +14,14 @@
 // a constant write VALUE additionally makes every flip-flop "stuck at VCC" in
 // the default async-read form, which would flatter the --register-ram control).
 //
-// The read result is also written back to a header field. That is a workaround
-// for a real, separate compiler gap, not stylistic: emit_processing.py emits
-// user metadata as INPUT ports only (`input logic [0:0] meta_v1`) with no
-// corresponding `out_meta_*` output, so anything a control block leaves in
-// metadata cannot leave the module. On v1model that is masked -- the forwarding
-// decision lands in standard_metadata.egress_spec, which IS an output -- but
-// xsa.p4's standard_metadata_t has no egress_spec at all, so user metadata is
-// the only channel an XSA app has. Fixing that (emit_processing.py output
-// ports + emit_top.py wiring) is a prerequisite for porting the firewall to
-// XSA; until then this probe keeps its result observable via a header field.
+// The read result is left in METADATA only -- deliberately. That is the check
+// that user-metadata OUTPUT ports work: user metadata used to be emitted as
+// input-only (`input logic [0:0] meta_v1`, no `out_meta_*`), so this value
+// could not leave the module and Quartus deleted the entire 4096x1 RAM as dead
+// logic (0 memory bits). xsa.p4's standard_metadata_t has no egress_spec /
+// egress_port / ingress_port at all, so user metadata is the ONLY channel an
+// XSA app has for a per-packet decision -- which is why this had to be fixed
+// rather than worked around.
 // ============================================================================
 #include <core.p4>
 #include "xsa_ext.p4"
@@ -48,11 +46,6 @@ control MyProcessing(inout headers hdr, inout metadata meta,
             bloom_1.write((bit<32>)hdr.eth.src[31:0], hdr.eth.dst[0:0]);
         }
         bloom_1.read(meta.v1, (bit<32>)hdr.eth.dst[31:0]);
-        // Route the result to a HEADER field, not just metadata: the compiler
-        // currently emits user metadata as input-only (no out_meta_* port), so
-        // a result left in meta.v1 is dead and synthesis deletes the whole RAM.
-        // See the note in the file header.
-        hdr.eth.etype = (bit<16>)meta.v1;
     }
 }
 

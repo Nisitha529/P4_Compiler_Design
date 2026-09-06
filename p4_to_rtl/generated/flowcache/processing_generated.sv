@@ -72,6 +72,11 @@ module processing_generated (
   // Standard metadata outputs
   output logic [8:0] out_std_meta_egress_spec,
 
+  // Metadata outputs (final value after the last stage)
+  output logic [8:0] out_meta_ingress_port,
+  output logic [7:0] out_meta_punt_reason,
+  output logic [7:0] out_meta_opcode,
+
   // Control-plane write ports for table instances
   input  logic        switch_0_table_cp_wr_en,
   input  logic [0:0] switch_0_table_cp_wr_idx,
@@ -413,6 +418,11 @@ module processing_generated (
   // Table hit outputs
   assign switch_0_table_hit_out = switch_0_table_hit;
   assign flow_cache_hit_out = flow_cache_hit;
+
+  // Metadata outputs (final value after the last stage)
+  assign out_meta_ingress_port = meta_ingress_port_w__st2;
+  assign out_meta_punt_reason = meta_punt_reason_w__st2;
+  assign out_meta_opcode = meta_opcode_w__st2;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin

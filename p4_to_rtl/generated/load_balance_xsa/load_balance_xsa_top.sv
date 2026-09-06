@@ -36,7 +36,11 @@ module load_balance_xsa_top #(
     output logic [31:0]               s_axil_rdata,
     output logic [1:0]                s_axil_rresp,
     output logic                      s_axil_rvalid,
-    input  logic                      s_axil_rready
+    input  logic                      s_axil_rready,
+
+    // Metadata sideband (valid while m_axis_tvalid for the packet)
+    output logic [13:0] out_meta_ecmp_select,
+    output logic [8:0] out_meta_egress_port
 );
 
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
@@ -220,6 +224,8 @@ module load_balance_xsa_top #(
   wire [15:0] out_tcp_urgentPtr;
   wire proc_valid_out;
   wire proc_drop;
+  wire [13:0] proc_out_meta_ecmp_select;
+  wire [8:0] proc_out_meta_egress_port;
 
   wire ecmp_nhop_cp_query_busy;
   wire ecmp_nhop_cp_query_hit;
@@ -458,6 +464,8 @@ module load_balance_xsa_top #(
     .tcp_window  (w_tcp_window),
     .tcp_checksum  (w_tcp_checksum),
     .tcp_urgentPtr  (w_tcp_urgentPtr),
+    .meta_ecmp_select  (14'b0),
+    .meta_egress_port  (9'b0),
     .out_ethernet_valid     (out_ethernet_valid),
     .out_ipv4_valid     (out_ipv4_valid),
     .out_tcp_valid     (out_tcp_valid),
@@ -487,6 +495,8 @@ module load_balance_xsa_top #(
     .out_tcp_window  (out_tcp_window),
     .out_tcp_checksum  (out_tcp_checksum),
     .out_tcp_urgentPtr  (out_tcp_urgentPtr),
+    .out_meta_ecmp_select  (proc_out_meta_ecmp_select),
+    .out_meta_egress_port  (proc_out_meta_egress_port),
     .ecmp_group_cp_wr_en  (ecmp_group_cp_wr_en),
     .ecmp_group_cp_wr_idx (ecmp_group_cp_wr_idx),
     .ecmp_group_cp_wr_action (ecmp_group_cp_wr_action),
@@ -756,6 +766,17 @@ module load_balance_xsa_top #(
         proc_settle && !proc_committed && !proc_drop)
       $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");
   `endif
+  end
+
+  // ── Metadata sideband capture ──────────────────────────────────────────
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      out_meta_ecmp_select <= '0;
+      out_meta_egress_port <= '0;
+    end else if (proc_settle && !proc_committed && !proc_drop) begin
+      out_meta_ecmp_select <= proc_out_meta_ecmp_select;
+      out_meta_egress_port <= proc_out_meta_egress_port;
+    end
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────

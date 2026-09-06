@@ -36,7 +36,11 @@ module regprobe_top #(
     output logic [31:0]               s_axil_rdata,
     output logic [1:0]                s_axil_rresp,
     output logic                      s_axil_rvalid,
-    input  logic                      s_axil_rready
+    input  logic                      s_axil_rready,
+
+    // Metadata sideband (valid while m_axis_tvalid for the packet)
+    output logic [0:0] out_meta_v1,
+    output logic [31:0] out_meta_pos
 );
 
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
@@ -159,6 +163,8 @@ module regprobe_top #(
   wire [15:0] out_eth_etype;
   wire proc_valid_out;
   wire proc_drop;
+  wire [0:0] proc_out_meta_v1;
+  wire [31:0] proc_out_meta_pos;
 
 
 
@@ -170,10 +176,14 @@ module regprobe_top #(
     .eth_dst  (w_eth_dst),
     .eth_src  (w_eth_src),
     .eth_etype  (w_eth_etype),
+    .meta_v1  (1'b0),
+    .meta_pos  (32'b0),
     .out_eth_valid     (out_eth_valid),
     .out_eth_dst  (out_eth_dst),
     .out_eth_src  (out_eth_src),
     .out_eth_etype  (out_eth_etype),
+    .out_meta_v1  (proc_out_meta_v1),
+    .out_meta_pos  (proc_out_meta_pos),
     .valid_out (proc_valid_out),
     .drop      (proc_drop)
   );
@@ -347,6 +357,17 @@ module regprobe_top #(
         proc_settle && !proc_committed && !proc_drop)
       $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");
   `endif
+  end
+
+  // ── Metadata sideband capture ──────────────────────────────────────────
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      out_meta_v1 <= '0;
+      out_meta_pos <= '0;
+    end else if (proc_settle && !proc_committed && !proc_drop) begin
+      out_meta_v1 <= proc_out_meta_v1;
+      out_meta_pos <= proc_out_meta_pos;
+    end
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────

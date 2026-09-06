@@ -60,6 +60,14 @@ module tb_load_balance_xsa;
   logic  [2:0] tcp_res = 0, tcp_ecn = 0;
   logic  [5:0] tcp_ctrl = 0;
   logic [15:0] tcp_win = 0, tcp_cks = 0, tcp_urg = 0;
+  // Metadata OUTPUTS -- the forwarding decision. xsa.p4's standard_metadata_t
+  // has no egress_spec/egress_port, so user metadata is the only channel this
+  // app has to report the port it chose; these ports are what make it
+  // observable at all (before they existed the value was dead and synthesis
+  // deleted the logic feeding it).
+  logic [13:0] o_meta_ecmp;
+  logic  [8:0] o_meta_port;
+
   logic [13:0] meta_ecmp_in = 0;
   logic  [8:0] meta_port_in = 0;
 
@@ -108,6 +116,7 @@ module tb_load_balance_xsa;
     .tcp_ecn(tcp_ecn), .tcp_ctrl(tcp_ctrl), .tcp_window(tcp_win),
     .tcp_checksum(tcp_cks), .tcp_urgentPtr(tcp_urg),
     .meta_ecmp_select(meta_ecmp_in), .meta_egress_port(meta_port_in),
+    .out_meta_ecmp_select(o_meta_ecmp), .out_meta_egress_port(o_meta_port),
     .out_ethernet_valid(o_eth_valid), .out_ipv4_valid(o_ipv4_valid), .out_tcp_valid(o_tcp_valid),
     .out_ethernet_dstAddr(o_eth_dst), .out_ethernet_srcAddr(o_eth_src),
     .out_ethernet_etherType(o_eth_type),
@@ -218,6 +227,8 @@ module tb_load_balance_xsa;
     chk("T1: src MAC rewritten by send_frame(port 3)", o_eth_src === 48'h0000DEAD0003);
     chk("T1: TTL decremented", o_ip_ttl === 8'd63);
     chk("T1: IPv4 checksum recomputed", o_ip_csum === 16'h53d4);
+    chk("T1: out_meta_ecmp_select == bucket 4", o_meta_ecmp === 14'd4);
+    chk("T1: out_meta_egress_port == 3",        o_meta_port === 9'd3);
 
     // ---- T2: same flow but different source port -> different bucket --------
     $display("\n== T2: different flow hashes to a different bucket ==");
@@ -227,6 +238,8 @@ module tb_load_balance_xsa;
     chk("T2: dst IP rewritten to bucket-6 next hop",  o_ip_dst  === 32'h0A000002);
     chk("T2: src MAC rewritten by send_frame(port 5)", o_eth_src === 48'h0000DEAD0005);
     chk("T2: IPv4 checksum recomputed", o_ip_csum === 16'h53d3);
+    chk("T2: out_meta_ecmp_select == bucket 6", o_meta_ecmp === 14'd6);
+    chk("T2: out_meta_egress_port == 5",        o_meta_port === 9'd5);
 
     // ---- T3: LPM prefix length must actually be honoured --------------------
     $display("\n== T3: /8 entry must NOT match 11.0.0.5 ==");
@@ -239,6 +252,11 @@ module tb_load_balance_xsa;
     chk("T3: TTL untouched",     o_ip_ttl  === 8'd64);
     chk("T3: checksum still recomputed over the unmodified header",
         o_ip_csum === 16'h51d0);
+    // Miss -> neither set_ecmp_select nor set_nhop runs, so both metadata
+    // fields must still read their zero-init value, not stage-6 garbage or a
+    // leftover from T2.
+    chk("T3: out_meta_ecmp_select stays 0 on miss", o_meta_ecmp === 14'd0);
+    chk("T3: out_meta_egress_port stays 0 on miss", o_meta_port === 9'd0);
 
     // ---- T4: drop_pkt drives the real drop output ---------------------------
     $display("\n== T4: drop action asserts drop ==");
