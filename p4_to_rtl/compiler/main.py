@@ -12,6 +12,7 @@ from emit_processing import emit_processing
 from emit_deparser import emit_deparser
 from emit_table import emit_tables, _find_processing_ctrl
 from emit_counters import emit_counter_module
+from emit_user_extern import emit_user_extern_module
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
@@ -425,6 +426,25 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
                     out_counter = os.path.join(out_dir, f"{cnt.name}_counter.sv")
                     emit_counter_module(cnt, out_counter)
                     print(f"[SUCCESS] Counter RTL      -> {out_counter}")
+
+            # UserExtern placeholder bodies. Written ONCE and never
+            # overwritten -- once the user edits one it is their source file,
+            # and silently regenerating it would destroy their block. The
+            # compiler still owns the latency staging and the instantiation in
+            # processing_generated either way; only the body lives here.
+            if ingress_ctrl and getattr(ingress_ctrl, 'user_externs', None):
+                print("[INFO] Generating UserExtern placeholders...")
+                for ue in ingress_ctrl.user_externs:
+                    out_ue = os.path.join(out_dir, f"{ue.name}_user_extern.sv")
+                    status = emit_user_extern_module(ue, out_ue)
+                    if status == 'created':
+                        print(f"[SUCCESS] UserExtern stub  -> {out_ue}")
+                        print(f"[NOTE]    {ue.name}: PLACEHOLDER body "
+                              f"(identity delayed {ue.latency} cycle(s)) -- "
+                              f"replace it with your own logic.")
+                    else:
+                        print(f"[KEEP]    UserExtern body  -> {out_ue} "
+                              f"(existing file, not overwritten)")
     else:
         print("[SKIP] No control blocks — skipping processing RTL")
 

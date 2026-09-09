@@ -11,7 +11,7 @@ from ir import (
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
     ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
-    IfStatement, TableApply, ChecksumUpdate, HashDecl,
+    IfStatement, TableApply, ChecksumUpdate, HashDecl, UserExternDecl,
 )
 
 
@@ -750,7 +750,8 @@ def _collect_name_maps(body_text):
 
 def _parse_control_body(body_text, ctrl_name):
     """
-    Returns (local_vars, registers, counters, hashes, actions, tables, apply_text, name_map).
+    Returns (local_vars, registers, counters, hashes, user_externs,
+             actions, tables, apply_text, name_map).
     actions : [(local_name, Action, is_hidden)]
     tables  : [(local_name, Table|None, is_hidden, default_action_local_name)]
     """
@@ -845,6 +846,27 @@ def _parse_control_body(body_text, ctrl_name):
         canon = name_map.get(local_name, canon)
         hashes.append(HashDecl(canon, algo))
 
+    # ── UserExtern externs ───────────────────────────────────────────────────
+    # Match: @ann UserExtern<bit<I>, bit<O>>(16wN) name;
+    # Confirmed against a real p4test MidEnd dump:
+    #   @name("MyProcessing.my_lookup") UserExtern<bit<48>, bit<16>>(16w3) my_lookup_0;
+    # The constructor's `bit<16> fixed_latency_in_cycles` prints WIDTH-PREFIXED
+    # (`16w3`), the same way Counter's n_counters prints `32w8192` and
+    # register's size prints `32w4096` -- hence `(?:\d+w)?`.
+    user_externs = []
+    for m in re.finditer(
+        r'(' + _ANN + r')\bUserExtern\s*<\s*bit<(\d+)>\s*,\s*bit<(\d+)>\s*>\s*'
+        r'\(\s*(?:\d+w)?(\d+)\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text   = m.group(1)
+        in_w       = int(m.group(2))
+        out_w      = int(m.group(3))
+        latency    = int(m.group(4))
+        local_name = m.group(5)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        user_externs.append(UserExternDecl(canon, in_w, out_w, latency))
+
     # ── Actions ───────────────────────────────────────────────────────────────
     for m in re.finditer(r'(' + _ANN + r')\baction\s+(\w+)\s*\(', text):
         ann_text = m.group(1)
@@ -932,7 +954,8 @@ def _parse_control_body(body_text, ctrl_name):
 
             tables_out.append((local_name, tbl, False, None))
 
-    return local_vars, registers, counters, hashes, actions_out, tables_out, apply_text, name_map
+    return (local_vars, registers, counters, hashes, user_externs,
+            actions_out, tables_out, apply_text, name_map)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1086,7 +1109,8 @@ def ingest_p4ir(p4_text: str) -> IR:
     # 5. Match-action control (ingress)
     ctrl_body = _find_control_body(text, ingress_name)
     if ctrl_body:
-        local_vars, registers, counters, hashes, actions_raw, tables_raw, apply_text, name_map = \
+        (local_vars, registers, counters, hashes, user_externs,
+         actions_raw, tables_raw, apply_text, name_map) = \
             _parse_control_body(ctrl_body, ingress_name)
 
         ctrl = ControlBlock(ingress_name)
@@ -1102,6 +1126,9 @@ def ingest_p4ir(p4_text: str) -> IR:
 
         for h in hashes:
             ctrl.add_hash(h)
+
+        for ue in user_externs:
+            ctrl.add_user_extern(ue)
 
         # Build action lookup dicts
         actions_by_local = {}

@@ -210,6 +210,23 @@ class CounterDecl:
         self.counter_type = counter_type  # 'PACKETS' | 'BYTES' | 'PACKETS_AND_BYTES'
 
 
+class UserExternDecl:
+    """A UserExtern<I, O>(fixed_latency_in_cycles) name; extern declaration.
+
+    xsa.p4's escape hatch: an opaque, user-implemented block. The architecture
+    deliberately provides no `register`/meter/stateful primitive, so UserExtern
+    is the ONLY sanctioned way for an XSA program to express stateful or
+    multi-cycle logic. The compiler never sees inside it; what the compiler
+    owns -- and the user cannot fix from their own RTL -- is honouring the
+    declared latency, i.e. holding the rest of the packet context in step for
+    exactly that many cycles."""
+    def __init__(self, name, in_width, out_width, latency):
+        self.name      = name
+        self.in_width  = in_width    # width of the I type argument
+        self.out_width = out_width   # width of the O type argument
+        self.latency   = latency     # fixed_latency_in_cycles, from the ctor
+
+
 class HashDecl:
     """A Checksum<bit<W>>(HashAlgorithm_t.ALGO) name; extern declaration
     (xsa.p4's generic hash-algorithm-parameterized checksum extern -- distinct
@@ -245,6 +262,7 @@ class ControlBlock:
         self.registers  = []     # list[RegisterDecl]
         self.counters   = []     # list[CounterDecl]
         self.hashes     = []     # list[HashDecl]
+        self.user_externs = []   # list[UserExternDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -266,6 +284,9 @@ class ControlBlock:
 
     def add_hash(self, h):
         self.hashes.append(h)
+
+    def add_user_extern(self, ue):
+        self.user_externs.append(ue)
 
 
 # ============================================================

@@ -432,7 +432,7 @@ def _inline(action_name, amap, depth=0):
     return result
 
 
-def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None):
+def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None, extern_ctx=None):
     for stmt in body_stmts:
         if isinstance(stmt, Assignment):
             lhs = _lhs_sig(stmt.lhs)
@@ -441,7 +441,7 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None):
                 rhs = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, rhs)
             f.write(f'{ind}{lhs} = {_map_expr(rhs, cmap)};\n')
         elif isinstance(stmt, ExternCall):
-            _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info)
+            _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info, extern_ctx)
         elif isinstance(stmt, IfStatement):
             # A ternary/if-else inside a single action body -- see
             # _translate_primitives() in ingest_bmv2.py for how bmv2's
@@ -450,11 +450,11 @@ def _emit_inlined_body(f, body_stmts, pmap, cmap, ind, stack_info=None):
             for pname, psig in pmap.items():
                 cond = re.sub(r'(?<!\.)\b' + re.escape(pname) + r'\b', psig, cond)
             f.write(f'{ind}if ({_map_cond(cond, cmap)}) begin\n')
-            _emit_inlined_body(f, stmt.then_body, pmap, cmap, ind + '  ', stack_info)
+            _emit_inlined_body(f, stmt.then_body, pmap, cmap, ind + '  ', stack_info, extern_ctx)
             f.write(f'{ind}end\n')
             if stmt.else_body:
                 f.write(f'{ind}else begin\n')
-                _emit_inlined_body(f, stmt.else_body, pmap, cmap, ind + '  ', stack_info)
+                _emit_inlined_body(f, stmt.else_body, pmap, cmap, ind + '  ', stack_info, extern_ctx)
                 f.write(f'{ind}end\n')
 
 
@@ -512,7 +512,7 @@ def _collect_reg_reads(ctrl):
     return reads
 
 
-def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
+def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None, extern_ctx=None):
     """Emit RTL for extern calls: setValid/setInvalid, mark_to_drop, hash, register.read/write."""
     name = stmt.name
     stack_info = stack_info or {}
@@ -592,12 +592,33 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
             f.write(f'{ind}{obj}_incr_en  = 1\'b1;\n')
             f.write(f'{ind}{obj}_incr_idx = {idx};\n')
             return
-        if method == 'apply' and len(stmt.args) >= 2:
+        ctx = extern_ctx or {}
+        if method == 'apply' and obj in ctx.get('user_externs', {}):
+            # UserExtern.apply(data_in, result) -- the OPPOSITE argument order
+            # from Checksum.apply, and not a function call at all: the block is
+            # an opaque module instantiated at module scope, and its input was
+            # presented `latency` stages ago (see _split_stages_for_user_externs
+            # and the instance emission in _write_module). All that happens at
+            # the call site is reading the result the module has by now
+            # produced. args[1] is an out-parameter, so it goes through
+            # _lhs_sig -- a header out-param must target out_<hdr>_<field>, not
+            # the read-side name.
+            dest = _lhs_sig(_subst_params(stmt.args[1], pmap))
+            f.write(f'{ind}{dest} = {obj}_result;\n')
+            return
+        if method == 'apply' and obj in ctx.get('hashes', set()) and len(stmt.args) >= 2:
             # Checksum<H>.apply(dest, field, field, ...) -- ingest normalizes
             # the (data, result) pair into dest-first flat operands. The CRC
             # network itself is a module-scope function emitted once; calling
             # it here keeps the operands subject to the normal per-stage
             # renaming, so the hash reads this stage's values.
+            #
+            # The `obj in hashes` guard is load-bearing: without it this branch
+            # also swallowed UserExtern.apply(), silently emitting
+            # `<in-param> = <inst>_hash({<out-param>})` -- arguments inverted,
+            # no module instantiated, declared latency ignored, and a call to a
+            # function that was never defined. It compiled "successfully" and
+            # then failed at elaboration.
             dest = _lhs_sig(_subst_params(stmt.args[0], pmap))
             operands = ', '.join(_subst(a, pmap, cmap) for a in stmt.args[1:])
             f.write(f'{ind}{dest} = {obj}_hash({{{operands}}});\n')
@@ -620,7 +641,7 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None):
 # Table case-statement emitter
 # ============================================================
 
-def _emit_table_case(f, table, amap, ind, cmap, stack_info=None):
+def _emit_table_case(f, table, amap, ind, cmap, stack_info=None, extern_ctx=None):
     act_ids      = _table_action_ids(table)
     params       = _table_params(table, amap)
     n_acts       = max(act_ids.values()) + 1 if act_ids else 1
@@ -646,7 +667,7 @@ def _emit_table_case(f, table, amap, ind, cmap, stack_info=None):
             pname = p.name if isinstance(p, ActionParam) else str(p)
             pmap[pname] = f'{table.name}_p_{pname}'
         f.write(f'{ind}    {id_w}\'d{aid}: begin // {aname}\n')
-        _emit_inlined_body(f, action.body, pmap, cmap, ind + '      ', stack_info)
+        _emit_inlined_body(f, action.body, pmap, cmap, ind + '      ', stack_info, extern_ctx)
         f.write(f'{ind}    end\n')
 
     f.write(f'{ind}    default: ; // default = {default_name}\n')
@@ -657,7 +678,7 @@ def _emit_table_case(f, table, amap, ind, cmap, stack_info=None):
         action = amap.get(default_name)
         f.write(f' else begin // {default_name} on miss\n')
         if action:
-            _emit_inlined_body(f, action.body, {}, cmap, ind + '  ', stack_info)
+            _emit_inlined_body(f, action.body, {}, cmap, ind + '  ', stack_info, extern_ctx)
         f.write(f'{ind}end\n')
     else:
         f.write('\n')
@@ -691,12 +712,16 @@ def _tbl_refs_in_cond(cond):
     return {m.group(1) for m in re.finditer(r'(\w+)\.apply\(\)\.(\w+)', cond)}
 
 
-def _split_stage(stmts, split_name, fwd_counter, reg_read=False):
+def _split_stage(stmts, split_name, fwd_counter, reg_read=False, extern_method=None):
     """Split a statement list in two at `split_name`, so the matched
     statement and everything after it run one stage later.
 
     reg_read=False (default): split_name is a table; the split point is its
     TableApply (or an IfStatement whose condition consumes its result).
+
+    extern_method='apply': split_name is a *UserExtern*, and the split point is
+    its `.apply()` call -- same shape as the register case below, but the
+    caller inserts `latency` no-op stages after the boundary instead of one.
 
     reg_read=True: split_name is a *register*, and the split point is its
     `.read()` call. Used only when register memories are emitted with a real
@@ -713,8 +738,9 @@ def _split_stage(stmts, split_name, fwd_counter, reg_read=False):
             after.append(s)
             continue
 
-        if reg_read:
-            if isinstance(s, ExternCall) and s.name == f'{split_name}.read':
+        if reg_read or extern_method:
+            meth = extern_method or 'read'
+            if isinstance(s, ExternCall) and s.name == f'{split_name}.{meth}':
                 found = True
                 after.append(s)
                 continue
@@ -724,7 +750,7 @@ def _split_stage(stmts, split_name, fwd_counter, reg_read=False):
             continue
 
         if isinstance(s, IfStatement):
-            if not reg_read and split_name in _tbl_refs_in_cond(s.condition):
+            if not (reg_read or extern_method) and split_name in _tbl_refs_in_cond(s.condition):
                 found = True
                 after.append(s)
                 continue
@@ -949,6 +975,96 @@ def _split_stages_for_reg_reads(stages, boundary_forwards, reg_names, fwd_counte
     return new_stages, new_bounds
 
 
+def _collect_user_extern_applies(ctrl, ue_names):
+    """Every UserExtern .apply(data_in, result) call site in this control, as
+    (instance_name, raw_in_expr, raw_out_expr). Args are the raw P4 texts (e.g.
+    'hdr.eth.dst'); the caller maps and stage-renames them."""
+    stmts = list(ctrl.statements)
+    for a in ctrl.actions:
+        stmts.extend(a.body)
+    out = []
+    seen = set()
+    for st in _walk_extern_calls(stmts):
+        if '.' not in st.name:
+            continue
+        obj, method = st.name.rsplit('.', 1)
+        if method != 'apply' or obj not in ue_names or len(st.args) < 2:
+            continue
+        if obj in seen:
+            continue
+        seen.add(obj)
+        out.append((obj, st.args[0], st.args[1]))
+    return out
+
+
+def _find_first_user_extern(stmts, ue_names):
+    """Name of the first UserExtern whose .apply() appears in this statement
+    list (descending into IfStatement branches), or None."""
+    for s in stmts:
+        if isinstance(s, ExternCall) and '.' in s.name:
+            obj, method = s.name.rsplit('.', 1)
+            if method == 'apply' and obj in ue_names:
+                return obj
+        elif isinstance(s, IfStatement):
+            r = _find_first_user_extern(s.then_body, ue_names)
+            if r:
+                return r
+            r = _find_first_user_extern(s.else_body, ue_names)
+            if r:
+                return r
+    return None
+
+
+def _split_stages_for_user_externs(stages, boundary_forwards, ue_map, fwd_counter):
+    """Insert a pipeline boundary plus `latency` no-op stages in front of every
+    UserExtern .apply(), so the block's declared fixed_latency_in_cycles is
+    actually honoured.
+
+    This is the half of the UserExtern contract the compiler owns and the user
+    cannot fix from inside their own module: the user writes a block that takes
+    N cycles, but only the compiler can hold the REST of the packet context --
+    every header field, metadata shadow, local and valid bit -- in step for
+    those N cycles, so that the statements after the .apply() see a consistent
+    packet.
+
+    Shape is deliberately the same as _schedule_stages' table handling (split,
+    then append `n` empty stages whose boundaries carry everything forward with
+    no logic of their own) and _split_stages_for_reg_reads' bookkeeping. The
+    input expression is presented in the stage BEFORE the boundary, the block
+    captures it on that clock edge, and the .apply() statement -- which only
+    reads {name}_result -- lands `latency` stages later, where the result has
+    settled."""
+    new_stages, new_bounds = [], []
+    for i, stg in enumerate(stages):
+        remaining = stg
+        pending = set(ue_map)
+        while True:
+            target = _find_first_user_extern(remaining, pending) if remaining else None
+            if target is None:
+                new_stages.append(remaining)
+                break
+            before, after, fwd, found = _split_stage(
+                remaining, target, fwd_counter, extern_method='apply')
+            if not found:
+                new_stages.append(remaining)
+                break
+            new_stages.append(before)
+            new_bounds.append(fwd)
+            # `latency` cycles between presenting data_in and the result being
+            # readable. The boundary just appended is the first of them, so
+            # latency-1 further no-op hops follow.
+            for _ in range(max(0, ue_map[target].latency - 1)):
+                new_stages.append([])
+                new_bounds.append([])
+            # One boundary per instance per stage; without this the loop would
+            # re-split forever on a second .apply() of the same instance.
+            pending.discard(target)
+            remaining = after
+        if i < len(boundary_forwards):
+            new_bounds.append(boundary_forwards[i])
+    return new_stages, new_bounds
+
+
 def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_of):
     """Refines Phase A's (stages, boundary_forwards) by budget-splitting
     each non-empty stage. Phase A's empty no-op pass-through stages (one
@@ -976,7 +1092,7 @@ def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_o
 # Apply-block statement emitter
 # ============================================================
 
-def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
+def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None, extern_ctx=None):
     for stmt in stmts:
 
         if isinstance(stmt, IfStatement):
@@ -988,19 +1104,19 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
                 tname = tm.group(1)
                 tbl   = next((t for t in ctrl_tables if t.name == tname), None)
                 if tbl:
-                    _emit_table_case(f, tbl, amap, ind + '  ', cmap, stack_info)
+                    _emit_table_case(f, tbl, amap, ind + '  ', cmap, stack_info, extern_ctx)
 
-            _emit_stmts(f, stmt.then_body, amap, ind + '  ', cmap, ctrl_tables, stack_info)
+            _emit_stmts(f, stmt.then_body, amap, ind + '  ', cmap, ctrl_tables, stack_info, extern_ctx)
             f.write(f'{ind}end\n')
             if stmt.else_body:
                 f.write(f'{ind}else begin\n')
-                _emit_stmts(f, stmt.else_body, amap, ind + '  ', cmap, ctrl_tables, stack_info)
+                _emit_stmts(f, stmt.else_body, amap, ind + '  ', cmap, ctrl_tables, stack_info, extern_ctx)
                 f.write(f'{ind}end\n')
 
         elif isinstance(stmt, TableApply):
             tbl = next((t for t in ctrl_tables if t.name == stmt.table_name), None)
             if tbl and tbl.actions:
-                _emit_table_case(f, tbl, amap, ind, cmap, stack_info)
+                _emit_table_case(f, tbl, amap, ind, cmap, stack_info, extern_ctx)
             else:
                 f.write(f'{ind}// {stmt.table_name}.apply()  [no actions — stub]\n')
 
@@ -1015,16 +1131,16 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None):
                     if i < len(stmt.args):
                         pmap[pname] = _map_expr(stmt.args[i], cmap)
                 f.write(f'{ind}// {stmt.name}({", ".join(stmt.args)})\n')
-                _emit_inlined_body(f, action.body, pmap, cmap, ind, stack_info)
+                _emit_inlined_body(f, action.body, pmap, cmap, ind, stack_info, extern_ctx)
             elif action:
                 inlined = _inline(stmt.name, amap)
                 if inlined:
                     f.write(f'{ind}// {stmt.name}()\n')
-                    _emit_inlined_body(f, inlined, {}, cmap, ind, stack_info)
+                    _emit_inlined_body(f, inlined, {}, cmap, ind, stack_info, extern_ctx)
                 else:
                     f.write(f'{ind}/* UNIMPLEMENTED EXTERN: {stmt.name}() */\n')
             else:
-                _emit_extern_stub(f, stmt, ind, {}, cmap, stack_info)
+                _emit_extern_stub(f, stmt, ind, {}, cmap, stack_info, extern_ctx)
 
         elif isinstance(stmt, Assignment):
             lhs = _lhs_sig(stmt.lhs)
@@ -1088,6 +1204,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         inst.inst_name: (inst.stack_size, [(fld.name, fld.width) for fld in inst.header_type.fields if fld.width])
         for inst in ir.header_instances if inst.is_stack
     }
+
+    # UserExtern instances, keyed by name. Used both to build extern_ctx (so
+    # _emit_extern_stub can tell a UserExtern .apply from a Checksum .apply)
+    # and to drive the latency staging + instance emission below.
+    ue_map = {ue.name: ue for ue in getattr(ctrl, 'user_externs', [])}
 
     # ── Port lists ─────────────────────────────────────────────────────────
     instances  = ir.header_instances
@@ -1175,6 +1296,10 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # functions need. Empty for every app that declares none, so this is a
     # no-op for existing apps.
     hash_sites, hash_unsupported = _collect_hash_sites(ctrl, fwmap)
+    extern_ctx = {
+        'hashes': {h.name for h in getattr(ctrl, 'hashes', [])},
+        'user_externs': ue_map,
+    }
     for inst in sorted(set(hash_unsupported)):
         print(f"[WARN]  Checksum '{inst}': operands could not be sized, or the "
               f"same instance is applied to differently-shaped data in more "
@@ -1353,6 +1478,15 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         }
         stages, boundary_forwards = _schedule_stages(ctrl.statements, table_noop_stages)
 
+        # UserExtern latency. Correctness-mandated, exactly like the table
+        # boundaries above (not an opt-in refinement): the block declares
+        # fixed_latency_in_cycles and the surrounding pipeline MUST wait that
+        # long, so this runs unconditionally whenever the app has any
+        # UserExtern instance.
+        if ue_map:
+            stages, boundary_forwards = _split_stages_for_user_externs(
+                stages, boundary_forwards, ue_map, [20000])
+
         # Register RAM mode (opt-in, default off): a real synchronous read
         # needs a cycle between presenting the address and consuming the data,
         # so every register .read() gets its own stage boundary. With the
@@ -1510,6 +1644,12 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         def _reg_read_stage(reg_name):
             for i, stg in enumerate(stages):
                 if _stmts_contain_call(stg, f'{reg_name}.read'):
+                    return i
+            return 0
+
+        def _ue_apply_stage(ue_name):
+            for i, stg in enumerate(stages):
+                if _stmts_contain_call(stg, f'{ue_name}.apply'):
                     return i
             return 0
 
@@ -1807,6 +1947,40 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                                 f'{reg_name}_mem[{addr_expr}];\n')
                 f.write('\n')
 
+        # ── UserExtern instances ───────────────────────────────────────
+        # xsa.p4's escape hatch: an opaque, user-implemented block. The
+        # compiler emits the wiring and the latency staging; the module body
+        # itself is the user's (a working placeholder is generated once, into a
+        # separate file that is never overwritten).
+        if ue_map:
+            ue_applies = _collect_user_extern_applies(ctrl, set(ue_map))
+            f.write('  // UserExtern instances (xsa.p4 escape hatch --\n')
+            f.write('  // module bodies are user-provided)\n')
+            for ue in ctrl.user_externs:
+                f.write(f'  logic [{ue.in_width-1}:0] {ue.name}_data_in;\n')
+                f.write(f'  logic [{ue.out_width-1}:0] {ue.name}_result;\n')
+            f.write('\n')
+            for ue_name, raw_in, _raw_out in ue_applies:
+                ue = ue_map[ue_name]
+                apply_stage = _ue_apply_stage(ue_name)
+                # data_in is presented `latency` stages BEFORE the .apply()
+                # statement reads the result: the block captures it on that
+                # stage's closing clock edge and drives `result` latency cycles
+                # later, which is exactly the stage the splitter moved the
+                # .apply() into.
+                in_stage = max(0, apply_stage - ue.latency)
+                in_expr  = _stage_text(_map_expr(raw_in), in_stage)
+                vsig     = 'valid_in' if in_stage == 0 else f'valid_s{in_stage}'
+                f.write(f'  assign {ue_name}_data_in = {in_expr};\n')
+                f.write(f'  {ue_name} u_{ue_name} (\n')
+                f.write(f'    .clk      (clk),\n')
+                f.write(f'    .rst_n    (rst_n),\n')
+                f.write(f'    .valid_in ({vsig}),\n')
+                f.write(f'    .data_in  ({ue_name}_data_in),\n')
+                f.write(f'    .result   ({ue_name}_result)\n')
+                f.write(f'  );\n')
+            f.write('\n')
+
         # ── Table lookup result wires ──────────────────────────────────
         if table_wires:
             f.write('  // Table lookup result wires\n')
@@ -1996,7 +2170,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             if stmts_k:
                 stage_note = f' (stage {k} of {n_bounds})' if n_bounds else ''
                 buf.write(f'\n    // apply block{stage_note}\n')
-                _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables, stack_info)
+                _emit_stmts(buf, stmts_k, amap, '    ', cmap, ctrl.tables, stack_info, extern_ctx)
 
             if checksum_updates and k == n_bounds:
                 buf.write('\n    // update_checksum() writes -- final stage only,\n')
