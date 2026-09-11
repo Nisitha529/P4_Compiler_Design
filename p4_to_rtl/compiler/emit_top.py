@@ -41,6 +41,7 @@ from emit_processing import (
     _table_params,
     _table_action_ids,
     _sig as _proc_sig,
+    _collect_std_meta_inputs,
 )
 
 # ── Module-level constants ─────────────────────────────────────────────────────
@@ -987,6 +988,17 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     needs_byte_len = any(c.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
                           for c in ctrl.counters)
 
+    # Standard-metadata inputs the processing module declares (same scan
+    # emit_processing uses, so the two can't disagree about which ports exist).
+    # These were previously left completely unconnected: the ports were
+    # declared and nothing drove them.
+    std_meta_ins = _collect_std_meta_inputs(ctrl)
+    # parsed_bytes is the packet's byte count, which the shell already knows
+    # how to compute for BYTES-type counters -- reuse it rather than counting
+    # twice.
+    if 'parsed_bytes' in std_meta_ins:
+        needs_byte_len = True
+
     # ── Module header ──────────────────────────────────────────────────────────
     f.write(f'module {app_name}_top #(\n')
     f.write(f'    parameter int AXI_DATA_W  = {BEAT_W},\n')
@@ -1170,6 +1182,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         # above (increment is gated on accept_beat, which itself can't fire
         # once s_axis_tready=!rx_done drops).
         f.write('  logic [15:0] pkt_byte_len;\n')
+    if 'ingress_timestamp' in std_meta_ins:
+        tsw = std_meta_ins['ingress_timestamp']
+        f.write(f'  // Free-running cycle counter for standard_metadata.ingress_timestamp.\n')
+        f.write(f'  // xsa.p4 declares it bit<{tsw}> and defines no unit, so this counts\n')
+        f.write(f'  // clk cycles; at 250 MHz a {tsw}-bit counter wraps in roughly\n')
+        f.write(f'  // {int((2**tsw)/250e6/60/60/24/365) if tsw >= 48 else 0} years, and it is only ever compared/differenced.\n')
+        f.write(f'  logic [{tsw-1}:0] ingress_ts_ctr;\n')
     f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_beat_cnt;\n')
     f.write('  logic tx_out_valid;\n')
     f.write(f'  logic [{KEEP_W*8-1}:0] tx_out_data;\n')
@@ -1343,6 +1362,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire [{idx_w-1}:0] {cnt.name}_incr_idx;\n')
 
     f.write('\n')
+    if 'ingress_timestamp' in std_meta_ins:
+        tsw = std_meta_ins['ingress_timestamp']
+        f.write('  // ── ingress_timestamp source ───────────────────────────────────────────\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) ingress_ts_ctr <= \'0;\n')
+        f.write('    else        ingress_ts_ctr <= ingress_ts_ctr + 1\'b1;\n')
+        f.write('  end\n\n')
+
     f.write('  processing_generated u_proc (\n')
     f.write('    .clk       (clk),\n')
     f.write('    .rst_n     (rst_n),\n')
@@ -1364,6 +1391,23 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # nothing else that could legitimately drive these.
     for mf in ir.metadata_fields:
         f.write(f'    .meta_{mf.name}  ({mf.width}\'b0),\n')
+    # Standard-metadata inputs. Each field the ARCHITECTURE defines gets a real
+    # source here where the shell can actually produce one; anything it cannot
+    # is tied off explicitly and said so, rather than left floating.
+    for fname in sorted(std_meta_ins):
+        fw = std_meta_ins[fname]
+        if fname == 'ingress_timestamp':
+            f.write(f'    .std_meta_{fname}  (ingress_ts_ctr),\n')
+        elif fname == 'parsed_bytes':
+            f.write(f'    .std_meta_{fname}  ({fw}\'({{pkt_byte_len}})),\n')
+        elif fname == 'parser_error':
+            # Always NoError (== 0): the generated parser does not implement
+            # verify() yet, so it has no error to report. The port, its width
+            # and comparisons against error.* constants are all correct and
+            # live -- only the producer is missing. See the parser TODO.
+            f.write(f'    .std_meta_{fname}  ({fw}\'d0),  // NoError -- parser verify() not implemented\n')
+        else:
+            f.write(f'    .std_meta_{fname}  ({fw}\'b0),  // no shell source for this field\n')
     # valid flag outputs
     for hname in all_hdr_names:
         f.write(f'    .out_{hname}_valid     (out_{hname}_valid),\n')

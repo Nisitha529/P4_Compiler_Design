@@ -323,6 +323,17 @@ class IR:
         self.parser_states = {}
         self.start_state = None
 
+        # Architecture model, read from the compiled program itself rather
+        # than hardcoded. The p4test MidEnd dump carries the architecture's
+        # own `struct standard_metadata_t` fully resolved, so these describe
+        # whatever architecture the program actually included -- xsa.p4 today,
+        # a project-owned one later -- instead of assuming v1model's fields.
+        # Empty on the bmv2 path, where emit_processing falls back to its
+        # built-in v1model width table.
+        self.std_meta_widths = {}   # field name -> bit width
+        self.error_values    = {}   # error enum name -> numeric value
+        self.error_width     = 0    # bits needed to hold any error value
+
         # Headers — type definitions
         self.headers = []
         self.header_stacks = []

@@ -5,6 +5,7 @@ Replaces the bmv2-JSON ingestion path for XSA/p4test-based compilation.
 Produces the same ir.IR that the emit_*.py stages consume.
 """
 
+import math
 import re
 from ir import (
     IR, Header, HeaderField, HeaderInstance, MetadataField,
@@ -1075,10 +1076,95 @@ def _parse_deparser(body_text):
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+# The P4-16 standard errors, in the order core.p4 declares them, followed by
+# the one p4c itself appends. Seeded rather than read from the dump because
+# p4test leaves `#include <core.p4>` UNEXPANDED in its MidEnd output, so the
+# dump contains only the errors declared outside core.p4. Verified against an
+# expanded dump: p4c numbers them exactly in this order, with any
+# program-declared errors appended after.
+_CORE_ERRORS = [
+    'NoError', 'PacketTooShort', 'NoMatch', 'StackOutOfBounds',
+    'HeaderTooShort', 'ParserTimeout', 'ParserInvalidArgument',
+    'HeaderDepthLimitExceeded',
+]
+
+
+def _parse_error_enum(text):
+    """Return ({error_name: value}, width) for the program's complete error
+    enum: the standard errors first, then any the program declares itself, in
+    declaration order.
+
+    Values only have to be self-consistent -- nothing outside the generated RTL
+    observes them -- but matching p4c's own numbering keeps NoError == 0, which
+    is what a P4 author expects when they compare against it."""
+    names = list(_CORE_ERRORS)
+    for m in re.finditer(r'\berror\s*\{([^}]*)\}', text):
+        for n in m.group(1).split(','):
+            n = n.strip()
+            if n and n not in names:
+                names.append(n)
+    values = {n: i for i, n in enumerate(names)}
+    width = max(1, math.ceil(math.log2(len(names))))
+    return values, width
+
+
+def _parse_std_meta_struct(text, error_width):
+    """Return {field: bit width} from the architecture's own
+    `struct standard_metadata_t { ... }`, as it appears in the MidEnd dump.
+
+    Reading this from the compiled program (rather than a hardcoded table) is
+    what makes the compiler architecture-agnostic: xsa.p4's standard metadata
+    is {drop, ingress_timestamp, parsed_bytes, parser_error} and shares only
+    `drop` with v1model's. A field whose type this cannot resolve is REPORTED,
+    never silently given a default width -- a wrong width here is invisible in
+    simulation and truncates real data (a bit<64> timestamp assumed to be 9
+    bits loses 55 of them)."""
+    m = re.search(r'struct\s+standard_metadata_t\s*\{([^}]*)\}', text)
+    if not m:
+        return {}, []
+    widths, unresolved = {}, []
+    for line in m.group(1).split(';'):
+        line = line.strip()
+        if not line:
+            continue
+        bm = re.match(r'bit<(\d+)>\s+(\w+)$', line)
+        if bm:
+            widths[bm.group(2)] = int(bm.group(1))
+            continue
+        em = re.match(r'error\s+(\w+)$', line)
+        if em:
+            widths[em.group(1)] = max(1, error_width)
+            continue
+        nm = re.match(r'\S+\s+(\w+)$', line)
+        unresolved.append(nm.group(1) if nm else line)
+    return widths, unresolved
+
+
 def ingest_p4ir(p4_text: str) -> IR:
     """Parse MidEnd P4 IR text → hardware IR."""
     ir = IR()
     text = _strip_comments(p4_text)
+
+    # 0. Architecture model (must run before anything that reads error.* or
+    #    standard_metadata.*, since both are rewritten/sized from it).
+    ir.error_values, ir.error_width = _parse_error_enum(text)
+    ir.std_meta_widths, _unresolved_sm = _parse_std_meta_struct(text, ir.error_width)
+    if _unresolved_sm:
+        print(f"[WARN] standard_metadata_t: could not resolve the type of "
+              f"{', '.join(_unresolved_sm)} -- these fields are unsupported "
+              f"and will not get a port. Add the type to "
+              f"_parse_std_meta_struct() in ingest_p4ir.py.")
+    # error.NAME is a P4 enum member with no SystemVerilog equivalent; resolve
+    # it to the numeric literal p4c assigned, everywhere it appears, before any
+    # body is parsed. Left alone it reaches the RTL verbatim and fails at
+    # elaboration ("Unable to bind wire/reg/memory `error.NoError'").
+    if ir.error_values:
+        def _sub_err(m):
+            name = m.group(1)
+            if name not in ir.error_values:
+                return m.group(0)
+            return f"{ir.error_width}w{ir.error_values[name]}"
+        text = re.sub(r'\berror\.(\w+)\b', _sub_err, text)
 
     # 1. Header types
     header_type_map = _parse_header_types(text)

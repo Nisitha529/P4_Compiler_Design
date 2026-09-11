@@ -173,7 +173,13 @@ def emit_parser(ir, output_path, board=None):
 
         # FSM
         f.write("  always_comb begin\n")
-        for sig in extract_signals:
+        # sorted(), not bare set iteration: Python's set order varies between
+        # runs, so this block used to emit its defaults in a different order
+        # each time. The RTL was equivalent, but every regeneration produced a
+        # spurious diff in parser_generated.sv, which made "did my change alter
+        # any output?" expensive to answer. The declaration loop above was
+        # already sorted; this one was missed.
+        for sig in sorted(extract_signals):
             f.write(f"    {sig} = 0;\n")
         f.write("    done = 0;\n")
         f.write("    next_state = state;\n\n")

@@ -9,6 +9,30 @@ from crc_model import crc_masks
 # ============================================================
 # Standard-metadata field widths (v1model definitions)
 # ============================================================
+# The architecture's OWN standard_metadata_t, read out of the compiled program
+# by ingest_p4ir.py and installed here at the top of emit_processing(). This is
+# what makes the width model architecture-agnostic: xsa.p4's standard metadata
+# shares only `drop` with v1model's, and a project-defined architecture will
+# share even less. Empty on the bmv2 path, where _STD_META_WIDTHS below is both
+# the fallback and the correct answer.
+#
+# Module-level rather than threaded because the width lookup happens at seven
+# call sites across the emitter, several of them inside helpers with no access
+# to the IR. One process compiles one program, and both emit_processing() calls
+# (ingress/egress) come from the same IR, so there is nothing to collide.
+_ARCH_STD_META_WIDTHS = {}
+
+
+def _std_meta_width(fname, default=None):
+    """Width of standard_metadata.<fname>: the architecture's own value when
+    known, else the built-in v1model table, else `default`."""
+    if fname in _ARCH_STD_META_WIDTHS:
+        return _ARCH_STD_META_WIDTHS[fname]
+    return _STD_META_WIDTHS.get(fname, default)
+
+
+# Built-in v1model standard_metadata widths. Used for the bmv2 front-end (whose
+# JSON carries no struct definition to read) and as a fallback.
 _STD_META_WIDTHS = {
     'egress_spec': 9, 'ingress_port': 9, 'egress_port': 9,
     'instance_type': 32, 'packet_length': 32, 'priority': 3,
@@ -140,7 +164,7 @@ def _operand_width(expr, fwmap):
         return fwmap.get(f'meta_{m.group(1)}')
     m = re.match(r'^standard_metadata\.(\w+)$', e)
     if m:
-        return _STD_META_WIDTHS.get(m.group(1))
+        return _std_meta_width(m.group(1))
     return fwmap.get(e)
 
 
@@ -246,7 +270,7 @@ def _collect_std_meta_outputs(ctrl):
                 # (xsa.p4's own drop mechanism), so an out_std_meta_drop port
                 # would be a permanently-zero vestigial output.
                 if fn and fn != 'drop':
-                    fields[fn] = _STD_META_WIDTHS.get(fn, 32)
+                    fields[fn] = _std_meta_width(fn, 32)
     return fields
 
 
@@ -262,13 +286,13 @@ def _collect_std_meta_inputs(ctrl):
         for key in tbl.keys:
             fn = _std_meta_fname(key.field)
             if fn:
-                fields[fn] = _STD_META_WIDTHS.get(fn, 9)
+                fields[fn] = _std_meta_width(fn, 9)
 
     def _scan_text(text):
         for m in re.finditer(r'standard_metadata\.(\w+)', text):
             fn = m.group(1)
             if fn not in fields:
-                fields[fn] = _STD_META_WIDTHS.get(fn, 9)
+                fields[fn] = _std_meta_width(fn, 9)
 
     def _scan_stmts(stmts):
         for s in stmts:
@@ -871,7 +895,7 @@ def _cost_width_of(fwmap):
             return fwmap.get(f'meta_{m.group(1)}')
         m = re.match(r'^std_meta_(\w+)$', name)
         if m:
-            return _STD_META_WIDTHS.get(m.group(1))
+            return _std_meta_width(m.group(1))
         return None
     return width_of
 
@@ -1184,6 +1208,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # _split_stages_for_reg_reads -- so it is opt-in rather than automatic.
     checksum_updates = checksum_updates or []
 
+    # Install this program's architecture model (see _std_meta_width). Assigned
+    # rather than mutated so a previous program's fields can never leak in.
+    global _ARCH_STD_META_WIDTHS
+    _ARCH_STD_META_WIDTHS = dict(getattr(ir, 'std_meta_widths', {}) or {})
+
     ctrl = _find_processing_ctrl(ir, stage)
     if ctrl is None:
         raise RuntimeError(
@@ -1259,7 +1288,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             continue
 
         key_sigs = [(_field_basename(k.field), _table_key_sig(k.field),
-                     _STD_META_WIDTHS.get(_std_meta_fname(k.field) or '', None)
+                     _std_meta_width(_std_meta_fname(k.field) or '', None)
                      or fwmap.get(_sig(k.field), 32))
                     for k in tbl.keys]
         # Fix meta.* key widths via fwmap (already includes meta_ entries)
