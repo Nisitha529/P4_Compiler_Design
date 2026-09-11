@@ -3,7 +3,9 @@ module parser_generated(
   input  logic rst_n,
   input  logic valid_in,
   input  logic [15:0] eth_type,
+  input  logic [3:0] ipv4_hdr_len,
   input  logic [7:0] ipv4_protocol,
+  input  logic [3:0] ipv4_version,
   input  logic [15:0] vlan_0_tpid,
   input  logic [15:0] vlan_1_tpid,
   output logic extract_eth,
@@ -12,6 +14,7 @@ module parser_generated(
   output logic extract_udp,
   output logic extract_vlan_0,
   output logic extract_vlan_1,
+  output logic [3:0] parser_error,
   output logic done
 );
 
@@ -21,11 +24,13 @@ module parser_generated(
     PARSE_VLAN_1,
     PARSE_IPV4,
     PARSE_UDP,
-    ACCEPT
+    ACCEPT,
+    REJECT
   } state_t;
 
   (* fsm_encoding = "one_hot" *)
   state_t state, next_state;
+  logic [3:0] err_next;
 
   always_comb begin
     extract_eth = 0;
@@ -36,6 +41,7 @@ module parser_generated(
     extract_vlan_1 = 0;
     done = 0;
     next_state = state;
+    err_next = parser_error;
 
     case (state)
 
@@ -72,6 +78,11 @@ module parser_generated(
           8'h11: next_state = PARSE_UDP;
           default: next_state = ACCEPT;
         endcase
+        // verify(hdr.ipv4.version == 4'd4 && hdr.ipv4.hdr_len >= 4'd5, 4'd8)
+        if (!(ipv4_version == 4'd4 && ipv4_hdr_len >= 4'd5)) begin
+          next_state = REJECT;
+          err_next   = 4'd8;
+        end
       end
 
       PARSE_UDP: begin
@@ -84,6 +95,12 @@ module parser_generated(
         next_state = START;
       end
 
+      REJECT: begin
+        done = 1;
+        err_next = 4'd0;
+        next_state = START;
+      end
+
     endcase
   end
 
@@ -92,6 +109,15 @@ module parser_generated(
       state <= ACCEPT;
     else if (valid_in)
       state <= next_state;
+  end
+
+  // standard_metadata.parser_error. Advances with the FSM so it is
+  // valid in the same cycle `done` asserts for its packet.
+  always_ff @(posedge clk) begin
+    if (!rst_n)
+      parser_error <= 4'd0;
+    else if (valid_in)
+      parser_error <= err_next;
   end
 
 endmodule

@@ -1022,8 +1022,14 @@ def _parse_parser_states(body_text):
             state.add_extract(Extract(hdr_field, dynamic=is_dynamic, length_expr=len_expr))
 
         # verify(COND, ERROR)
+        # Run through _convert_expr like every other expression we keep: the
+        # raw MidEnd text uses P4 literal syntax (4w4, 4w8), which is not valid
+        # SystemVerilog. Sanitize once here rather than in emit_parser, so the
+        # stored Verify is already SV-ready -- same discipline as extracts and
+        # select expressions. The comma separating condition from error code
+        # survives untouched (see _split_verify).
         for vm in re.finditer(r'verify\s*\(([^;]+)\)', body):
-            state.add_verify(Verify(vm.group(1).strip()))
+            state.add_verify(Verify(_convert_expr(vm.group(1).strip())))
 
         # transition select(...) { cases }
         sel_m = re.search(r'\btransition\s+select\s*\(([^)]+)\)\s*\{', body)
