@@ -143,16 +143,17 @@ module regprobe_top #(
   // ── Header field extraction from pkt_buf ────────────────────────────────
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
+  // eth — base: 0
+  wire [47:0] w_eth_dst = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
+  wire [47:0] w_eth_src = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
+  wire [15:0] w_eth_etype = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+
   // ── Header validity (derived from extracted fields) ──────────────────────
-  wire w_eth_valid = 1'b0;
+  wire w_eth_valid = 1'b1;
 
   // ── Header-region cutoff ──────────────────────────────────────────────────
-  wire [13:0] cutoff_byte = 14'd0;
-
-  // Action-only headers (not in received packet; inputs tied to 0)
-  wire [47:0] w_eth_dst = '0;
-  wire [47:0] w_eth_src = '0;
-  wire [15:0] w_eth_etype = '0;
+  wire [13:0] w_eth_cutoff_term = 0 + 14;
+  wire [13:0] cutoff_byte = w_eth_cutoff_term;
 
   // ── processing_generated ─────────────────────────────────────────────────
   //    Signals prefixed proc_out_* are the match-action outputs.
@@ -298,7 +299,7 @@ module regprobe_top #(
       // worst-case runtime length of every var_pred field (see
       // _worst_case_hdr_bytes) and can legitimately exceed a specific
       // packet's actual total length.
-      if (!proc_armed && pkt_busy &&
+      if (!proc_armed && pkt_busy && !proc_valid_out &&
           ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin
         proc_armed <= 1'b1;
       end
@@ -351,6 +352,20 @@ module regprobe_top #(
         if (s_axis_tkeep[i])
           pkt_buf_hdr[rx_beat_cnt * 32 + i] <= s_axis_tdata[i*8 +: 8];
     end else if (proc_settle && !proc_committed && !proc_drop) begin
+      pkt_buf_hdr[0] <= out_eth_dst[47:40];
+      pkt_buf_hdr[1] <= out_eth_dst[39:32];
+      pkt_buf_hdr[2] <= out_eth_dst[31:24];
+      pkt_buf_hdr[3] <= out_eth_dst[23:16];
+      pkt_buf_hdr[4] <= out_eth_dst[15:8];
+      pkt_buf_hdr[5] <= out_eth_dst[7:0];
+      pkt_buf_hdr[6] <= out_eth_src[47:40];
+      pkt_buf_hdr[7] <= out_eth_src[39:32];
+      pkt_buf_hdr[8] <= out_eth_src[31:24];
+      pkt_buf_hdr[9] <= out_eth_src[23:16];
+      pkt_buf_hdr[10] <= out_eth_src[15:8];
+      pkt_buf_hdr[11] <= out_eth_src[7:0];
+      pkt_buf_hdr[12] <= out_eth_etype[15:8];
+      pkt_buf_hdr[13] <= out_eth_etype[7:0];
     end
   `ifndef SYNTHESIS
     if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS &&

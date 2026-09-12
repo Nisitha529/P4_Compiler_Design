@@ -725,7 +725,33 @@ def _collect_select_signals(ir):
 
 # ── Validity signal expressions ────────────────────────────────────────────────
 
-def _gen_valid_signals(ir, inst_map, layouts):
+def _verify_cond_to_w(cond):
+    """Map a parser verify() condition onto the top's extracted-field wires.
+
+    ingest_p4ir.py has already run the text through _convert_expr, so literals
+    are SV-ready (4'd4) and stack indices are flattened; all that is left is
+    hdr.<inst>.<field> -> w_<inst>_<field>, the same naming the validity
+    expressions above use."""
+    return re.sub(r'\bhdr\.(\w+)\.(\w+)\b', r'w_\1_\2', cond)
+
+
+def _split_verify_args(raw):
+    """(condition, error_literal) from Verify.condition, splitting on the
+    LAST top-level comma -- the condition may contain commas of its own."""
+    depth, cut = 0, -1
+    for i, ch in enumerate(raw):
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            cut = i
+    if cut < 0:
+        return raw.strip(), None
+    return raw[:cut].strip(), raw[cut + 1:].strip()
+
+
+def _gen_valid_signals(ir, inst_map, layouts, verify_out=None):
     """
     Compute a combinational SV validity expression for each header instance.
 
@@ -795,6 +821,34 @@ def _gen_valid_signals(ir, inst_map, layouts):
     _dfs('start')
     topo.reverse()   # now topo[0] = 'start'
 
+    # verify() lowering. P4: a failing verify transitions to `reject`, so
+    # nothing AFTER that state is reached -- but the header the state itself
+    # extracted stays valid, because P4 extracts first and verifies after.
+    # Both fall out of folding each state's verify conditions into its
+    # OUTGOING edges only: a state's own reachability (and so its header's
+    # validity, step 4) is unaffected, while every successor's reachability
+    # now also requires this state's verifies to have passed.
+    #
+    # This is the parallel-extractor counterpart of emit_parser.py's REJECT
+    # state. The FSM there is a reference model that no generated top
+    # instantiates; THIS is the lowering that ships, so without this the
+    # verify() had no effect on the synthesized design at all.
+    verify_ok = {}     # state -> SV condition that all its verifies pass
+    verify_list = {}   # state -> [(cond_w, err_literal)] in source order
+    for sname, state in ir.parser_states.items():
+        terms = []
+        for v in getattr(state, 'verifies', []):
+            cond, errv = _split_verify_args(v.condition)
+            if errv is None:
+                continue
+            terms.append((_verify_cond_to_w(cond), errv))
+        if terms:
+            verify_list[sname] = terms
+            ok = None
+            for c, _ in terms:
+                ok = _and(ok, f'({c})') if ok else f'({c})'
+            verify_ok[sname] = ok
+
     # Step 3: compute state reachability in topological order
     state_cond = {'start': "1'b1"}
     for sname in topo:
@@ -804,8 +858,19 @@ def _gen_valid_signals(ir, inst_map, layouts):
         for pred, branch_cond in in_edges.get(sname, []):
             pc = state_cond.get(pred, "1'b0")
             tc = _and(pc, branch_cond) if branch_cond else pc
+            if pred in verify_ok:
+                tc = _and(tc, verify_ok[pred])
             combined = _or(combined, tc) if combined is not None else tc
         state_cond[sname] = combined if combined is not None else "1'b0"
+
+    # parser_error terms, for the caller: (state reached, this verify FAILED,
+    # error code), in topological then source order -- so a priority chain
+    # over them reports the FIRST failure on the packet's actual path, which
+    # is what the FSM would have latched.
+    if verify_out is not None:
+        for sname in topo:
+            for cond_w, errv in verify_list.get(sname, []):
+                verify_out.append((state_cond.get(sname, "1'b0"), cond_w, errv))
 
     # Step 4: map headers to their state's condition
     valid_map = {}
@@ -886,7 +951,8 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                 if not inst.is_stack}
 
     layouts = _compute_layout(ir, inst_map)
-    valid_map = _gen_valid_signals(ir, inst_map, layouts)
+    verify_terms = []
+    valid_map = _gen_valid_signals(ir, inst_map, layouts, verify_out=verify_terms)
 
     ctrl = _find_processing_ctrl(ir)
     if ctrl is None:
@@ -911,7 +977,7 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       ctrl, amap, fwmap, regmap,
                       emit_insts, total_hdr_bytes,
                       axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                      board)
+                      board, verify_terms=verify_terms)
 
 
 def _build_fwmap(ir):
@@ -951,7 +1017,7 @@ def _write_ram_style_pragma(f, board):
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
                   axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                  board=None):
+                  board=None, verify_terms=None):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -1261,6 +1327,21 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire w_{hname}_valid = {vexpr};\n')
     f.write('\n')
 
+    # ── Parser error (verify() lowered into the parallel extractor) ─────────
+    # Priority chain over every verify on the packet's ACTUAL path: the first
+    # one that is both reached and failing reports its code, else NoError.
+    # This is what the FSM in parser_generated would have latched in its
+    # REJECT state -- but that FSM is not in this datapath, so it is
+    # recomputed here from the same terms.
+    if verify_terms:
+        err_w = max(1, getattr(ir, 'error_width', 0) or 1)
+        no_err = getattr(ir, 'error_values', {}).get('NoError', 0)
+        f.write('  // ── standard_metadata.parser_error (from parser verify()) ────────────────\n')
+        expr = f"{err_w}'d{no_err}"
+        for reach, cond_w, errv in reversed(verify_terms):
+            expr = f"(({reach}) && !({cond_w})) ? {errv} : {expr}"
+        f.write(f'  wire [{err_w-1}:0] w_parser_error = {expr};\n\n')
+
     # ── Header-region cutoff (drives when match-action processing triggers) ────
     # Placed after validity wires since its per-header terms reference the
     # same field/offset wires validity did (forward-reference-safe either
@@ -1401,11 +1482,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         elif fname == 'parsed_bytes':
             f.write(f'    .std_meta_{fname}  ({fw}\'({{pkt_byte_len}})),\n')
         elif fname == 'parser_error':
-            # Always NoError (== 0): the generated parser does not implement
-            # verify() yet, so it has no error to report. The port, its width
-            # and comparisons against error.* constants are all correct and
-            # live -- only the producer is missing. See the parser TODO.
-            f.write(f'    .std_meta_{fname}  ({fw}\'d0),  // NoError -- parser verify() not implemented\n')
+            if verify_terms:
+                f.write(f'    .std_meta_{fname}  (w_parser_error),\n')
+            else:
+                # No verify() in this program, so there is nothing that could
+                # ever set it: NoError by construction.
+                f.write(f'    .std_meta_{fname}  ({fw}\'d0),  // NoError -- program has no verify()\n')
         else:
             f.write(f'    .std_meta_{fname}  ({fw}\'b0),  // no shell source for this field\n')
     # valid flag outputs
@@ -1576,7 +1658,20 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      // worst-case runtime length of every var_pred field (see\n')
     f.write('      // _worst_case_hdr_bytes) and can legitimately exceed a specific\n')
     f.write('      // packet\'s actual total length.\n')
-    f.write('      if (!proc_armed && pkt_busy &&\n')
+    # `!proc_valid_out` in the arm condition: do not present the next packet
+    # to processing_generated until the PREVIOUS packet's valid_out tail has
+    # fully drained. proc_settle below fires on `proc_armed && proc_valid_out`,
+    # and the proc_armed guard alone only distinguishes this packet's result
+    # from the previous one's residual tail if that tail has already ENDED by
+    # the time we re-arm. It has not, whenever the inter-packet gap is shorter
+    # than the pipeline depth -- and the depth grew with UserExtern latency
+    # staging. Observed directly: every packet after the first armed with
+    # proc_valid_out still 1, proc_settle fired on that stale tail, and the
+    # sideband latched the previous packet's metadata (tb_ueprobe_top T2/T3).
+    # Waiting for the tail costs a few idle cycles per packet in this
+    # single-packet store-and-forward shell; getting it wrong silently pairs a
+    # packet with its predecessor's result.
+    f.write('      if (!proc_armed && pkt_busy && !proc_valid_out &&\n')
     f.write('          ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin\n')
     f.write('        proc_armed <= 1\'b1;\n')
     f.write('      end\n')

@@ -24,12 +24,25 @@
 // ============================================================================
 #include <core.p4>
 #include "xsa.p4"
+
+// A program-declared error, so the fixture also covers the error-enum
+// numbering: core.p4's 8 standard errors come first, so this is value 8.
+error { BadEtherType }
+
 header eth_t { bit<48> dst; bit<48> src; bit<16> etype; }
 struct headers  { eth_t eth; }
 struct metadata { bit<64> ts; bit<16> nbytes; }
 parser MyParser(packet_in b, out headers hdr, inout metadata meta,
                 inout standard_metadata_t smeta) {
-    state start { b.extract(hdr.eth); transition accept; }
+    state start {
+        b.extract(hdr.eth);
+        // parser_error's PRODUCER. Before verify() was lowered into the top's
+        // parallel extractor this could only ever reach the standalone parser
+        // FSM, which no generated top instantiates -- so parser_error was
+        // permanently NoError in the synthesized design.
+        verify(hdr.eth.etype != 16w0xFFFF, error.BadEtherType);
+        transition accept;
+    }
 }
 control MyProcessing(inout headers hdr, inout metadata meta,
                      inout standard_metadata_t smeta) {

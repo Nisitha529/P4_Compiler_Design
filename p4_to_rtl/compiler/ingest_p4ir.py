@@ -979,22 +979,42 @@ def _normalize_std_meta_name(signature, body):
     return re.sub(r'\b' + re.escape(m.group(1)) + r'\b', 'standard_metadata', body)
 
 
+def _normalize_packet_name(signature, body):
+    """The packet_in / packet_out parameter's name is arbitrary P4 -- fiveTuple
+    calls it `packet`, but `b` or `pkt` are just as legal. The extract/emit
+    recognisers below match the literal prefix `packet.`, so any other name
+    silently parsed to ZERO extracts: the parser IR came out with no headers,
+    emit_top computed a 0-byte header region, classified every header as
+    "action-only", and tied all of its field wires to '0. The app still
+    compiled and its packets still passed through, so nothing failed loudly --
+    the control block just never saw a real header field. Exactly the
+    standard_metadata parameter-name bug (_normalize_std_meta_name) again.
+    Canonicalise to `packet` here, where the declaring signature is in scope."""
+    m = re.search(r'\bpacket_(?:in|out)\s+(\w+)', signature)
+    if not m or m.group(1) == 'packet':
+        return body
+    other = m.group(1)
+    return re.sub(r'\b' + re.escape(other) + r'(?=\s*\.\s*(?:extract|emit|lookahead|advance|length)\b)',
+                  'packet', body)
+
+
 def _find_control_body(text, ctrl_name):
     m = re.search(r'\bcontrol\s+' + re.escape(ctrl_name) + r'\s*\(([^)]*)\)\s*\{', text)
     if not m:
         return None
     brace_pos = text.index('{', m.start())
     body, _ = _find_block(text, brace_pos)
+    body = _normalize_packet_name(m.group(1), body)
     return _normalize_std_meta_name(m.group(1), body)
 
 
 def _find_parser_body(text, parser_name):
-    m = re.search(r'\bparser\s+' + re.escape(parser_name) + r'\s*\([^)]*\)\s*\{', text)
+    m = re.search(r'\bparser\s+' + re.escape(parser_name) + r'\s*\(([^)]*)\)\s*\{', text)
     if not m:
         return None
     brace_pos = text.index('{', m.start())
     body, _ = _find_block(text, brace_pos)
-    return body
+    return _normalize_packet_name(m.group(1), body)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

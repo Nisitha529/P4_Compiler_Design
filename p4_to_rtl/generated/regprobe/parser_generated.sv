@@ -3,6 +3,7 @@ module parser_generated(
   input  logic rst_n,
   input  logic valid_in,
   input logic dummy_select,
+  output logic extract_eth,
   output logic done
 );
 
@@ -15,12 +16,14 @@ module parser_generated(
   state_t state, next_state;
 
   always_comb begin
+    extract_eth = 0;
     done = 0;
     next_state = state;
 
     case (state)
 
       START: begin
+        extract_eth = 1;
         next_state = ACCEPT;
       end
 

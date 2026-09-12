@@ -192,7 +192,10 @@ module echo_top #(
   wire w_ipv4_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800)));
   wire w_ipv4opt_valid = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800)));
   wire w_vlan_1_valid = ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100));
-  wire w_udp_valid = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11));
+  wire w_udp_valid = (((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5));
+
+  // ── standard_metadata.parser_error (from parser verify()) ────────────────
+  wire [3:0] w_parser_error = (((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800)))) && !(w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? 4'd8 : 4'd0;
 
   // ── Header-region cutoff ──────────────────────────────────────────────────
   wire [13:0] w_eth_cutoff_term = 0 + 14;
@@ -200,7 +203,7 @@ module echo_top #(
   wire [13:0] w_ipv4_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
   wire [13:0] w_ipv4opt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
   wire [13:0] w_vlan_1_cutoff_term = ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? (18 + 4) : 14'd0;
-  wire [13:0] w_udp_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) ? (w_udp_base + 8) : 14'd0;
+  wire [13:0] w_udp_cutoff_term = (((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_udp_base + 8) : 14'd0;
   wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_0_cutoff_term) ? w_eth_cutoff_term : w_vlan_0_cutoff_term;
   wire [13:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_ipv4_cutoff_term) ? w_cutoff_max_1 : w_ipv4_cutoff_term;
   wire [13:0] w_cutoff_max_3 = (w_cutoff_max_2 > w_ipv4opt_cutoff_term) ? w_cutoff_max_2 : w_ipv4opt_cutoff_term;
@@ -439,7 +442,7 @@ module echo_top #(
       // worst-case runtime length of every var_pred field (see
       // _worst_case_hdr_bytes) and can legitimately exceed a specific
       // packet's actual total length.
-      if (!proc_armed && pkt_busy &&
+      if (!proc_armed && pkt_busy && !proc_valid_out &&
           ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin
         proc_armed <= 1'b1;
       end

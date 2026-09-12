@@ -649,7 +649,7 @@ module load_balance_xsa_top #(
       // worst-case runtime length of every var_pred field (see
       // _worst_case_hdr_bytes) and can legitimately exceed a specific
       // packet's actual total length.
-      if (!proc_armed && pkt_busy &&
+      if (!proc_armed && pkt_busy && !proc_valid_out &&
           ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin
         proc_armed <= 1'b1;
       end

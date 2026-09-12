@@ -18,7 +18,7 @@ module processing_generated (
   // Standard metadata inputs (table key sources)
   input  logic [63:0] std_meta_ingress_timestamp,
   input  logic [15:0] std_meta_parsed_bytes,
-  input  logic [2:0] std_meta_parser_error,
+  input  logic [3:0] std_meta_parser_error,
 
   // Header valid flag outputs (may be modified by setValid/setInvalid)
   output logic        out_eth_valid,
@@ -63,7 +63,7 @@ module processing_generated (
     // apply block
     meta_ts_w = std_meta_ingress_timestamp;
     meta_nbytes_w = std_meta_parsed_bytes;
-    if (std_meta_parser_error != 3'd0) begin
+    if (std_meta_parser_error != 4'd0) begin
       drop = 1'd1;
     end
   end
