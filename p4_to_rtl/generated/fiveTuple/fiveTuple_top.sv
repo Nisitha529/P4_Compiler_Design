@@ -141,59 +141,108 @@ module fiveTuple_top #(
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
   // eth — base: 0
-  wire [47:0] w_eth_dmac = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
-  wire [47:0] w_eth_smac = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
-  wire [15:0] w_eth_type = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  logic [47:0] w_eth_dmac;
+  logic [47:0] w_eth_smac;
+  logic [15:0] w_eth_type;
+  always_comb begin
+    w_eth_dmac = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
+    w_eth_smac = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
+    w_eth_type = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  end
 
   // vlan — base: 14
-  wire [2:0] w_vlan_pcp = pkt_buf_hdr[14][7:5];
-  wire [0:0] w_vlan_cfi = pkt_buf_hdr[14][4:4];
-  wire [11:0] w_vlan_vid = {pkt_buf_hdr[14][3:0], pkt_buf_hdr[14+1]};
-  wire [15:0] w_vlan_tpid = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
+  logic [2:0] w_vlan_pcp;
+  logic [0:0] w_vlan_cfi;
+  logic [11:0] w_vlan_vid;
+  logic [15:0] w_vlan_tpid;
+  always_comb begin
+    w_vlan_pcp = pkt_buf_hdr[14][7:5];
+    w_vlan_cfi = pkt_buf_hdr[14][4:4];
+    w_vlan_vid = {pkt_buf_hdr[14][3:0], pkt_buf_hdr[14+1]};
+    w_vlan_tpid = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
+  end
 
   wire [13:0] w_ipv4_base = 14 + ((w_eth_type == 16'h8100) ? 4 : 0);
   // ipv4 — base: w_ipv4_base
-  wire [3:0] w_ipv4_version = pkt_buf_hdr[w_ipv4_base][7:4];
-  wire [3:0] w_ipv4_hdr_len = pkt_buf_hdr[w_ipv4_base][3:0];
-  wire [7:0] w_ipv4_tos = pkt_buf_hdr[w_ipv4_base+1];
-  wire [15:0] w_ipv4_length = {pkt_buf_hdr[w_ipv4_base+2], pkt_buf_hdr[w_ipv4_base+3]};
-  wire [15:0] w_ipv4_id = {pkt_buf_hdr[w_ipv4_base+4], pkt_buf_hdr[w_ipv4_base+5]};
-  wire [2:0] w_ipv4_flags = pkt_buf_hdr[w_ipv4_base+6][7:5];
-  wire [12:0] w_ipv4_offset = {pkt_buf_hdr[w_ipv4_base+6][4:0], pkt_buf_hdr[w_ipv4_base+7]};
-  wire [7:0] w_ipv4_ttl = pkt_buf_hdr[w_ipv4_base+8];
-  wire [7:0] w_ipv4_protocol = pkt_buf_hdr[w_ipv4_base+9];
-  wire [15:0] w_ipv4_hdr_chk = {pkt_buf_hdr[w_ipv4_base+10], pkt_buf_hdr[w_ipv4_base+11]};
-  wire [31:0] w_ipv4_src = {pkt_buf_hdr[w_ipv4_base+12], pkt_buf_hdr[w_ipv4_base+13], pkt_buf_hdr[w_ipv4_base+14], pkt_buf_hdr[w_ipv4_base+15]};
-  wire [31:0] w_ipv4_dst = {pkt_buf_hdr[w_ipv4_base+16], pkt_buf_hdr[w_ipv4_base+17], pkt_buf_hdr[w_ipv4_base+18], pkt_buf_hdr[w_ipv4_base+19]};
+  logic [3:0] w_ipv4_version;
+  logic [3:0] w_ipv4_hdr_len;
+  logic [7:0] w_ipv4_tos;
+  logic [15:0] w_ipv4_length;
+  logic [15:0] w_ipv4_id;
+  logic [2:0] w_ipv4_flags;
+  logic [12:0] w_ipv4_offset;
+  logic [7:0] w_ipv4_ttl;
+  logic [7:0] w_ipv4_protocol;
+  logic [15:0] w_ipv4_hdr_chk;
+  logic [31:0] w_ipv4_src;
+  logic [31:0] w_ipv4_dst;
+  always_comb begin
+    w_ipv4_version = pkt_buf_hdr[w_ipv4_base][7:4];
+    w_ipv4_hdr_len = pkt_buf_hdr[w_ipv4_base][3:0];
+    w_ipv4_tos = pkt_buf_hdr[w_ipv4_base+1];
+    w_ipv4_length = {pkt_buf_hdr[w_ipv4_base+2], pkt_buf_hdr[w_ipv4_base+3]};
+    w_ipv4_id = {pkt_buf_hdr[w_ipv4_base+4], pkt_buf_hdr[w_ipv4_base+5]};
+    w_ipv4_flags = pkt_buf_hdr[w_ipv4_base+6][7:5];
+    w_ipv4_offset = {pkt_buf_hdr[w_ipv4_base+6][4:0], pkt_buf_hdr[w_ipv4_base+7]};
+    w_ipv4_ttl = pkt_buf_hdr[w_ipv4_base+8];
+    w_ipv4_protocol = pkt_buf_hdr[w_ipv4_base+9];
+    w_ipv4_hdr_chk = {pkt_buf_hdr[w_ipv4_base+10], pkt_buf_hdr[w_ipv4_base+11]};
+    w_ipv4_src = {pkt_buf_hdr[w_ipv4_base+12], pkt_buf_hdr[w_ipv4_base+13], pkt_buf_hdr[w_ipv4_base+14], pkt_buf_hdr[w_ipv4_base+15]};
+    w_ipv4_dst = {pkt_buf_hdr[w_ipv4_base+16], pkt_buf_hdr[w_ipv4_base+17], pkt_buf_hdr[w_ipv4_base+18], pkt_buf_hdr[w_ipv4_base+19]};
+  end
 
   wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_hdr_len} << 2;
   wire [13:0] w_ipv4opt_base = w_ipv4_base + w_ipv4_hdr_bytes;
   // ipv4opt — base: w_ipv4opt_base
-  wire [319:0] w_ipv4opt_options = {pkt_buf_hdr[w_ipv4opt_base], pkt_buf_hdr[w_ipv4opt_base+1], pkt_buf_hdr[w_ipv4opt_base+2], pkt_buf_hdr[w_ipv4opt_base+3], pkt_buf_hdr[w_ipv4opt_base+4], pkt_buf_hdr[w_ipv4opt_base+5], pkt_buf_hdr[w_ipv4opt_base+6], pkt_buf_hdr[w_ipv4opt_base+7], pkt_buf_hdr[w_ipv4opt_base+8], pkt_buf_hdr[w_ipv4opt_base+9], pkt_buf_hdr[w_ipv4opt_base+10], pkt_buf_hdr[w_ipv4opt_base+11], pkt_buf_hdr[w_ipv4opt_base+12], pkt_buf_hdr[w_ipv4opt_base+13], pkt_buf_hdr[w_ipv4opt_base+14], pkt_buf_hdr[w_ipv4opt_base+15], pkt_buf_hdr[w_ipv4opt_base+16], pkt_buf_hdr[w_ipv4opt_base+17], pkt_buf_hdr[w_ipv4opt_base+18], pkt_buf_hdr[w_ipv4opt_base+19], pkt_buf_hdr[w_ipv4opt_base+20], pkt_buf_hdr[w_ipv4opt_base+21], pkt_buf_hdr[w_ipv4opt_base+22], pkt_buf_hdr[w_ipv4opt_base+23], pkt_buf_hdr[w_ipv4opt_base+24], pkt_buf_hdr[w_ipv4opt_base+25], pkt_buf_hdr[w_ipv4opt_base+26], pkt_buf_hdr[w_ipv4opt_base+27], pkt_buf_hdr[w_ipv4opt_base+28], pkt_buf_hdr[w_ipv4opt_base+29], pkt_buf_hdr[w_ipv4opt_base+30], pkt_buf_hdr[w_ipv4opt_base+31], pkt_buf_hdr[w_ipv4opt_base+32], pkt_buf_hdr[w_ipv4opt_base+33], pkt_buf_hdr[w_ipv4opt_base+34], pkt_buf_hdr[w_ipv4opt_base+35], pkt_buf_hdr[w_ipv4opt_base+36], pkt_buf_hdr[w_ipv4opt_base+37], pkt_buf_hdr[w_ipv4opt_base+38], pkt_buf_hdr[w_ipv4opt_base+39]};
+  logic [319:0] w_ipv4opt_options;
+  always_comb begin
+    w_ipv4opt_options = {pkt_buf_hdr[w_ipv4opt_base], pkt_buf_hdr[w_ipv4opt_base+1], pkt_buf_hdr[w_ipv4opt_base+2], pkt_buf_hdr[w_ipv4opt_base+3], pkt_buf_hdr[w_ipv4opt_base+4], pkt_buf_hdr[w_ipv4opt_base+5], pkt_buf_hdr[w_ipv4opt_base+6], pkt_buf_hdr[w_ipv4opt_base+7], pkt_buf_hdr[w_ipv4opt_base+8], pkt_buf_hdr[w_ipv4opt_base+9], pkt_buf_hdr[w_ipv4opt_base+10], pkt_buf_hdr[w_ipv4opt_base+11], pkt_buf_hdr[w_ipv4opt_base+12], pkt_buf_hdr[w_ipv4opt_base+13], pkt_buf_hdr[w_ipv4opt_base+14], pkt_buf_hdr[w_ipv4opt_base+15], pkt_buf_hdr[w_ipv4opt_base+16], pkt_buf_hdr[w_ipv4opt_base+17], pkt_buf_hdr[w_ipv4opt_base+18], pkt_buf_hdr[w_ipv4opt_base+19], pkt_buf_hdr[w_ipv4opt_base+20], pkt_buf_hdr[w_ipv4opt_base+21], pkt_buf_hdr[w_ipv4opt_base+22], pkt_buf_hdr[w_ipv4opt_base+23], pkt_buf_hdr[w_ipv4opt_base+24], pkt_buf_hdr[w_ipv4opt_base+25], pkt_buf_hdr[w_ipv4opt_base+26], pkt_buf_hdr[w_ipv4opt_base+27], pkt_buf_hdr[w_ipv4opt_base+28], pkt_buf_hdr[w_ipv4opt_base+29], pkt_buf_hdr[w_ipv4opt_base+30], pkt_buf_hdr[w_ipv4opt_base+31], pkt_buf_hdr[w_ipv4opt_base+32], pkt_buf_hdr[w_ipv4opt_base+33], pkt_buf_hdr[w_ipv4opt_base+34], pkt_buf_hdr[w_ipv4opt_base+35], pkt_buf_hdr[w_ipv4opt_base+36], pkt_buf_hdr[w_ipv4opt_base+37], pkt_buf_hdr[w_ipv4opt_base+38], pkt_buf_hdr[w_ipv4opt_base+39]};
+  end
 
   wire [13:0] w_tcp_base = w_ipv4_base + w_ipv4_hdr_bytes;
   // tcp — base: w_tcp_base
-  wire [15:0] w_tcp_src_port = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
-  wire [15:0] w_tcp_dst_port = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
-  wire [31:0] w_tcp_seqNum = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
-  wire [31:0] w_tcp_ackNum = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
-  wire [3:0] w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
-  wire [5:0] w_tcp_resv = {pkt_buf_hdr[w_tcp_base+12][3:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
-  wire [5:0] w_tcp_flags = pkt_buf_hdr[w_tcp_base+13][5:0];
-  wire [15:0] w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
-  wire [15:0] w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
-  wire [15:0] w_tcp_urgPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
+  logic [15:0] w_tcp_src_port;
+  logic [15:0] w_tcp_dst_port;
+  logic [31:0] w_tcp_seqNum;
+  logic [31:0] w_tcp_ackNum;
+  logic [3:0] w_tcp_dataOffset;
+  logic [5:0] w_tcp_resv;
+  logic [5:0] w_tcp_flags;
+  logic [15:0] w_tcp_window;
+  logic [15:0] w_tcp_checksum;
+  logic [15:0] w_tcp_urgPtr;
+  always_comb begin
+    w_tcp_src_port = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
+    w_tcp_dst_port = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
+    w_tcp_seqNum = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
+    w_tcp_ackNum = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
+    w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
+    w_tcp_resv = {pkt_buf_hdr[w_tcp_base+12][3:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
+    w_tcp_flags = pkt_buf_hdr[w_tcp_base+13][5:0];
+    w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
+    w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
+    w_tcp_urgPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
+  end
 
   wire [13:0] w_tcpopt_base = w_ipv4_base + w_ipv4_hdr_bytes;
   // tcpopt — base: w_tcpopt_base
-  wire [319:0] w_tcpopt_options = {pkt_buf_hdr[w_tcpopt_base], pkt_buf_hdr[w_tcpopt_base+1], pkt_buf_hdr[w_tcpopt_base+2], pkt_buf_hdr[w_tcpopt_base+3], pkt_buf_hdr[w_tcpopt_base+4], pkt_buf_hdr[w_tcpopt_base+5], pkt_buf_hdr[w_tcpopt_base+6], pkt_buf_hdr[w_tcpopt_base+7], pkt_buf_hdr[w_tcpopt_base+8], pkt_buf_hdr[w_tcpopt_base+9], pkt_buf_hdr[w_tcpopt_base+10], pkt_buf_hdr[w_tcpopt_base+11], pkt_buf_hdr[w_tcpopt_base+12], pkt_buf_hdr[w_tcpopt_base+13], pkt_buf_hdr[w_tcpopt_base+14], pkt_buf_hdr[w_tcpopt_base+15], pkt_buf_hdr[w_tcpopt_base+16], pkt_buf_hdr[w_tcpopt_base+17], pkt_buf_hdr[w_tcpopt_base+18], pkt_buf_hdr[w_tcpopt_base+19], pkt_buf_hdr[w_tcpopt_base+20], pkt_buf_hdr[w_tcpopt_base+21], pkt_buf_hdr[w_tcpopt_base+22], pkt_buf_hdr[w_tcpopt_base+23], pkt_buf_hdr[w_tcpopt_base+24], pkt_buf_hdr[w_tcpopt_base+25], pkt_buf_hdr[w_tcpopt_base+26], pkt_buf_hdr[w_tcpopt_base+27], pkt_buf_hdr[w_tcpopt_base+28], pkt_buf_hdr[w_tcpopt_base+29], pkt_buf_hdr[w_tcpopt_base+30], pkt_buf_hdr[w_tcpopt_base+31], pkt_buf_hdr[w_tcpopt_base+32], pkt_buf_hdr[w_tcpopt_base+33], pkt_buf_hdr[w_tcpopt_base+34], pkt_buf_hdr[w_tcpopt_base+35], pkt_buf_hdr[w_tcpopt_base+36], pkt_buf_hdr[w_tcpopt_base+37], pkt_buf_hdr[w_tcpopt_base+38], pkt_buf_hdr[w_tcpopt_base+39]};
+  logic [319:0] w_tcpopt_options;
+  always_comb begin
+    w_tcpopt_options = {pkt_buf_hdr[w_tcpopt_base], pkt_buf_hdr[w_tcpopt_base+1], pkt_buf_hdr[w_tcpopt_base+2], pkt_buf_hdr[w_tcpopt_base+3], pkt_buf_hdr[w_tcpopt_base+4], pkt_buf_hdr[w_tcpopt_base+5], pkt_buf_hdr[w_tcpopt_base+6], pkt_buf_hdr[w_tcpopt_base+7], pkt_buf_hdr[w_tcpopt_base+8], pkt_buf_hdr[w_tcpopt_base+9], pkt_buf_hdr[w_tcpopt_base+10], pkt_buf_hdr[w_tcpopt_base+11], pkt_buf_hdr[w_tcpopt_base+12], pkt_buf_hdr[w_tcpopt_base+13], pkt_buf_hdr[w_tcpopt_base+14], pkt_buf_hdr[w_tcpopt_base+15], pkt_buf_hdr[w_tcpopt_base+16], pkt_buf_hdr[w_tcpopt_base+17], pkt_buf_hdr[w_tcpopt_base+18], pkt_buf_hdr[w_tcpopt_base+19], pkt_buf_hdr[w_tcpopt_base+20], pkt_buf_hdr[w_tcpopt_base+21], pkt_buf_hdr[w_tcpopt_base+22], pkt_buf_hdr[w_tcpopt_base+23], pkt_buf_hdr[w_tcpopt_base+24], pkt_buf_hdr[w_tcpopt_base+25], pkt_buf_hdr[w_tcpopt_base+26], pkt_buf_hdr[w_tcpopt_base+27], pkt_buf_hdr[w_tcpopt_base+28], pkt_buf_hdr[w_tcpopt_base+29], pkt_buf_hdr[w_tcpopt_base+30], pkt_buf_hdr[w_tcpopt_base+31], pkt_buf_hdr[w_tcpopt_base+32], pkt_buf_hdr[w_tcpopt_base+33], pkt_buf_hdr[w_tcpopt_base+34], pkt_buf_hdr[w_tcpopt_base+35], pkt_buf_hdr[w_tcpopt_base+36], pkt_buf_hdr[w_tcpopt_base+37], pkt_buf_hdr[w_tcpopt_base+38], pkt_buf_hdr[w_tcpopt_base+39]};
+  end
 
   wire [13:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
   // udp — base: w_udp_base
-  wire [15:0] w_udp_src_port = {pkt_buf_hdr[w_udp_base], pkt_buf_hdr[w_udp_base+1]};
-  wire [15:0] w_udp_dst_port = {pkt_buf_hdr[w_udp_base+2], pkt_buf_hdr[w_udp_base+3]};
-  wire [15:0] w_udp_length = {pkt_buf_hdr[w_udp_base+4], pkt_buf_hdr[w_udp_base+5]};
-  wire [15:0] w_udp_checksum = {pkt_buf_hdr[w_udp_base+6], pkt_buf_hdr[w_udp_base+7]};
+  logic [15:0] w_udp_src_port;
+  logic [15:0] w_udp_dst_port;
+  logic [15:0] w_udp_length;
+  logic [15:0] w_udp_checksum;
+  always_comb begin
+    w_udp_src_port = {pkt_buf_hdr[w_udp_base], pkt_buf_hdr[w_udp_base+1]};
+    w_udp_dst_port = {pkt_buf_hdr[w_udp_base+2], pkt_buf_hdr[w_udp_base+3]};
+    w_udp_length = {pkt_buf_hdr[w_udp_base+4], pkt_buf_hdr[w_udp_base+5]};
+    w_udp_checksum = {pkt_buf_hdr[w_udp_base+6], pkt_buf_hdr[w_udp_base+7]};
+  end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
   wire w_eth_valid = 1'b1;

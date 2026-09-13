@@ -144,38 +144,70 @@ module load_balance_xsa_top #(
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
   // ethernet — base: 0
-  wire [47:0] w_ethernet_dstAddr = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
-  wire [47:0] w_ethernet_srcAddr = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
-  wire [15:0] w_ethernet_etherType = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  logic [47:0] w_ethernet_dstAddr;
+  logic [47:0] w_ethernet_srcAddr;
+  logic [15:0] w_ethernet_etherType;
+  always_comb begin
+    w_ethernet_dstAddr = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
+    w_ethernet_srcAddr = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
+    w_ethernet_etherType = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  end
 
   // ipv4 — base: 14
-  wire [3:0] w_ipv4_version = pkt_buf_hdr[14][7:4];
-  wire [3:0] w_ipv4_ihl = pkt_buf_hdr[14][3:0];
-  wire [7:0] w_ipv4_diffserv = pkt_buf_hdr[14+1];
-  wire [15:0] w_ipv4_totalLen = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
-  wire [15:0] w_ipv4_identification = {pkt_buf_hdr[14+4], pkt_buf_hdr[14+5]};
-  wire [2:0] w_ipv4_flags = pkt_buf_hdr[14+6][7:5];
-  wire [12:0] w_ipv4_fragOffset = {pkt_buf_hdr[14+6][4:0], pkt_buf_hdr[14+7]};
-  wire [7:0] w_ipv4_ttl = pkt_buf_hdr[14+8];
-  wire [7:0] w_ipv4_protocol = pkt_buf_hdr[14+9];
-  wire [15:0] w_ipv4_hdrChecksum = {pkt_buf_hdr[14+10], pkt_buf_hdr[14+11]};
-  wire [31:0] w_ipv4_srcAddr = {pkt_buf_hdr[14+12], pkt_buf_hdr[14+13], pkt_buf_hdr[14+14], pkt_buf_hdr[14+15]};
-  wire [31:0] w_ipv4_dstAddr = {pkt_buf_hdr[14+16], pkt_buf_hdr[14+17], pkt_buf_hdr[14+18], pkt_buf_hdr[14+19]};
+  logic [3:0] w_ipv4_version;
+  logic [3:0] w_ipv4_ihl;
+  logic [7:0] w_ipv4_diffserv;
+  logic [15:0] w_ipv4_totalLen;
+  logic [15:0] w_ipv4_identification;
+  logic [2:0] w_ipv4_flags;
+  logic [12:0] w_ipv4_fragOffset;
+  logic [7:0] w_ipv4_ttl;
+  logic [7:0] w_ipv4_protocol;
+  logic [15:0] w_ipv4_hdrChecksum;
+  logic [31:0] w_ipv4_srcAddr;
+  logic [31:0] w_ipv4_dstAddr;
+  always_comb begin
+    w_ipv4_version = pkt_buf_hdr[14][7:4];
+    w_ipv4_ihl = pkt_buf_hdr[14][3:0];
+    w_ipv4_diffserv = pkt_buf_hdr[14+1];
+    w_ipv4_totalLen = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
+    w_ipv4_identification = {pkt_buf_hdr[14+4], pkt_buf_hdr[14+5]};
+    w_ipv4_flags = pkt_buf_hdr[14+6][7:5];
+    w_ipv4_fragOffset = {pkt_buf_hdr[14+6][4:0], pkt_buf_hdr[14+7]};
+    w_ipv4_ttl = pkt_buf_hdr[14+8];
+    w_ipv4_protocol = pkt_buf_hdr[14+9];
+    w_ipv4_hdrChecksum = {pkt_buf_hdr[14+10], pkt_buf_hdr[14+11]};
+    w_ipv4_srcAddr = {pkt_buf_hdr[14+12], pkt_buf_hdr[14+13], pkt_buf_hdr[14+14], pkt_buf_hdr[14+15]};
+    w_ipv4_dstAddr = {pkt_buf_hdr[14+16], pkt_buf_hdr[14+17], pkt_buf_hdr[14+18], pkt_buf_hdr[14+19]};
+  end
 
   wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_ihl} << 2;
   wire [13:0] w_tcp_base = 14 + w_ipv4_hdr_bytes;
   // tcp — base: w_tcp_base
-  wire [15:0] w_tcp_srcPort = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
-  wire [15:0] w_tcp_dstPort = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
-  wire [31:0] w_tcp_seqNo = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
-  wire [31:0] w_tcp_ackNo = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
-  wire [3:0] w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
-  wire [2:0] w_tcp_res = pkt_buf_hdr[w_tcp_base+12][3:1];
-  wire [2:0] w_tcp_ecn = {pkt_buf_hdr[w_tcp_base+12][0:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
-  wire [5:0] w_tcp_ctrl = pkt_buf_hdr[w_tcp_base+13][5:0];
-  wire [15:0] w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
-  wire [15:0] w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
-  wire [15:0] w_tcp_urgentPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
+  logic [15:0] w_tcp_srcPort;
+  logic [15:0] w_tcp_dstPort;
+  logic [31:0] w_tcp_seqNo;
+  logic [31:0] w_tcp_ackNo;
+  logic [3:0] w_tcp_dataOffset;
+  logic [2:0] w_tcp_res;
+  logic [2:0] w_tcp_ecn;
+  logic [5:0] w_tcp_ctrl;
+  logic [15:0] w_tcp_window;
+  logic [15:0] w_tcp_checksum;
+  logic [15:0] w_tcp_urgentPtr;
+  always_comb begin
+    w_tcp_srcPort = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
+    w_tcp_dstPort = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
+    w_tcp_seqNo = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
+    w_tcp_ackNo = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
+    w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
+    w_tcp_res = pkt_buf_hdr[w_tcp_base+12][3:1];
+    w_tcp_ecn = {pkt_buf_hdr[w_tcp_base+12][0:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
+    w_tcp_ctrl = pkt_buf_hdr[w_tcp_base+13][5:0];
+    w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
+    w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
+    w_tcp_urgentPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
+  end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
   wire w_ethernet_valid = 1'b1;
@@ -286,12 +318,12 @@ module load_balance_xsa_top #(
   always @(*) begin
     pending_commit_busy = 1'b0;
     case (axil_awaddr_r[AXIL_ADDR_W-1:2])
-      14'd70: pending_commit_busy = ecmp_nhop_cp_query_busy;
-      14'd72: pending_commit_busy = ecmp_nhop_cp_query_busy;
+      14'd71: pending_commit_busy = ecmp_nhop_cp_query_busy;
       14'd73: pending_commit_busy = ecmp_nhop_cp_query_busy;
-      14'd132: pending_commit_busy = send_frame_cp_query_busy;
-      14'd134: pending_commit_busy = send_frame_cp_query_busy;
+      14'd74: pending_commit_busy = ecmp_nhop_cp_query_busy;
+      14'd133: pending_commit_busy = send_frame_cp_query_busy;
       14'd135: pending_commit_busy = send_frame_cp_query_busy;
+      14'd136: pending_commit_busy = send_frame_cp_query_busy;
       default: pending_commit_busy = 1'b0;
     endcase
   end
@@ -331,21 +363,23 @@ module load_balance_xsa_top #(
               14'd64: r_ecmp_nhop_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
               14'd65: r_ecmp_nhop_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
               14'd66: r_ecmp_nhop_cp_wr_key_ecmp_select <= s_axil_wdata[13:0]; // key_ecmp_select
-              14'd67: r_ecmp_nhop_cp_wr_p_nhop_dmac <= s_axil_wdata[31:0]; // p_nhop_dmac
-              14'd68: r_ecmp_nhop_cp_wr_p_nhop_ipv4 <= s_axil_wdata[31:0]; // p_nhop_ipv4
-              14'd69: r_ecmp_nhop_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd70: r_ecmp_nhop_cp_wr_en <= 1'b1; // ecmp_nhop commit
-              14'd71: r_ecmp_nhop_cp_query_key_ecmp_select <= s_axil_wdata[13:0]; // query_key_ecmp_select
-              14'd72: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b0; end // ecmp_nhop query
-              14'd73: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b1; end // ecmp_nhop delete
+              14'd67: r_ecmp_nhop_cp_wr_p_nhop_dmac <= s_axil_wdata[31:0]; // p_nhop_dmac_w0
+              14'd68: r_ecmp_nhop_cp_wr_p_nhop_dmac[47:32] <= s_axil_wdata[15:0]; // p_nhop_dmac_w1
+              14'd69: r_ecmp_nhop_cp_wr_p_nhop_ipv4 <= s_axil_wdata[31:0]; // p_nhop_ipv4
+              14'd70: r_ecmp_nhop_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
+              14'd71: r_ecmp_nhop_cp_wr_en <= 1'b1; // ecmp_nhop commit
+              14'd72: r_ecmp_nhop_cp_query_key_ecmp_select <= s_axil_wdata[13:0]; // query_key_ecmp_select
+              14'd73: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b0; end // ecmp_nhop query
+              14'd74: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b1; end // ecmp_nhop delete
               14'd128: r_send_frame_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
               14'd129: r_send_frame_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
               14'd130: r_send_frame_cp_wr_key_egress_port <= s_axil_wdata[8:0]; // key_egress_port
-              14'd131: r_send_frame_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac
-              14'd132: r_send_frame_cp_wr_en <= 1'b1; // send_frame commit
-              14'd133: r_send_frame_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port
-              14'd134: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b0; end // send_frame query
-              14'd135: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b1; end // send_frame delete
+              14'd131: r_send_frame_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac_w0
+              14'd132: r_send_frame_cp_wr_p_smac[47:32] <= s_axil_wdata[15:0]; // p_smac_w1
+              14'd133: r_send_frame_cp_wr_en <= 1'b1; // send_frame commit
+              14'd134: r_send_frame_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port
+              14'd135: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b0; end // send_frame query
+              14'd136: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b1; end // send_frame delete
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -381,14 +415,16 @@ module load_balance_xsa_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd74: r_rdata <= {30'd0, ecmp_nhop_cp_query_hit, ecmp_nhop_cp_query_busy}; // ecmp_nhop query_status
-              14'd75: r_rdata <= {30'd0, ecmp_nhop_cp_query_action_id}; // ecmp_nhop query_action_id
-              14'd76: r_rdata <= ecmp_nhop_cp_query_p_nhop_dmac; // ecmp_nhop query_p_nhop_dmac
-              14'd77: r_rdata <= ecmp_nhop_cp_query_p_nhop_ipv4; // ecmp_nhop query_p_nhop_ipv4
-              14'd78: r_rdata <= {23'd0, ecmp_nhop_cp_query_p_port}; // ecmp_nhop query_p_port
-              14'd136: r_rdata <= {30'd0, send_frame_cp_query_hit, send_frame_cp_query_busy}; // send_frame query_status
-              14'd137: r_rdata <= {30'd0, send_frame_cp_query_action_id}; // send_frame query_action_id
-              14'd138: r_rdata <= send_frame_cp_query_p_smac; // send_frame query_p_smac
+              14'd75: r_rdata <= {30'd0, ecmp_nhop_cp_query_hit, ecmp_nhop_cp_query_busy}; // ecmp_nhop query_status
+              14'd76: r_rdata <= {30'd0, ecmp_nhop_cp_query_action_id}; // ecmp_nhop query_action_id
+              14'd77: r_rdata <= ecmp_nhop_cp_query_p_nhop_dmac; // ecmp_nhop query_p_nhop_dmac_w0
+              14'd78: r_rdata <= {16'd0, ecmp_nhop_cp_query_p_nhop_dmac[47:32]}; // ecmp_nhop query_p_nhop_dmac_w1
+              14'd79: r_rdata <= ecmp_nhop_cp_query_p_nhop_ipv4; // ecmp_nhop query_p_nhop_ipv4
+              14'd80: r_rdata <= {23'd0, ecmp_nhop_cp_query_p_port}; // ecmp_nhop query_p_port
+              14'd137: r_rdata <= {30'd0, send_frame_cp_query_hit, send_frame_cp_query_busy}; // send_frame query_status
+              14'd138: r_rdata <= {30'd0, send_frame_cp_query_action_id}; // send_frame query_action_id
+              14'd139: r_rdata <= send_frame_cp_query_p_smac; // send_frame query_p_smac_w0
+              14'd140: r_rdata <= {16'd0, send_frame_cp_query_p_smac[47:32]}; // send_frame query_p_smac_w1
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

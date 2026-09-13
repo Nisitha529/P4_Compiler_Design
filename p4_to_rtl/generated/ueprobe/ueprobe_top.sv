@@ -144,9 +144,14 @@ module ueprobe_top #(
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
   // eth — base: 0
-  wire [47:0] w_eth_dst = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
-  wire [47:0] w_eth_src = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
-  wire [15:0] w_eth_etype = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  logic [47:0] w_eth_dst;
+  logic [47:0] w_eth_src;
+  logic [15:0] w_eth_etype;
+  always_comb begin
+    w_eth_dst = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
+    w_eth_src = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
+    w_eth_etype = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+  end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
   wire w_eth_valid = 1'b1;

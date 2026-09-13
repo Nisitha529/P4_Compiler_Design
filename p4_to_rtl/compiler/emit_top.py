@@ -515,6 +515,38 @@ def _build_axil_regmap(ctrl, amap, fwmap):
 
 # ── AXI4-Lite decoder SV emission ─────────────────────────────────────────────
 
+def _reg_words(regs):
+    """Expand a register list into the 32-bit bus words it occupies.
+
+    Yields (word_offset, word_name, cp_sig, lo, take) for every word. A
+    register no wider than the bus is one word at bit 0. A WIDER one -- a
+    48-bit MAC action parameter, a 48-bit MAC exact-match key -- spans
+    ceil(width/32) consecutive words, least-significant word first, named
+    <reg>_w0, <reg>_w1, ...
+
+    Before this, every register was exactly one word and anything wider was
+    silently clipped to the low 32 bits in BOTH directions
+    (`take = min(width, 32)` on write, `r_rdata <= cp_sig` on read). A
+    48-bit MAC could never be programmed or read back with a non-zero upper
+    16 bits. fiveTuple never exposed it because every one of its keys and
+    params is <= 32 bits; load_balance_xsa's nhop_dmac / smac are the first
+    48-bit ones. Callers that only need one entry per register (the u_proc
+    port wiring) keep iterating the original list; only the address decoder
+    and its word-count bookkeeping go through this."""
+    off = 0
+    for rname, cp_sig, width in regs:
+        n = max(1, math.ceil(width / AXIL_DATA_W))
+        for w in range(n):
+            lo   = w * AXIL_DATA_W
+            take = min(AXIL_DATA_W, width - lo)
+            yield off, (rname if n == 1 else f'{rname}_w{w}'), cp_sig, lo, take
+            off += 1
+
+
+def _n_words(regs):
+    return sum(max(1, math.ceil(w / AXIL_DATA_W)) for _, _, w in regs)
+
+
 def _emit_axil_decoder(f, regmap):
     """Emit AXI4-Lite staging registers and write/read channel state machines."""
     if not regmap:
@@ -574,7 +606,9 @@ def _emit_axil_decoder(f, regmap):
         tname = ti['tname']
         base  = ti['base']
         commit_words = []
-        for idx, (rname, cp_sig, width) in enumerate(ti['regs']):
+        # Same word expansion as the decoder, so a commit word that sits AFTER
+        # a >32-bit register lands on the address the decoder actually gave it.
+        for idx, rname, cp_sig, lo, take in _reg_words(ti['regs']):
             if rname in ('commit', 'query_commit', 'delete_commit'):
                 commit_words.append((base + idx * 4) >> 2)
         # One case arm per address (not a comma-joined multi-value label --
@@ -614,7 +648,7 @@ def _emit_axil_decoder(f, regmap):
     for ti in regmap:
         tname = ti['tname']
         base  = ti['base']
-        for idx, (rname, cp_sig, width) in enumerate(ti['regs']):
+        for idx, rname, cp_sig, lo, take in _reg_words(ti['regs']):
             word_addr = (base + idx * 4) >> 2
             if rname == 'commit':
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
@@ -632,9 +666,11 @@ def _emit_axil_decoder(f, regmap):
                         f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b1; "
                         f"end // {tname} delete\n")
             else:
-                take = min(width, AXIL_DATA_W)
+                dst = f"r_{cp_sig}" if lo == 0 and take == AXIL_DATA_W else f"r_{cp_sig}[{lo+take-1}:{lo}]"
+                if lo == 0 and take < AXIL_DATA_W:
+                    dst = f"r_{cp_sig}"      # narrow reg: whole thing, no slice needed
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
-                        f"r_{cp_sig} <= s_axil_wdata[{take-1}:0]; // {rname}\n")
+                        f"{dst} <= s_axil_wdata[{take-1}:0]; // {rname}\n")
 
     f.write('              default: ; // ignore unknown address\n')
     f.write('            endcase\n')
@@ -667,10 +703,13 @@ def _emit_axil_decoder(f, regmap):
     f.write('  assign s_axil_rresp   = 2\'b00;\n')
     f.write('  assign s_axil_rvalid  = (axil_rst == AXIL_R_DATA);\n\n')
 
-    def _rdata_expr(cp_sig, width):
-        if width >= 32:
-            return cp_sig
-        return f"{{{32-width}'d0, {cp_sig}}}"
+    def _rdata_expr(cp_sig, lo, take):
+        src = cp_sig if (lo == 0 and take == AXIL_DATA_W) else f"{cp_sig}[{lo+take-1}:{lo}]"
+        if lo == 0 and take < AXIL_DATA_W:
+            src = cp_sig   # narrow reg: whole thing
+        if take >= 32:
+            return src
+        return f"{{{32-take}'d0, {src}}}"
 
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) begin\n')
@@ -683,8 +722,8 @@ def _emit_axil_decoder(f, regmap):
     for ti in regmap:
         tname = ti['tname']
         base  = ti['base']
-        n_write_words = len(ti['regs'])
-        for idx, (rname, cp_sig, width) in enumerate(ti['read_regs']):
+        n_write_words = _n_words(ti['regs'])
+        for idx, rname, cp_sig, lo, take in _reg_words(ti['read_regs']):
             word_addr = (base + (n_write_words + idx) * 4) >> 2
             if rname == 'query_status':
                 if ti.get('is_counter'):
@@ -692,7 +731,7 @@ def _emit_axil_decoder(f, regmap):
                 else:
                     expr = f'{{30\'d0, {tname}_cp_query_hit, {tname}_cp_query_busy}}'
             else:
-                expr = _rdata_expr(cp_sig, width)
+                expr = _rdata_expr(cp_sig, lo, take)
             f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: r_rdata <= {expr}; // {tname} {rname}\n")
     f.write("              default: r_rdata <= 32'd0;\n")
     f.write('            endcase\n')
@@ -1301,14 +1340,31 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         base_expr = _choose_base_expr(inst_name, layout['mandatory_base'],
                                        layout['optional_preds'], layout['var_pred'])
         f.write(f'  // {inst_name} — base: {base_expr}\n')
+        # Declared as `logic` and read inside always_comb, NOT as
+        # `wire x = pkt_buf_hdr[...]`. A continuous assign that reads an
+        # element of this array was observed to never evaluate at all in
+        # Icarus Verilog 11 -- stuck at its initial X from time zero while the
+        # array element itself read correctly -- for some fields and not
+        # others (w_ipv4_ttl dead, w_ipv4_protocol beside it fine), with no
+        # difference in how they were written. Found by the first top-level
+        # test of an app that rewrites headers (tb_load_balance_xsa_top); the
+        # same failure class had already hit the LPM table's assign-copies
+        # and its reduction tree (emit_table.py). Procedural reads have been
+        # robust in every instance. Synthesis is identical either way.
         bit_off = 0
+        fields_here = []
         for fld in inst.header_type.fields:
             w = fld.width or 0
             if w == 0:
                 continue
-            expr = _extract_expr(base_expr, bit_off, w)
-            f.write(f'  wire [{w-1}:0] w_{inst_name}_{fld.name} = {expr};\n')
+            f.write(f'  logic [{w-1}:0] w_{inst_name}_{fld.name};\n')
+            fields_here.append((fld.name, _extract_expr(base_expr, bit_off, w)))
             bit_off += w
+        if fields_here:
+            f.write('  always_comb begin\n')
+            for fname, expr in fields_here:
+                f.write(f'    w_{inst_name}_{fname} = {expr};\n')
+            f.write('  end\n')
         f.write('\n')
 
     # ── Header validity wires ──────────────────────────────────────────────────

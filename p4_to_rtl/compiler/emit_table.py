@@ -275,49 +275,58 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None, way
             f.write(f'  logic [{pw-1}:0] p_{pname}_l0_c[0:{depth-1}];\n')
         f.write('\n')
 
-        for j in range(depth):
-            # NOTE: array elements are pulled out into their own named wire
-            # before use, rather than inlined directly into the match
-            # expression below. Inlining (e.g. `mem_pfx_len[j]` referenced
-            # three times inline inside one `assign`) reproducibly corrupts
-            # Icarus Verilog's vvp code generator on parameterized-DEPTH
-            # register arrays (confirmed via minimal repro, iverilog 11.0) —
-            # this is a simulator code-gen bug, not a synthesis issue, but
-            # the workaround is free so it stays in unconditionally.
-            if is_lpm and table.keys:
-                fname = _field_basename(table.keys[0].field)
-                key_w = _key_width(table.keys[0].field, fwmap)
-                # Mask-based compare (like ternary), not a shift-based one.
-                # The old version did `(lkp >> (W-pfx)) == (key >> (W-pfx))`
-                # -- a *variable-width barrel shifter on both operands, per
-                # entry*, re-evaluated every cycle. At DEPTH=1024 that's
-                # ~2048 barrel shifter instances and dominated the whole
-                # table's area in real synthesis (measured: this one table
-                # was 385K of a 386K-cell design). The prefix mask is
-                # precomputed once at CP-write time (see above) instead, so
-                # the lookup-time cost per entry drops to a plain AND +
-                # equality compare -- no shifting at all on the hot path.
-                f.write(f'  logic [{key_w-1}:0] _key_{j}; assign _key_{j} = mem_key_{fname}[{j}];\n')
-                f.write(f'  logic [{key_w-1}:0] _mask_{j}; assign _mask_{j} = mem_pfx_mask_{fname}[{j}];\n')
-                cond = f'((lkp_{fname} & _mask_{j}) == (_key_{j} & _mask_{j}))'
-            elif is_ternary and table.keys:
-                conds = []
-                for key in table.keys:
-                    kfname = _field_basename(key.field)
-                    kw = _key_width(key.field, fwmap)
-                    f.write(f'  logic [{kw-1}:0] _key_{kfname}_{j}; assign _key_{kfname}_{j} = mem_key_{kfname}[{j}];\n')
-                    f.write(f'  logic [{kw-1}:0] _msk_{kfname}_{j}; assign _msk_{kfname}_{j} = mem_mask_{kfname}[{j}];\n')
-                    conds.append(f'((lkp_{kfname} & _msk_{kfname}_{j}) == (_key_{kfname}_{j} & _msk_{kfname}_{j}))')
-                cond = ' && '.join(conds)
-            else:  # exact (unused here, but kept for completeness)
-                conds = [f'(lkp_{_field_basename(k.field)} == mem_key_{_field_basename(k.field)}[{j}])'
-                         for k in table.keys]
-                cond = ' && '.join(conds)
-            f.write(f'  assign hit_l0_c[{j}] = mem_valid[{j}] && {cond};\n')
-            f.write(f'  assign act_l0_c[{j}] = mem_action[{j}];\n')
-            for pname, _ in params:
-                f.write(f'  assign p_{pname}_l0_c[{j}] = mem_p_{pname}[{j}];\n')
-        f.write('\n')
+        # Leaf-level match: ONE always_comb loop over every entry, reading the
+        # memory arrays procedurally.
+        #
+        # History, because this block has been rewritten twice for the same
+        # simulator: the original inlined `mem_x[j]` several times inside one
+        # continuous `assign` per entry, which reproducibly corrupted Icarus
+        # Verilog's vvp code generator on parameterized-DEPTH arrays. The
+        # fix pulled each element into its own `assign _key_j = mem_key[j]`
+        # wire first. That worked when the table was instantiated one level
+        # below a testbench -- and silently broke when the SAME table sat
+        # under the generated top: the memory element read ff000000 while
+        # its assign-copy read xxxxxxxx at the same instant, so every hit was
+        # X (found by tb_load_balance_xsa_top, the first top-level test of
+        # an LPM table). Bisected: not the pkg, not hierarchy depth, only the
+        # top file's presence -- a codegen quirk, not RTL. Continuous assigns
+        # that read unpacked-array elements are simply not a path this
+        # simulator handles robustly. Procedural reads inside always_* are:
+        # the leaf-registration loop directly below has always read
+        # `hit_l0_c[_rj]` that way, and the exact-match table only ever reads
+        # its memories inside always_ff. So the match moves into a procedural
+        # loop. Synthesis unrolls it to the identical parallel compare.
+        #
+        # LPM compare is mask-based (like ternary), not shift-based: the old
+        # `(lkp >> (W-pfx)) == (key >> (W-pfx))` was a variable-width barrel
+        # shifter on both operands PER ENTRY, re-evaluated every cycle -- at
+        # DEPTH=1024 ~2048 shifter instances that dominated real synthesis
+        # (measured 385K of a 386K-cell design). The prefix mask is computed
+        # once at CP-write time instead, so the hot path is an AND + compare.
+        if is_lpm and table.keys:
+            fname = _field_basename(table.keys[0].field)
+            cond = (f'((lkp_{fname} & mem_pfx_mask_{fname}[_cj]) == '
+                    f'(mem_key_{fname}[_cj] & mem_pfx_mask_{fname}[_cj]))')
+        elif is_ternary and table.keys:
+            conds = []
+            for key in table.keys:
+                kfname = _field_basename(key.field)
+                conds.append(f'((lkp_{kfname} & mem_mask_{kfname}[_cj]) == '
+                             f'(mem_key_{kfname}[_cj] & mem_mask_{kfname}[_cj]))')
+            cond = ' && '.join(conds)
+        else:  # exact (unused here, but kept for completeness)
+            conds = [f'(lkp_{_field_basename(k.field)} == mem_key_{_field_basename(k.field)}[_cj])'
+                     for k in table.keys]
+            cond = ' && '.join(conds)
+        f.write('  integer _cj;\n')
+        f.write('  always_comb begin\n')
+        f.write('    for (_cj = 0; _cj < DEPTH; _cj = _cj + 1) begin\n')
+        f.write(f'      hit_l0_c[_cj] = mem_valid[_cj] && {cond};\n')
+        f.write(f'      act_l0_c[_cj] = mem_action[_cj];\n')
+        for pname, _ in params:
+            f.write(f'      p_{pname}_l0_c[_cj] = mem_p_{pname}[_cj];\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
         # Register the leaf level: splits the per-entry match computation
         # (variable-width barrel shift for LPM, mask-compare for ternary --
@@ -370,21 +379,32 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None, way
             f.write(f'  logic [{act_id_w-1}:0] {dst_act}[0:{nxt_n-1}];\n')
             for pname, pw in params:
                 f.write(f'  logic [{pw-1}:0] {dst_p[pname]}[0:{nxt_n-1}];\n')
-            for i in range(nxt_n):
-                left, right = 2 * i, 2 * i + 1
-                if right < prev_n:
-                    f.write(f'  assign {dst_hit}[{i}] = {src_hit}[{left}] || {src_hit}[{right}];\n')
-                    f.write(f'  assign {dst_act}[{i}] = {src_hit}[{left}] ? '
-                            f'{src_act}[{left}] : {src_act}[{right}];\n')
-                    for pname, _ in params:
-                        f.write(f'  assign {dst_p[pname]}[{i}] = {src_hit}[{left}] ? '
-                                f'{src_p[pname]}[{left}] : {src_p[pname]}[{right}];\n')
-                else:
-                    f.write(f'  assign {dst_hit}[{i}] = {src_hit}[{left}];\n')
-                    f.write(f'  assign {dst_act}[{i}] = {src_act}[{left}];\n')
-                    for pname, _ in params:
-                        f.write(f'  assign {dst_p[pname]}[{i}] = {src_p[pname]}[{left}];\n')
-            f.write('\n')
+            # Procedural loop, not per-pair continuous assigns: a continuous
+            # `assign` that reads unpacked-array elements is the pattern that
+            # produced X here under the generated top (see the leaf-match
+            # comment above); the whole tree was built from them. Reading the
+            # previous level inside always_comb is the same path the mid-tree
+            # register hops below already use and is robust. For an odd
+            # prev_n the last entry has no partner; the static bound check
+            # constant-folds away in synthesis.
+            tv = f'_tj_l{level+1}'
+            f.write(f'  integer {tv};\n')
+            f.write('  always_comb begin\n')
+            f.write(f'    for ({tv} = 0; {tv} < {nxt_n}; {tv} = {tv} + 1) begin\n')
+            f.write(f'      if (2*{tv}+1 < {prev_n}) begin\n')
+            f.write(f'        {dst_hit}[{tv}] = {src_hit}[2*{tv}] || {src_hit}[2*{tv}+1];\n')
+            f.write(f'        {dst_act}[{tv}] = {src_hit}[2*{tv}] ? {src_act}[2*{tv}] : {src_act}[2*{tv}+1];\n')
+            for pname, _ in params:
+                f.write(f'        {dst_p[pname]}[{tv}] = {src_hit}[2*{tv}] ? '
+                        f'{src_p[pname]}[2*{tv}] : {src_p[pname]}[2*{tv}+1];\n')
+            f.write('      end else begin\n')
+            f.write(f'        {dst_hit}[{tv}] = {src_hit}[2*{tv}];\n')
+            f.write(f'        {dst_act}[{tv}] = {src_act}[2*{tv}];\n')
+            for pname, _ in params:
+                f.write(f'        {dst_p[pname]}[{tv}] = {src_p[pname]}[2*{tv}];\n')
+            f.write('      end\n')
+            f.write('    end\n')
+            f.write('  end\n\n')
             prev_n, level = nxt_n, level + 1
             levels_since_reg += 1
             src_hit, src_act, src_p = dst_hit, dst_act, dst_p
@@ -449,13 +469,19 @@ def _emit_one_table(ir, table, amap, fwmap, output_path, budget_levels=None, way
         # the actual fix the timing data pointed at. emit_processing.py's
         # scheduler inserts a matching second no-op register hop so the
         # caller's stage count still lines up (see _schedule_stages).
-        f.write(f'  logic hit_c; assign hit_c = hit_l{level}[0];\n')
+        # Final selection read procedurally for the same reason as the tree
+        # levels above -- `assign hit_c = hit_l6[0]` is an array-element read
+        # in a continuous assign.
+        f.write('  logic hit_c;\n')
         f.write(f'  logic [{act_id_w-1}:0] action_id_c;\n')
-        f.write(f'  assign action_id_c = hit_l{level}[0] ? act_l{level}[0] : {act_id_w}\'d{default_act_id};\n')
         for pname, pw in params:
             f.write(f'  logic [{pw-1}:0] p_{pname}_c;\n')
-            f.write(f'  assign p_{pname}_c = hit_l{level}[0] ? p_{pname}_l{level}[0] : {pw}\'b0;\n')
-        f.write('\n')
+        f.write('  always_comb begin\n')
+        f.write(f'    hit_c = hit_l{level}[0];\n')
+        f.write(f'    action_id_c = hit_l{level}[0] ? act_l{level}[0] : {act_id_w}\'d{default_act_id};\n')
+        for pname, pw in params:
+            f.write(f'    p_{pname}_c = hit_l{level}[0] ? p_{pname}_l{level}[0] : {pw}\'b0;\n')
+        f.write('  end\n\n')
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) begin\n')
         f.write("      hit <= 1'b0;\n")
