@@ -53,7 +53,7 @@ module load_balance_xsa_top #(
 
   // ── Packet buffer (header region / payload region, see above) ───────────────
   logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];
-  (* ram_style = "block" *)
+  (* ramstyle = "M9K" *)
   logic [BEAT_BYTES-1:0][7:0] pkt_buf_payload [0:PAYLOAD_MAX_BEATS-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
