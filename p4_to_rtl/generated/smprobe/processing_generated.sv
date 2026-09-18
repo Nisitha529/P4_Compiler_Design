@@ -32,6 +32,7 @@ module processing_generated (
   output logic [63:0] out_meta_ts,
   output logic [15:0] out_meta_nbytes,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -72,5 +73,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_in;
   end
+  assign out_valid = valid_in;
 
 endmodule

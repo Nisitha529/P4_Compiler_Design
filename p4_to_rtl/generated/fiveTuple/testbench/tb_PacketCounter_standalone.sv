@@ -34,8 +34,7 @@ module tb_PacketCounter_standalone;
 
   logic              incr_req;
   logic [IDX_W-1:0]  incr_idx;
-  logic              pkt_commit;
-  logic              pkt_done;
+  logic              incr_fire;
   logic              cp_query_en;
   logic [IDX_W-1:0]  cp_query_idx;
   logic              cp_query_busy;
@@ -44,7 +43,7 @@ module tb_PacketCounter_standalone;
   PacketCounter_counter #(.DEPTH(DEPTH)) dut (
     .clk (clk), .rst_n (rst_n),
     .incr_req (incr_req), .incr_idx (incr_idx),
-    .pkt_commit (pkt_commit), .pkt_done (pkt_done),
+    .incr_fire (incr_fire),
     .cp_query_en (cp_query_en), .cp_query_idx (cp_query_idx),
     .cp_query_busy (cp_query_busy),
     .cp_query_pkt_value (cp_query_pkt_value)
@@ -58,7 +57,7 @@ module tb_PacketCounter_standalone;
 
   task automatic do_reset;
     rst_n = 0; incr_req = 0; incr_idx = 0;
-    pkt_commit = 0; pkt_done = 0;
+    incr_fire = 0;
     cp_query_en = 0; cp_query_idx = 0;
     repeat(5) @(posedge clk); @(negedge clk);
     rst_n = 1; @(posedge clk); #1;
@@ -67,28 +66,15 @@ module tb_PacketCounter_standalone;
     #1;
   endtask
 
-  // Simulates one packet's worth of .count(idx) -- pkt_commit pulses one
-  // cycle (latching the request, mirroring proc_settle&&!proc_committed),
-  // then some cycles later pkt_done pulses (applying the RMW, mirroring
-  // pkt_ready_to_clear). A real packet's commit-to-done gap is several
-  // cycles (rx_done->proc_committed->drain); a couple of idle cycles here
-  // exercises that same request/apply decoupling, not just back-to-back.
-  // The RMW itself is 2 cycles wide (IDLE->APPLY on the pkt_done edge,
-  // APPLY commits pkt_mem on the edge after) -- this task waits out BOTH,
-  // so a query issued right after do_count() returns is guaranteed to see
-  // the applied value, not race the write (see T4 below for a test that
-  // deliberately does NOT wait out that second edge).
+  // One request per packet: everything valid on the incr_fire cycle. The
+  // pipelined RMW issues the read on that edge (stage A) and writes on the
+  // next (stage B), so the value is applied two edges after the request.
   task automatic do_count(input [IDX_W-1:0] idx);
     @(negedge clk);
-    incr_req = 1; incr_idx = idx; pkt_commit = 1;
-    @(posedge clk); #1;
-    incr_req = 0; pkt_commit = 0;
-    repeat(2) @(posedge clk);
-    @(negedge clk);
-    pkt_done = 1;
-    @(posedge clk); #1;      // IDLE -> APPLY transition
-    pkt_done = 0;
-    @(posedge clk); #1;      // APPLY commits pkt_mem[idx] on this edge
+    incr_req = 1; incr_idx = idx; incr_fire = 1;
+    @(posedge clk); #1;      // stage A: read issued
+    incr_req = 0; incr_fire = 0;
+    @(posedge clk); #1;      // stage B: pkt_mem[idx] written on this edge
   endtask
 
   task automatic cp_query(input [IDX_W-1:0] idx);
@@ -131,28 +117,23 @@ module tb_PacketCounter_standalone;
     chk("T3: never-incremented idx=0 reads back 0", cp_query_pkt_value == 64'd0);
 
     // -- T4: query-vs-increment same-cycle collision -------------------------
-    // Issue a query for the same index on the EXACT edge the RMW's APPLY
-    // state commits pkt_mem[idx] <= new value. Documented, accepted
-    // behavior (same class as exact-match tables' own CP-query-vs-write
-    // collision window): the query's registered read is a non-blocking
-    // sample of the SAME cycle's pre-write memory content, so it reads the
-    // PRE-increment value, not the one just committed.
+    // Issue a query for the same index on the EXACT edge stage B writes
+    // pkt_mem[idx] <= new value. Documented, accepted behavior (same class
+    // as exact-match tables' own CP-query-vs-write collision window): the
+    // query's registered read is a non-blocking sample of the SAME cycle's
+    // pre-write memory content, so it reads the PRE-increment value.
     $display("\n== T4: query/increment same-cycle collision ==");
     begin
       @(negedge clk);
-      incr_req = 1; incr_idx = 3'd6; pkt_commit = 1;
-      @(posedge clk); #1;
-      incr_req = 0; pkt_commit = 0;
-      @(negedge clk);
-      pkt_done = 1;
-      @(posedge clk); #1;      // IDLE -> APPLY transition
-      pkt_done = 0;
-      // The NEXT edge is when APPLY actually commits pkt_mem[6] -- issue
-      // the query so its own accept-and-read lands on that same edge.
+      incr_req = 1; incr_idx = 3'd6; incr_fire = 1;
+      @(posedge clk); #1;      // stage A: read issued
+      incr_req = 0; incr_fire = 0;
+      // The NEXT edge is when stage B writes pkt_mem[6] -- issue the query
+      // so its own accept-and-read lands on that same edge.
       @(negedge clk);
       cp_query_idx = 3'd6;
       cp_query_en = 1;
-      @(posedge clk); #1;      // collision edge: APPLY commits AND query reads
+      @(posedge clk); #1;      // collision edge: stage B writes AND query reads
       cp_query_en = 0;
       while (cp_query_busy) @(posedge clk);
       #1;
@@ -160,6 +141,32 @@ module tb_PacketCounter_standalone;
     end
     cp_query(3'd6);
     chk("T4: a later query correctly sees the applied increment (1)", cp_query_pkt_value == 64'd1);
+
+
+    // Consecutive-cycle requests. Same index twice in a row exercises the
+    // stage-B -> stage-A bypass (the old 2-cycle FSM lost one of these);
+    // then a different index right behind them checks the bypass is
+    // index-qualified and doesn't leak the wrong value across.
+    $display("\n== T5: back-to-back requests (bypass) ==");
+    begin
+      @(negedge clk);
+      incr_req = 1; incr_fire = 1; incr_idx = 3'd2;   // cycle 1: idx 2
+      @(posedge clk); #1;
+      incr_idx = 3'd2;                                  // cycle 2: idx 2 again
+      @(posedge clk); #1;
+      incr_idx = 3'd2;                                  // cycle 3: idx 2 again
+      @(posedge clk); #1;
+      incr_idx = 3'd5;                                  // cycle 4: idx 5
+      @(posedge clk); #1;
+      incr_req = 0; incr_fire = 0;
+      repeat (3) @(posedge clk); #1;
+    end
+    cp_query(3'd2);
+    chk("T5: idx 2 = 4 + three back-to-back hits", cp_query_pkt_value == 64'd7);
+    cp_query(3'd5);
+    chk("T5: idx 5 = 2 + exactly one (no bypass leak)", cp_query_pkt_value == 64'd3);
+    cp_query(3'd6);
+    chk("T5: idx 6 untouched by the burst", cp_query_pkt_value == 64'd1);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);

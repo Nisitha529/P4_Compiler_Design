@@ -10,5 +10,6 @@
   "device_part": null,
   "device_part_verified": false,
   "device_part_note": "Digilent ships at least three Zybo revisions (original Zybo, Zybo Z7-10, Zybo Z7-20) on different Zynq-7000 parts. This project has not confirmed which one the user has. Look up the exact part number from Digilent's official Zybo product page / Master XDC before using this descriptor for a real bitstream.",
-  "notes": "This board's pragma text is identical to the compiler's pre-existing (pre---board) hardcoded Xilinx defaults, so RTL output for this board is expected to be byte-identical to the --board-unset default -- only a new constraint-file skeleton is added."
+  "notes": "This board's pragma text is identical to the compiler's pre-existing (pre---board) hardcoded Xilinx defaults, so RTL output for this board is expected to be byte-identical to the --board-unset default -- only a new constraint-file skeleton is added. shift_reg_pragma: Vivado's SHREG_EXTRACT=no keeps the forwarding chains as flip-flops instead of SRL primitives (same motivation as the Quartus altshift_taps case, see de2-115.json). Not synthesis-verified on this machine.",
+  "shift_reg_pragma": "(* shreg_extract = \"no\" *)"
 }

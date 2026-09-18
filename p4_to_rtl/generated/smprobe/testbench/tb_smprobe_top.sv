@@ -81,21 +81,25 @@ module tb_smprobe_top;
     rst_n = 1; @(posedge clk); #1;
   endtask
 
-  // One 64-byte frame: 14-byte ethernet header + 50 bytes of payload.
-  task automatic send_frame(input [15:0] etype);
+  // One frame of `nbytes` (default 64): 14-byte ethernet header + payload.
+  task automatic send_frame(input [15:0] etype, input int nbytes = 64);
     logic [TB_AXI_DATA_W-1:0] beat;
-    byte pkt[64];
-    for (int i = 0; i < 64; i++) pkt[i] = 8'(i);
+    byte pkt[$];
+    int nbeats;
+    pkt.delete();
+    for (int i = 0; i < nbytes; i++) pkt.push_back(8'(i));
     // dst 00:11:22:33:44:55, src 66:77:88:99:aa:bb, etype big-endian
     pkt[0]=8'h00; pkt[1]=8'h11; pkt[2]=8'h22; pkt[3]=8'h33; pkt[4]=8'h44; pkt[5]=8'h55;
     pkt[6]=8'h66; pkt[7]=8'h77; pkt[8]=8'h88; pkt[9]=8'h99; pkt[10]=8'haa; pkt[11]=8'hbb;
     pkt[12] = etype[15:8]; pkt[13] = etype[7:0];
-    for (int b = 0; b < 2; b++) begin
+    nbeats = (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+    for (int b = 0; b < nbeats; b++) begin
       beat = '0;
-      for (int i = 0; i < TB_BEAT_BYTES; i++) beat[i*8 +: 8] = pkt[b*TB_BEAT_BYTES + i];
+      for (int i = 0; i < TB_BEAT_BYTES; i++)
+        if (b*TB_BEAT_BYTES + i < nbytes) beat[i*8 +: 8] = pkt[b*TB_BEAT_BYTES + i];
       @(negedge clk);
       s_axis_tdata = beat; s_axis_tkeep = '1;
-      s_axis_tvalid = 1'b1; s_axis_tlast = (b == 1);
+      s_axis_tvalid = 1'b1; s_axis_tlast = (b == nbeats - 1);
       @(posedge clk);
       while (!s_axis_tready) @(posedge clk);
       #1;
@@ -149,6 +153,24 @@ module tb_smprobe_top;
       watch_output(80);
     join
     chk("T3: output packet emerged again",  out_beats == 2 && saw_tlast);
+
+    // ---- T4: a DROPPED packet that has payload beats beyond the header region --
+    // 224 B = 7 beats: 3 header rows + 4 payload beats in the FIFO. Those four
+    // must be discarded, or they would come out in front of the next packet.
+    $display("\n== T4: 224B packet dropped -> its FIFO payload must be discarded ==");
+    fork
+      send_frame(16'hFFFF, 224);
+      watch_output(120);
+    join
+    chk("T4: NO output for the dropped 224B packet", out_beats == 0);
+
+    // ---- T5: the next good packet is intact -- no leftover beats -------------
+    $display("\n== T5: following 224B good packet comes out whole and first ==");
+    fork
+      send_frame(16'h0800, 224);
+      watch_output(120);
+    join
+    chk("T5: exactly 7 beats, ending in tlast", out_beats == 7 && saw_tlast);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)",

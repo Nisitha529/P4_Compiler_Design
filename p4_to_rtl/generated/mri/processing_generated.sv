@@ -136,6 +136,7 @@ module processing_generated (
   // Table hit outputs
   output logic        ipv4_lpm_hit_out,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -368,6 +369,7 @@ module processing_generated (
   logic [0:0] tmp_s2;
   logic [8:0] out_std_meta_egress_spec_s2;
   logic drop_s2;
+  logic __stage_cond_0_r_p1;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -1041,6 +1043,7 @@ module processing_generated (
       out_swtraces_8_qdepth_s2 <= out_swtraces_8_qdepth__st1;
       swtraces_8_qdepth_s2 <= swtraces_8_qdepth__st1;
       out_std_meta_egress_spec_s2 <= out_std_meta_egress_spec__st1;
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -1156,7 +1159,7 @@ module processing_generated (
     out_std_meta_egress_spec = out_std_meta_egress_spec_s2;
 
     // apply block (stage 2 of 2)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p1) begin
       // ipv4_lpm.apply()
       if (ipv4_lpm_hit) begin
         unique case (ipv4_lpm_act_id)
@@ -1180,5 +1183,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s2;
   end
+  assign out_valid = valid_s2;
 
 endmodule

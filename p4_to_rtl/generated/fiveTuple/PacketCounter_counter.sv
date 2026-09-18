@@ -4,18 +4,17 @@ module PacketCounter_counter #(
   input  logic clk,
   input  logic rst_n,
 
-  // Increment request, from processing_generated -- one-cycle pulse per
-  // packet, raised at whatever pipeline stage the .count() action runs.
+  // Increment request: ONE cycle per packet, everything valid together.
+  // incr_fire pulses when the shell releases a packet's slot (its byte
+  // length is final by then); incr_req says whether this packet's
+  // .count() ran, incr_idx which entry. The old two-phase commit/done
+  // interface held a single pending request and a 2-cycle RMW, and
+  // LOST a count when releases came 2 cycles apart (measured: 33 of 34
+  // back-to-back minimum packets). This path accepts one request per
+  // cycle -- see the pipelined RMW below.
+  input  logic              incr_fire,
   input  logic              incr_req,
   input  logic [12:0] incr_idx,
-  // pkt_commit: proc_settle&&!proc_committed -- latches the request.
-  // pkt_done  : pkt_ready_to_clear -- applies the RMW, once per packet,
-  //             deliberately one step later so pkt_byte_len (below) is
-  //             final by the time a BYTES-type counter reads it (a
-  //             cut-through packet's length is NOT yet known at
-  //             pkt_commit time -- see emit_top.py's instantiation site).
-  input  logic pkt_commit,
-  input  logic pkt_done,
 
   // Control-plane query (read-only -- counters aren't operator-settable,
   // only queryable; no delete/write port exists).
@@ -24,23 +23,6 @@ module PacketCounter_counter #(
   output logic              cp_query_busy,
   output logic [63:0]       cp_query_pkt_value
 );
-
-  // Decouples "request" (raised mid-packet, before length is final)
-  // from "apply" (once per packet, once pkt_byte_len is final). Safe
-  // with no cross-packet hazard: this pipeline is single-packet-in-
-  // flight (packet N+1 cannot start until N has fully drained), so at
-  // most one increment is ever pending at a time.
-  logic pend_valid;
-  logic [12:0] pend_idx;
-  always_ff @(posedge clk) begin
-    if (!rst_n) pend_valid <= 1'b0;
-    else if (pkt_commit && incr_req) begin
-      pend_valid <= 1'b1;
-      pend_idx   <= incr_idx;
-    end else if (pkt_done && pend_valid) begin
-      pend_valid <= 1'b0;
-    end
-  end
 
   // pkt sub-counter: 64-bit value per index, real
   // block-RAM-safe registered read-modify-write (never a bare
@@ -59,10 +41,14 @@ module PacketCounter_counter #(
   logic pkt_clearing = 1'b1;
   logic [12:0] pkt_clr_idx = '0;
 
-  typedef enum logic { PKT_INCR_IDLE, PKT_INCR_APPLY } pkt_incr_st_t;
-  pkt_incr_st_t pkt_incr_st = PKT_INCR_IDLE;
-  logic [12:0] pkt_incr_addr_r;
-  logic [63:0] pkt_rd_data;
+  logic              pkt_a_v;
+  logic [12:0] pkt_a_idx;
+  logic [63:0]       pkt_mem_q;
+  logic              pkt_b_v;
+  logic [12:0] pkt_b_idx;
+  logic [63:0]       pkt_b_new;
+  wire  [63:0]       pkt_cur = (pkt_b_v && pkt_b_idx == pkt_a_idx) ? pkt_b_new : pkt_mem_q;
+  wire  [63:0]       pkt_nxt = pkt_cur + 64'd1;
 
   always_ff @(posedge clk) begin
     if (pkt_clearing) begin
@@ -72,19 +58,19 @@ module PacketCounter_counter #(
       end else begin
         pkt_clr_idx <= pkt_clr_idx + 1'b1;
       end
+      pkt_a_v <= 1'b0; pkt_b_v <= 1'b0;
     end else begin
-      case (pkt_incr_st)
-        PKT_INCR_IDLE: if (pkt_done && pend_valid) begin
-          pkt_incr_addr_r <= pend_idx;
-          pkt_rd_data     <= pkt_mem[pend_idx];
-          pkt_incr_st     <= PKT_INCR_APPLY;
-        end
-        PKT_INCR_APPLY: begin
-          pkt_mem[pkt_incr_addr_r] <= pkt_rd_data + 64'd1;
-          pkt_incr_st <= PKT_INCR_IDLE;
-        end
-        default: ;
-      endcase
+      // stage A
+      pkt_a_v   <= incr_fire && incr_req;
+      pkt_a_idx <= incr_idx;
+      pkt_mem_q <= pkt_mem[incr_idx];
+      // stage B
+      pkt_b_v <= pkt_a_v;
+      if (pkt_a_v) begin
+        pkt_mem[pkt_a_idx] <= pkt_nxt;
+        pkt_b_idx <= pkt_a_idx;
+        pkt_b_new <= pkt_nxt;
+      end
     end
   end
 

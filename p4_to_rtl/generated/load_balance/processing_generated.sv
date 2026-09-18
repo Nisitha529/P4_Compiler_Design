@@ -98,6 +98,7 @@ module processing_generated (
   output logic        ecmp_group_hit_out,
   output logic        ecmp_nhop_hit_out,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -251,6 +252,7 @@ module processing_generated (
   logic [15:0] tmp_3_s2;
   logic [8:0] out_std_meta_egress_spec_s2;
   logic drop_s2;
+  logic __stage_cond_0_r_p1;
   logic valid_s3;
   logic out_ethernet_valid_s3;
   logic ethernet_valid_s3;
@@ -388,6 +390,7 @@ module processing_generated (
   logic [15:0] tmp_3_s4;
   logic [8:0] out_std_meta_egress_spec_s4;
   logic drop_s4;
+  logic __stage_cond_1_r_p3;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -994,6 +997,7 @@ module processing_generated (
       out_tcp_urgentPtr_s2 <= out_tcp_urgentPtr__st1;
       tcp_urgentPtr_s2 <= tcp_urgentPtr__st1;
       out_std_meta_egress_spec_s2 <= out_std_meta_egress_spec__st1;
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -1068,7 +1072,7 @@ module processing_generated (
     out_std_meta_egress_spec__st2 = out_std_meta_egress_spec_s2;
 
     // apply block (stage 2 of 4)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p1) begin
       // ecmp_group.apply()
       if (ecmp_group_hit) begin
         unique case (ecmp_group_act_id)
@@ -1165,7 +1169,7 @@ module processing_generated (
       out_tcp_urgentPtr_s3 <= out_tcp_urgentPtr__st2;
       tcp_urgentPtr_s3 <= tcp_urgentPtr__st2;
       out_std_meta_egress_spec_s3 <= out_std_meta_egress_spec__st2;
-      __stage_cond_1_r <= (__stage_cond_0_r);
+      __stage_cond_1_r <= (__stage_cond_0_r_p1);
     end
   end
 
@@ -1314,6 +1318,7 @@ module processing_generated (
       out_tcp_urgentPtr_s4 <= out_tcp_urgentPtr__st3;
       tcp_urgentPtr_s4 <= tcp_urgentPtr__st3;
       out_std_meta_egress_spec_s4 <= out_std_meta_egress_spec__st3;
+      __stage_cond_1_r_p3 <= (__stage_cond_1_r);
     end
   end
 
@@ -1388,7 +1393,7 @@ module processing_generated (
     out_std_meta_egress_spec = out_std_meta_egress_spec_s4;
 
     // apply block (stage 4 of 4)
-    if (__stage_cond_1_r) begin
+    if (__stage_cond_1_r_p3) begin
       // ecmp_nhop.apply()
       if (ecmp_nhop_hit) begin
         unique case (ecmp_nhop_act_id)
@@ -1412,5 +1417,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s4;
   end
+  assign out_valid = valid_s4;
 
 endmodule

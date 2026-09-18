@@ -253,7 +253,7 @@ def _compute_layout(ir, inst_map):
 
 # ── SV byte-extraction expression ─────────────────────────────────────────────
 
-def _byte_idx(base_expr, byte_num):
+def _byte_idx(base_expr, byte_num, target='pkt_buf_hdr'):
     """
     Return SV array-index expression into pkt_buf_hdr. Every field this
     compiler extracts/writes-back lives in the header region by
@@ -262,13 +262,13 @@ def _byte_idx(base_expr, byte_num):
     per-beat routing logic, never by field-level extraction/write-back.
     """
     if base_expr in (0, '0', "8'd0"):
-        return f'pkt_buf_hdr[{byte_num}]'
+        return f'{target}[{byte_num}]'
     if byte_num == 0:
-        return f'pkt_buf_hdr[{base_expr}]'
-    return f'pkt_buf_hdr[{base_expr}+{byte_num}]'
+        return f'{target}[{base_expr}]'
+    return f'{target}[{base_expr}+{byte_num}]'
 
 
-def _extract_expr(base_expr, bit_offset_in_hdr, width):
+def _extract_expr(base_expr, bit_offset_in_hdr, width, target='pkt_buf_hdr'):
     """
     SV expression to extract 'width' bits starting at bit_offset_in_hdr (MSB-first)
     from a header whose first byte is at pkt_buf[base_expr].
@@ -286,7 +286,7 @@ def _extract_expr(base_expr, bit_offset_in_hdr, width):
         hi    = 7 - cur_bit
         lo    = hi - take + 1
 
-        ref = _byte_idx(base_expr, cur_byte)
+        ref = _byte_idx(base_expr, cur_byte, target)
         if take == 8:
             parts.append(ref)
         else:
@@ -301,11 +301,17 @@ def _extract_expr(base_expr, bit_offset_in_hdr, width):
 
 # ── SV byte write-back for one header ─────────────────────────────────────────
 
-def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind):
+def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind,
+                     target='pkt_buf_hdr', op='<='):
     """
-    Emit always_ff write-back statements for all bytes of a header.
+    Emit per-byte placement statements for all bytes of a header, at the
+    header's layout-derived byte offset (base_expr + byte index).
     cond_expr: optional SV guard (e.g. 'w_vlan_valid'). None → no guard.
     out_pfx  : signal prefix (e.g. 'out_') — processing output signals.
+    target/op: `pkt_buf_hdr` + `<=` is the original registered write-back;
+               `hdr_out` + `=` is the combinational deparser overlay
+               (step 2 of docs/streaming_shell_plan.md) -- same placement
+               logic, so the two can never disagree about WHERE a byte goes.
     """
     total_bits  = sum(fld.width or 0 for fld in hdr_type.fields)
     total_bytes = total_bits // 8
@@ -355,7 +361,7 @@ def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind)
             else:
                 pieces.append(f'{sig}[{fh}:{fl}]')
         rhs = ('{' + ', '.join(pieces) + '}') if len(pieces) > 1 else pieces[0]
-        f.write(f'{inner}{_byte_idx(base_expr, bi)} <= {rhs};\n')
+        f.write(f'{inner}{_byte_idx(base_expr, bi, target)} {op} {rhs};\n')
 
     if cond_expr:
         f.write(f'{ind}end\n')
@@ -953,7 +959,7 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
-def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None):
+def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4):
     """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
 
     axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
@@ -1016,7 +1022,7 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       ctrl, amap, fwmap, regmap,
                       emit_insts, total_hdr_bytes,
                       axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                      board, verify_terms=verify_terms)
+                      board, verify_terms=verify_terms, nslot=nslot)
 
 
 def _build_fwmap(ir):
@@ -1056,7 +1062,7 @@ def _write_ram_style_pragma(f, board):
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
                   axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                  board=None, verify_terms=None):
+                  board=None, verify_terms=None, nslot=4):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -1164,6 +1170,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write(f'  localparam int HDR_MAX_BEATS = {HDR_MAX_BEATS};\n')
     f.write(f'  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // {MAX_PKT_BYTES - HDR_MAX_BYTES}\n')
     f.write(f'  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // {(MAX_PKT_BEATS * KEEP_W - HDR_MAX_BYTES) // KEEP_W}\n\n')
+    _payload_beats = (MAX_PKT_BEATS * KEEP_W - HDR_MAX_BYTES) // KEEP_W
+    PFIFO_AW = max(1, math.ceil(math.log2(max(2, _payload_beats))))
+    NSLOT    = nslot
+    SLOT_AW  = max(1, math.ceil(math.log2(NSLOT)))
 
     # ── Packet buffer ──────────────────────────────────────────────────────────
     # pkt_buf_hdr is INTENTIONALLY left a plain register array, no ramstyle
@@ -1187,126 +1197,97 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # so it's organized as a 2D row array with ordinary 1R+1W BRAM semantics --
     # no mirroring needed (contrast emit_selftest.py's tmpl_buf, which has 3
     # genuinely concurrent accessors and does need mirroring).
-    f.write('  // ── Packet buffer (header region / payload region, see above) ───────────────\n')
-    f.write('  logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];\n')
-    _write_ram_style_pragma(f, board)
-    # PACKED byte dimension ([BEAT_BYTES-1:0][7:0], not a fully-unpacked 2D array) --
-    # this specific shape is what Quartus's byte-enable RAM inference template
-    # actually matches (confirmed against Intel's own "Recommended HDL Coding
-    # Styles" doc, Example 12-26); a fully-unpacked `[0:N-1][0:M-1]` array is
-    # syntactically valid but was never even ATTEMPTED for RAM inference by real
-    # Quartus -- found the hard way when the first working version of this fix
-    # dropped ALUTs 10x (2M->205K) but still left this array as flip-flops (0 of
-    # its bits in the post-synthesis "Total memory bits" count).
-    f.write('  logic [BEAT_BYTES-1:0][7:0] pkt_buf_payload [0:PAYLOAD_MAX_BEATS-1];\n')
-    # Simulation-only zero-fill, excluded from synthesis -- see the matching
-    # comment in emit_selftest.py's own tmpl_buf/cap_buf initial block for
-    # the full rationale, including why `// synthesis translate_off/on`
-    # (not just `ifndef SYNTHESIS, which real Quartus did not honor here)
-    # is the load-bearing mechanism. A real Quartus synthesis run hit "Loop
-    # error... must terminate within 5000 iterations" on PAYLOAD_MAX_BYTES
-    # (8064 at the default 256-bit width) -- required, not cosmetic.
+    # ── Header slot ring + payload FIFO (step 3: N packets in flight) ─────────
+    f.write('  // ── Header slot ring ─────────────────────────────────────────────────────\n')
+    f.write('  // NSLOT packets can be in flight at once. Each slot holds one packet\'s\n')
+    f.write('  // header region (HDR_MAX_BYTES) as received, its per-row keep, its beat\n')
+    f.write('  // count / done / overflow, and -- once the pipeline has finished with it --\n')
+    f.write('  // the pipeline\'s output PHV, drop decision and metadata. Four pointers\n')
+    f.write('  // walk the ring in order and never overtake each other:\n')
+    f.write('  //   wr_ptr  : RX fills this slot          (advances on tlast)\n')
+    f.write('  //   iss_ptr : next slot to issue to u_proc (advances on issue)\n')
+    f.write('  //   cmp_ptr : next slot expecting a result (advances on out_valid)\n')
+    f.write('  //   tx_ptr  : TX drains this slot         (advances on last beat / discard)\n')
+    f.write('  // Each carries one extra bit so "full" and "empty" are distinguishable.\n')
+    f.write('  // Payload beats do not live in slots: they stream through u_pfifo in\n')
+    f.write('  // arrival order, and since every stage is in-order, the head of the FIFO\n')
+    f.write('  // is always the first payload beat of the slot TX is on.\n')
+    f.write(f'  localparam int NSLOT   = {NSLOT};\n')
+    f.write(f'  localparam int SLOT_AW = {SLOT_AW};\n')
+    f.write('  logic [7:0] slot_hdr [0:NSLOT*HDR_MAX_BYTES-1];\n')
+    f.write('  logic [AXI_DATA_W/8-1:0] slot_keep [0:NSLOT*HDR_MAX_BEATS-1];\n')
+    f.write(f'  logic [{BEAT_CNT_W-1}:0] slot_beat_cnt [0:NSLOT-1];\n')
+    f.write('  logic slot_done     [0:NSLOT-1];\n')
+    f.write('  logic slot_overflow [0:NSLOT-1];\n')
+    if needs_byte_len:
+        f.write('  logic [15:0] slot_byte_len [0:NSLOT-1];\n')
+    f.write('  logic slot_drop     [0:NSLOT-1];\n')
     f.write('  `ifndef SYNTHESIS\n')
     f.write('  // synthesis translate_off\n')
     f.write('  initial begin\n')
-    f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++) pkt_buf_hdr[i] = 8\'d0;\n')
-    f.write('    for (int r = 0; r < PAYLOAD_MAX_BEATS; r++)\n')
-    f.write('      for (int b = 0; b < BEAT_BYTES; b++) pkt_buf_payload[r][b] = 8\'d0;\n')
+    f.write('    for (int i = 0; i < NSLOT*HDR_MAX_BYTES; i++) slot_hdr[i] = 8\'d0;\n')
     f.write('  end\n')
     f.write('  // synthesis translate_on\n')
     f.write('  `endif\n')
-    f.write(f'  logic [AXI_DATA_W/8-1:0] pkt_keep [0:MAX_PKT_BEATS-1];\n\n')
+    f.write('  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;\n')
+    f.write('  wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];\n')
+    f.write('  wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];\n')
+    f.write('  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];\n')
+    f.write('  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];\n')
+    f.write('  wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];\n')
+    f.write('  // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the\n')
+    f.write('  // slot being reusable are different events: on an OVERSIZE packet the\n')
+    f.write('  // FIFO entry marked last is pushed at MAX_PKT_BEATS while the link\'s real\n')
+    f.write('  // tlast arrives later, so TX can finish while RX is still receiving into\n')
+    f.write('  // the slot. Releasing then wiped the slot under RX and the remaining\n')
+    f.write('  // beats were re-read as a new packet\'s header rows (deadlocked T8).\n')
+    f.write('  // A slot is released only once its tlast has been seen.\n')
+    f.write('  wire  [SLOT_AW:0] n_alloc  = wr_ptr - rel_ptr;\n')
+    f.write('  wire  rx_slot_free = (n_alloc < NSLOT);\n\n')
+
+    # x_hdr: the header bytes of the slot being ISSUED (feeds field extraction)
+    f.write('  // Header bytes of the slot being issued to the pipeline -- every w_* field\n')
+    f.write('  // below is extracted from this. (Procedural mux, not continuous assigns\n')
+    f.write('  // from array elements -- see the note at the extraction block.)\n')
+    f.write('  logic [7:0] x_hdr [0:HDR_MAX_BYTES-1];\n')
+    f.write('  always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) x_hdr[i] = slot_hdr[iss_slot*HDR_MAX_BYTES + i];\n\n')
+
+    # payload FIFO
+    f.write(f'  localparam int PFIFO_W  = AXI_DATA_W + AXI_DATA_W/8 + 1;  // {{last, keep, data}}\n')
+    f.write(f'  localparam int PFIFO_AW = {PFIFO_AW};\n')
+    f.write(f'  localparam int PFIFO_DEPTH = 1 << PFIFO_AW;  // {1 << PFIFO_AW} >= PAYLOAD_MAX_BEATS\n')
+    f.write('  logic                pfifo_wr_en;\n')
+    f.write('  logic [PFIFO_W-1:0]  pfifo_wr_data;\n')
+    f.write('  logic                pfifo_full;\n')
+    f.write('  logic                pfifo_rd_valid;\n')
+    f.write('  logic [PFIFO_W-1:0]  pfifo_rd_data;\n')
+    f.write('  logic                pfifo_rd_en;\n')
+    f.write('  logic [PFIFO_AW:0]   pfifo_occupancy;\n')
+    f.write('  pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (\n')
+    f.write('    .clk(clk), .rst_n(rst_n),\n')
+    f.write('    .wr_en(pfifo_wr_en), .wr_data(pfifo_wr_data), .full(pfifo_full),\n')
+    f.write('    .rd_valid(pfifo_rd_valid), .rd_data(pfifo_rd_data), .rd_en(pfifo_rd_en),\n')
+    f.write('    .occupancy(pfifo_occupancy)\n')
+    f.write('  );\n')
+    f.write('  wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];\n')
+    f.write('  wire [AXI_DATA_W/8-1:0] pfifo_head_keep = pfifo_rd_data[AXI_DATA_W +: AXI_DATA_W/8];\n')
+    f.write('  wire [AXI_DATA_W-1:0]   pfifo_head_data = pfifo_rd_data[AXI_DATA_W-1:0];\n\n')
 
     # ── State registers ────────────────────────────────────────────────────────
-    # RX and TX are independently-paced, not one shared enum -- see the RX/
-    # PROC/TX always_ff blocks below for the exact triggering/ordering
-    # invariants each register depends on.
     f.write('  // ── State registers ──────────────────────────────────────────────────────\n')
-    f.write('  //   pkt_busy   : a packet currently owns the pipeline (any stage). The\n')
-    f.write('  //                single-packet-in-flight invariant -- packet N+1 cannot\n')
-    f.write('  //                start until N has drained from BOTH RX and TX.\n')
-    f.write('  //   rx_done    : RX captured this packet\'s tlast beat (or the overflow\n')
-    f.write('  //                path below completed). Reset to 0 whenever pkt_busy is 0,\n')
-    f.write('  //                by construction of the RX block\'s own logic -- so\n')
-    f.write('  //                s_axis_tready = !rx_done is correct on its own.\n')
-    f.write('  //   rx_beat_cnt: beats captured so far. Freezes automatically once rx_done\n')
-    f.write('  //                latches (increment is gated on !rx_done) -- no separate\n')
-    f.write('  //                "final beat count" register needed, TX reads this directly.\n')
-    f.write('  //   overflow   : this packet exceeded MAX_PKT_BEATS -- diagnostic only, does\n')
-    f.write('  //                NOT suppress TX (which may already be transmitting by the\n')
-    f.write('  //                time this is discovered, deep in the payload region -- a\n')
-    f.write('  //                real cut-through design cannot "unsend" bytes already on\n')
-    f.write('  //                the wire). The transmitted packet is simply truncated to\n')
-    f.write('  //                MAX_PKT_BEATS beats with a correctly-placed tlast.\n')
-    f.write('  //   proc_armed : drives processing_generated.valid_in. Set once\n')
-    f.write('  //                rx_beat_cnt*BEAT_BYTES >= cutoff_byte and held sticky-high\n')
-    f.write('  //                for the rest of the packet (processing_generated\'s lkp_*\n')
-    f.write('  //                inputs must stay stable from trigger until valid_out).\n')
-    f.write('  //   proc_settle: one-cycle buffer set the first cycle proc_valid_out fires\n')
-    f.write('  //                (gated on proc_armed too -- without that qualifier, a\n')
-    f.write('  //                residual valid_out tail from a JUST-cleared previous packet\n')
-    f.write('  //                could spuriously re-trigger for a new packet that hasn\'t\n')
-    f.write('  //                reached its own cutoff yet, since valid_out lags valid_in by\n')
-    f.write('  //                processing_generated\'s own pipeline depth). Exists because\n')
-    f.write('  //                processing_generated\'s own out_* pass-through signals were\n')
-    f.write('  //                observed (via this app\'s from-scratch top-level testbench --\n')
-    f.write('  //                none existed before) to still reflect the PREVIOUS packet\'s\n')
-    f.write('  //                values for one more cycle after proc_valid_out first rises,\n')
-    f.write('  //                a pre-existing processing_generated timing subtlety never\n')
-    f.write('  //                exercised until now.\n')
-    f.write('  //   proc_committed: one-shot latch, set the cycle AFTER proc_settle -- gates\n')
-    f.write('  //                write-back and arming TX so they fire exactly once per packet,\n')
-    f.write('  //                using out_* only once it has genuinely settled.\n')
-    f.write('  //   tx_active  : armed by proc_settle && !proc_committed && !proc_drop (the\n')
-    f.write('  //                exact same pre-edge condition proc_committed itself latches\n')
-    f.write('  //                on, so both fire together); cleared once TX\'s last beat is\n')
-    f.write('  //                accepted.\n')
-    f.write('  //   tx_beat_cnt: the FETCH-ISSUE pointer -- the row TX is about to read this\n')
-    f.write('  //                cycle, one row ahead of what tx_out_* is currently presenting\n')
-    f.write('  //                (pkt_buf_payload is real BRAM now, needing a 1-cycle registered\n')
-    f.write('  //                read; see the TX section below). Issue/advance gated on\n')
-    f.write('  //                tx_beat_cnt < rx_beat_cnt (never read a beat RX hasn\'t\n')
-    f.write('  //                captured yet -- this is what makes TX correctly chase RX\'s\n')
-    f.write('  //                arrival frontier instead of racing ahead). tlast is computed\n')
-    f.write('  //                at issue-time from (rx_done||overflow), to distinguish "caught\n')
-    f.write('  //                up to RX\'s live frontier, more beats still coming" from "this\n')
-    f.write('  //                really is the last beat of the whole packet".\n')
-    f.write('  //   tx_out_*   : registered output stage -- what m_axis_* actually presents,\n')
-    f.write('  //                one cycle behind tx_beat_cnt\'s own fetch-issue.\n')
-    f.write('  logic pkt_busy;\n')
-    f.write('  logic rx_done;\n')
-    f.write('  logic overflow;\n')
-    f.write('  logic proc_armed;\n')
-    f.write('  logic proc_settle;\n')
-    f.write('  logic proc_committed;\n')
-    f.write('  logic tx_active;\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0] rx_beat_cnt;\n')
-    if needs_byte_len:
-        # Total packet byte length, for BYTES-type counters -- freezes
-        # automatically once rx_done latches, same rationale as rx_beat_cnt
-        # above (increment is gated on accept_beat, which itself can't fire
-        # once s_axis_tready=!rx_done drops).
-        f.write('  logic [15:0] pkt_byte_len;\n')
+    f.write('  //   iss_fire     : one-cycle valid_in pulse to u_proc for slot iss_slot\n')
+    f.write('  //   proc_out_valid: u_proc\'s data-ALIGNED valid (out_valid port) -- the\n')
+    f.write('  //                  cycle out_*/drop belong to slot cmp_slot\n')
+    f.write('  //   tx_hdr_row/tx_in_payload: TX progress through slot tx_slot\n')
     if 'ingress_timestamp' in std_meta_ins:
         tsw = std_meta_ins['ingress_timestamp']
-        f.write(f'  // Free-running cycle counter for standard_metadata.ingress_timestamp.\n')
-        f.write(f'  // xsa.p4 declares it bit<{tsw}> and defines no unit, so this counts\n')
-        f.write(f'  // clk cycles; at 250 MHz a {tsw}-bit counter wraps in roughly\n')
-        f.write(f'  // {int((2**tsw)/250e6/60/60/24/365) if tsw >= 48 else 0} years, and it is only ever compared/differenced.\n')
-        f.write(f'  logic [{tsw-1}:0] ingress_ts_ctr;\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_beat_cnt;\n')
+        f.write(f'  logic [{tsw-1}:0] ingress_ts_ctr;   // free-running, bit<{tsw}> per the architecture\n')
+    f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_hdr_row;\n')
+    f.write('  logic tx_in_payload;\n')
     f.write('  logic tx_out_valid;\n')
     f.write(f'  logic [{KEEP_W*8-1}:0] tx_out_data;\n')
     f.write(f'  logic [{KEEP_W-1}:0] tx_out_keep;\n')
-    f.write('  logic tx_out_last;\n')
-    f.write('  // 2-stage issue/commit pipeline for TX\'s own fetch, needed because\n')
-    f.write('  // pkt_buf_payload is real BRAM (1-cycle registered read) -- see the TX\n')
-    f.write('  // section below for the full design rationale.\n')
-    f.write('  logic tx_pend_valid, tx_pend_ready, tx_pend_is_hdr, tx_pend_last;\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_pend_row;\n')
-    f.write(f'  logic [{KEEP_W-1}:0] tx_pend_keep;\n')
-    f.write(f'  logic [{BEAT_CNT_W-1}:0] payload_fetch_addr;\n')
-    f.write(f'  logic [{KEEP_W*8-1}:0] payload_rd_data;\n\n')
+    f.write('  logic tx_out_last;\n\n')
 
     # ── Header field wires (extracted from pkt_buf) ────────────────────────────
     f.write('  // ── Header field extraction from pkt_buf ────────────────────────────────\n')
@@ -1358,7 +1339,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             if w == 0:
                 continue
             f.write(f'  logic [{w-1}:0] w_{inst_name}_{fld.name};\n')
-            fields_here.append((fld.name, _extract_expr(base_expr, bit_off, w)))
+            fields_here.append((fld.name, _extract_expr(base_expr, bit_off, w, target='x_hdr')))
             bit_off += w
         if fields_here:
             f.write('  always_comb begin\n')
@@ -1431,7 +1412,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             if fld.width:
                 f.write(f'  wire [{fld.width-1}:0] out_{hname}_{fld.name};\n')
     f.write('  wire proc_valid_out;\n')
+    f.write('  wire proc_out_valid;\n')
     f.write('  wire proc_drop;\n')
+    f.write('  logic iss_fire;\n')
     for mf in ir.metadata_fields:
         f.write(f'  wire [{mf.width-1}:0] proc_out_meta_{mf.name};\n')
     f.write('\n')
@@ -1510,7 +1493,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  processing_generated u_proc (\n')
     f.write('    .clk       (clk),\n')
     f.write('    .rst_n     (rst_n),\n')
-    f.write('    .valid_in  (proc_armed),\n')
+    f.write('    .valid_in  (iss_fire),\n')
     # valid flags
     for hname in all_hdr_names:
         f.write(f'    .{hname}_valid     (w_{hname}_valid),\n')
@@ -1536,7 +1519,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if fname == 'ingress_timestamp':
             f.write(f'    .std_meta_{fname}  (ingress_ts_ctr),\n')
         elif fname == 'parsed_bytes':
-            f.write(f'    .std_meta_{fname}  ({fw}\'({{pkt_byte_len}})),\n')
+            f.write(f'    .std_meta_{fname}  ({fw}\'({{slot_byte_len[iss_slot]}})),\n')
         elif fname == 'parser_error':
             if verify_terms:
                 f.write(f'    .std_meta_{fname}  (w_parser_error),\n')
@@ -1582,38 +1565,271 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     for cnt in ctrl.counters:
         f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
         f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
-    f.write('    .valid_out (proc_valid_out),\n')
+    f.write('    .out_valid (proc_out_valid),   // aligned with out_*/drop\n')
+    f.write('    .valid_out (proc_valid_out),   // legacy registered-late valid, unused here\n')
     f.write('    .drop      (proc_drop)\n')
     f.write('  );\n\n')
 
-    # ── Cross-block completion signal ─────────────────────────────────────────
-    f.write('  // ── Cross-block wiring ───────────────────────────────────────────────────\n')
-    f.write('  // A new packet may start only once the current one has drained from BOTH\n')
-    f.write('  // RX and TX (the single-packet-in-flight invariant -- avoids needing a\n')
-    f.write('  // double-buffered pkt_buf).\n')
-    f.write('  wire pkt_ready_to_clear = pkt_busy && rx_done && proc_committed && !tx_active;\n\n')
+    # ═════════════════════════════════════════════════════════════════════════
+    # Streaming datapath (step 3): RX -> slot ring -> issue -> u_proc ->
+    # capture -> TX, with NSLOT packets in flight and every stage in order.
+    # ═════════════════════════════════════════════════════════════════════════
+    hdr_fields = []   # (inst_name, fld_name, width) for every non-stack header
+    for hname in all_hdr_names:
+        inst = inst_map.get(hname)
+        if not inst:
+            continue
+        for fld in inst.header_type.fields:
+            if fld.width:
+                hdr_fields.append((hname, fld.name, fld.width))
 
-    # ── Counter externs ────────────────────────────────────────────────────────
-    # Storage lives outside processing_generated (see emit_counters.py) since,
-    # unlike registers, nothing ever reads a counter back mid-packet -- the
-    # increment request is raised at proc_settle&&!proc_committed (same cycle
-    # write-back commits) but only APPLIED at pkt_ready_to_clear, once
-    # pkt_byte_len (needed for BYTES-type counters) is final. Deliberately
-    # NOT gated on !proc_drop: mark_to_drop() doesn't abort the P4 action, so
-    # a .count() elsewhere in the same action must still fire on a dropped
-    # packet -- the one place this intentionally diverges from the
-    # write-back timing it otherwise mirrors.
+    # ── Per-slot result storage (written at out_valid, read by TX) ────────────
+    f.write('  // ── Per-slot pipeline results ────────────────────────────────────────────\n')
+    f.write('  // Captured on u_proc.out_valid (the data-ALIGNED valid) into slot cmp_slot.\n')
+    f.write('  // The output PHV is stored, not an overlaid byte image, because at\n')
+    f.write('  // completion the slot\'s later header rows may not have arrived yet\n')
+    f.write('  // (cut-through): the overlay is done at TX time, when TX waits for them.\n')
+    for hname in all_hdr_names:
+        if inst_map.get(hname):
+            f.write(f'  logic slot_phv_{hname}_valid [0:NSLOT-1];\n')
+    for hname, fname, w in hdr_fields:
+        f.write(f'  logic [{w-1}:0] slot_phv_{hname}_{fname} [0:NSLOT-1];\n')
+    for mf in ir.metadata_fields:
+        f.write(f'  logic [{mf.width-1}:0] slot_meta_{mf.name} [0:NSLOT-1];\n')
+    for cnt in ctrl.counters:
+        f.write(f'  logic slot_cnt_{cnt.name}_en [0:NSLOT-1];\n')
+        f.write(f'  logic [{_counter_idx_w(cnt)-1}:0] slot_cnt_{cnt.name}_idx [0:NSLOT-1];\n')
+    f.write('\n')
+
+    # ── RX ────────────────────────────────────────────────────────────────────
+    f.write('  // ── RX (ingest) ──────────────────────────────────────────────────────────\n')
+    f.write('  // Accept whenever the next slot is free and the payload FIFO has room.\n')
+    f.write('  // Never because the pipeline or TX is busy -- that is the whole point.\n')
+    f.write('  assign s_axis_tready = rx_slot_free && !pfifo_full;\n')
+    f.write('  wire accept_beat = s_axis_tvalid && s_axis_tready;\n')
+    f.write(f'  wire [{BEAT_CNT_W-1}:0] rx_beat_cnt = slot_beat_cnt[wr_slot];\n')
+    f.write('  wire accept_payload_beat = accept_beat && (rx_beat_cnt >= HDR_MAX_BEATS) && (rx_beat_cnt < MAX_PKT_BEATS);\n')
+    f.write('  assign pfifo_wr_en   = accept_payload_beat;\n')
+    f.write('  assign pfifo_wr_data = { (s_axis_tlast || (rx_beat_cnt == MAX_PKT_BEATS - 1)),\n')
+    f.write('                            s_axis_tkeep, s_axis_tdata };\n\n')
+
+    f.write('  logic rx_active;   // a packet is being received into wr_slot\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) begin\n')
+    f.write('      wr_ptr <= \'0;\n')
+    f.write('      rel_ptr <= \'0;\n')
+    f.write('      rx_active <= 1\'b0;\n')
+    f.write('      for (int sl = 0; sl < NSLOT; sl++) begin\n')
+    f.write('        slot_beat_cnt[sl] <= \'0; slot_done[sl] <= 1\'b0; slot_overflow[sl] <= 1\'b0;\n')
+    if needs_byte_len:
+        f.write('        slot_byte_len[sl] <= \'0;\n')
+    f.write('      end\n')
+    f.write('    end else begin\n')
+    f.write('      if (accept_beat) begin\n')
+    if needs_byte_len:
+        popcount_terms = ' + '.join(f"{{15'd0, s_axis_tkeep[{i}]}}" for i in range(KEEP_W))
+        f.write(f'        slot_byte_len[wr_slot] <= slot_byte_len[wr_slot] + ({popcount_terms});\n')
+    f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
+    f.write(f'          for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write('            if (s_axis_tkeep[i])\n')
+    f.write(f'              slot_hdr[wr_slot*HDR_MAX_BYTES + rx_beat_cnt*{KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
+    f.write('          slot_keep[wr_slot*HDR_MAX_BEATS + rx_beat_cnt] <= s_axis_tkeep;\n')
+    f.write(f'          slot_beat_cnt[wr_slot] <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
+    f.write('        end else if (rx_beat_cnt < MAX_PKT_BEATS) begin\n')
+    f.write(f'          slot_beat_cnt[wr_slot] <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
+    f.write('        end else begin\n')
+    f.write('          slot_overflow[wr_slot] <= 1\'b1;   // truncated; FIFO entry already marked last\n')
+    f.write('        end\n')
+    f.write('        rx_active <= !s_axis_tlast;\n')
+    f.write('        if (s_axis_tlast) begin\n')
+    f.write('          slot_done[wr_slot] <= 1\'b1;\n')
+    f.write('          wr_ptr <= wr_ptr + 1\'b1;\n')
+    f.write('        end\n')
+    f.write('      end\n')
+    f.write('      // slot release: TX has moved past rel_slot AND its tlast has arrived\n')
+    f.write('      if (slot_release) begin\n')
+    f.write('        rel_ptr <= rel_ptr + 1\'b1;\n')
+    f.write('        slot_beat_cnt[rel_slot] <= \'0; slot_done[rel_slot] <= 1\'b0; slot_overflow[rel_slot] <= 1\'b0;\n')
+    if needs_byte_len:
+        f.write('        slot_byte_len[rel_slot] <= \'0;\n')
+    f.write('      end\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── Issue ─────────────────────────────────────────────────────────────────
+    f.write('  // ── Issue (one-cycle valid_in pulse per packet) ──────────────────────────\n')
+    f.write('  // Slot iss_slot is issuable once it is allocated (RX has at least started\n')
+    f.write('  // it) and its header region has arrived -- the same cutoff the old shell\n')
+    f.write('  // armed on. u_proc is a free-running pipeline: it captures the w_* inputs\n')
+    f.write('  // on the issue edge, so nothing has to be held afterwards and the next\n')
+    f.write('  // slot can be issued on the very next cycle.\n')
+    f.write('  // iss_ptr can legitimately be ONE ahead of wr_ptr (a packet issued cut-\n')
+    f.write('  // through before its tlast). "Behind" therefore has to exclude that case,\n')
+    f.write('  // or an empty future slot would look allocated.\n')
+    f.write('  wire iss_behind_wr = (iss_ptr != wr_ptr) && (iss_ptr != wr_ptr + 1\'b1);\n')
+    f.write('  // "RX is mid-packet in wr_slot" is tracked EXPLICITLY (rx_active), not\n')
+    f.write('  // inferred from slot_beat_cnt != 0: wr_ptr advances on tlast even when the\n')
+    f.write('  // next slot still holds an older packet awaiting TX, and that packet\'s\n')
+    f.write('  // beat count is nonzero too -- inferring from it re-issued a stale slot.\n')
+    f.write('  wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);\n')
+    f.write('  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];\n')
+    f.write('  assign iss_fire = iss_allocated && iss_hdr_ready;\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) iss_ptr <= \'0;\n')
+    f.write('    else if (iss_fire) iss_ptr <= iss_ptr + 1\'b1;\n')
+    f.write('  end\n\n')
+    if 'ingress_timestamp' in std_meta_ins:
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) ingress_ts_ctr <= \'0;\n')
+        f.write('    else        ingress_ts_ctr <= ingress_ts_ctr + 1\'b1;\n')
+        f.write('  end\n\n')
+
+    # ── Capture ───────────────────────────────────────────────────────────────
+    f.write('  // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────\n')
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) cmp_ptr <= \'0;\n')
+    f.write('    else if (proc_out_valid) begin\n')
+    f.write('      cmp_ptr <= cmp_ptr + 1\'b1;\n')
+    f.write('      slot_drop[cmp_slot] <= proc_drop;\n')
+    for hname in all_hdr_names:
+        if inst_map.get(hname):
+            f.write(f'      slot_phv_{hname}_valid[cmp_slot] <= out_{hname}_valid;\n')
+    for hname, fname, w in hdr_fields:
+        f.write(f'      slot_phv_{hname}_{fname}[cmp_slot] <= out_{hname}_{fname};\n')
+    for mf in ir.metadata_fields:
+        f.write(f'      slot_meta_{mf.name}[cmp_slot] <= proc_out_meta_{mf.name};\n')
+    for cnt in ctrl.counters:
+        f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
+        f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── TX-side views of slot tx_slot ─────────────────────────────────────────
+    f.write('  // ── TX-side view of slot tx_slot ─────────────────────────────────────────\n')
+    f.write('  logic [7:0] t_hdr [0:HDR_MAX_BYTES-1];\n')
+    f.write('  always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) t_hdr[i] = slot_hdr[tx_slot*HDR_MAX_BYTES + i];\n')
+    for hname in all_hdr_names:
+        if inst_map.get(hname):
+            f.write(f'  wire phv_{hname}_valid = slot_phv_{hname}_valid[tx_slot];\n')
+    for hname, fname, w in hdr_fields:
+        f.write(f'  wire [{w-1}:0] phv_{hname}_{fname} = slot_phv_{hname}_{fname}[tx_slot];\n')
+    f.write('\n')
+    # phv_*_base: the same offset arithmetic as w_*_base, over the STORED output
+    # PHV (header length is preserved by the program, so the offsets agree).
+    import io as _io, re as _re
+    _buf = _io.StringIO()
+    _emitted = set()
+    for layout in layouts:
+        _emit_offset_var_for(_buf, layout, layouts, valid_map, hdr_idx_w, _emitted)
+    _txt = _re.sub(r'\bw_', 'phv_', _buf.getvalue())
+    if _txt.strip():
+        f.write('  // header byte offsets over the stored PHV (same arithmetic as w_*_base)\n')
+        f.write(_txt)
+        f.write('\n')
+
+    # ── Deparser overlay for the slot TX is on ─────────────────────────────────
+    f.write('  // ── Deparser: header-region assembly for slot tx_slot ────────────────────\n')
+    f.write('  // Received bytes of the slot with its stored output PHV overlaid at each\n')
+    f.write('  // header\'s layout offset, guarded by the stored output validity.\n')
+    f.write('  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];\n')
+    f.write('  always_comb begin\n')
+    f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];\n')
+    _emit_writeback_block(f, layouts, inst_map, valid_map, '    ', target='hdr_out', op='=',
+                          fld_pfx='phv_', base_pfx='phv_')
+    f.write('  end\n\n')
+
+    # ── TX ────────────────────────────────────────────────────────────────────
+    f.write('  // ── TX (egress) ──────────────────────────────────────────────────────────\n')
+    f.write('  // No start cycle and no finish-on-consume: the slot at tx_slot is "live"\n')
+    f.write('  // the moment its result is captured (cmp_ptr != tx_ptr), its first row\n')
+    f.write('  // loads on any cycle the output register is free, and the packet is\n')
+    f.write('  // FINISHED when its last beat is LOADED into tx_out (the data is a copy,\n')
+    f.write('  // so the slot can be released right then). tx_ptr advances on that\n')
+    f.write('  // edge, so on the cycle the last beat is consumed the next slot\'s first\n')
+    f.write('  // row is already loading -- one beat per cycle across packet boundaries.\n')
+    f.write('  // Before this TX cost ~2.5 cycles per packet on top of its beats (a\n')
+    f.write('  // start cycle plus finish-on-consume), which was the whole gap to ideal.\n')
+    f.write('  // Per-slot facts (drop, metadata, counter request) are read straight\n')
+    f.write('  // from the slot each cycle -- they are stable for the slot\'s lifetime --\n')
+    f.write('  // so nothing needs latching at a start event. The metadata sideband\n')
+    f.write('  // rides in tx_out with the beat, so it changes exactly when the first\n')
+    f.write('  // beat of the next packet is presented.\n')
+    f.write('  wire tx_consumed  = tx_out_valid && m_axis_tready;\n')
+    f.write('  wire tx_slot_free = !tx_out_valid || tx_consumed;\n')
+    f.write('  wire slot_live    = (cmp_ptr != tx_ptr);\n')
+    f.write('  wire cur_discard  = slot_drop[tx_slot];\n')
+    f.write(f'  wire [{BEAT_CNT_W-1}:0] tx_beat_cnt_s = slot_beat_cnt[tx_slot];\n')
+    f.write('  wire tx_done_s        = slot_done[tx_slot];\n')
+    f.write('  wire pkt_ends_in_hdr  = tx_done_s && (tx_beat_cnt_s <= HDR_MAX_BEATS);\n')
+    f.write('  wire hdr_row_ready    = (tx_hdr_row < tx_beat_cnt_s) && (tx_hdr_row < HDR_MAX_BEATS);\n')
+    f.write(f'  wire hdr_row_is_last  = tx_done_s && (tx_hdr_row == tx_beat_cnt_s - {BEAT_CNT_W}\'d1);\n')
+    f.write('  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;\n')
+    f.write('  wire emit_pl     = slot_live && !cur_discard &&  tx_in_payload && pfifo_rd_valid && tx_slot_free;\n')
+    f.write('  wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;\n')
+    f.write('  assign pfifo_rd_en = emit_pl || discard_pop;\n')
+    f.write('  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);\n')
+    f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
+    f.write('  wire tx_finish    = last_loaded || discard_done;\n')
+    f.write('  wire slot_release = (rel_ptr != tx_ptr) && slot_done[rel_slot];\n')
+
+    f.write('\n')
+
+
+    f.write('  always_ff @(posedge clk) begin\n')
+    f.write('    if (!rst_n) begin\n')
+    f.write('      tx_ptr        <= \'0;\n')
+    f.write('      tx_in_payload <= 1\'b0;\n')
+    f.write('      tx_hdr_row    <= \'0;\n')
+    f.write('      tx_out_valid  <= 1\'b0;\n')
+    f.write('      tx_out_data   <= \'0;\n')
+    f.write('      tx_out_keep   <= \'0;\n')
+    f.write('      tx_out_last   <= 1\'b0;\n')
+
+    for mf in ir.metadata_fields:
+        f.write(f'      out_meta_{mf.name} <= \'0;\n')
+    f.write('    end else begin\n')
+
+    f.write('      if (tx_consumed) tx_out_valid <= 1\'b0;\n')
+    f.write('      if (emit_hdr) begin\n')
+    f.write('        tx_out_valid <= 1\'b1;\n')
+    f.write(f'        for (int i = 0; i < {KEEP_W}; i++)\n')
+    f.write(f'          tx_out_data[i*8 +: 8] <= hdr_out[tx_hdr_row * {KEEP_W} + i];\n')
+    f.write('        tx_out_keep  <= slot_keep[tx_slot*HDR_MAX_BEATS + tx_hdr_row];\n')
+    f.write('        tx_out_last  <= hdr_row_is_last;\n')
+    f.write(f'        tx_hdr_row   <= tx_hdr_row + {BEAT_CNT_W}\'d1;\n')
+    f.write('        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1\'b1;\n')
+    for mf in ir.metadata_fields:
+        f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+    f.write('      end else if (emit_pl) begin\n')
+    f.write('        tx_out_valid <= 1\'b1;\n')
+    f.write('        tx_out_data  <= pfifo_head_data;\n')
+    f.write('        tx_out_keep  <= pfifo_head_keep;\n')
+    f.write('        tx_out_last  <= pfifo_head_last;\n')
+    for mf in ir.metadata_fields:
+        f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+    f.write('      end\n')
+    f.write('      if (tx_finish) begin\n')
+    f.write('        tx_in_payload <= 1\'b0;\n')
+    f.write('        tx_hdr_row    <= \'0;\n')
+    f.write('        tx_ptr        <= tx_ptr + 1\'b1;\n')
+    f.write('      end\n')
+    f.write('    end\n')
+    f.write('  end\n\n')
+
+    # ── Counter externs (serialised at TX: commit on start, apply on finish) ──
     for cnt in ctrl.counters:
         has_pkt  = cnt.counter_type in ('PACKETS', 'PACKETS_AND_BYTES')
         has_byte = cnt.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
         f.write(f'  {cnt.name}_counter #(.DEPTH({cnt.size})) u_{cnt.name} (\n')
         f.write('    .clk (clk), .rst_n (rst_n),\n')
-        f.write(f'    .incr_req  ({cnt.name}_incr_en),\n')
-        f.write(f'    .incr_idx  ({cnt.name}_incr_idx),\n')
-        f.write('    .pkt_commit (proc_settle && !proc_committed),\n')
-        f.write('    .pkt_done   (pkt_ready_to_clear),\n')
+        # One request per packet, on the cycle its slot is released: the slot
+        # is still intact during that cycle (the clear lands on the edge), and
+        # its byte length is final -- release waits for the packet's tlast.
+        f.write('    .incr_fire (slot_release),\n')
+        f.write(f'    .incr_req  (slot_cnt_{cnt.name}_en[rel_slot]),\n')
+        f.write(f'    .incr_idx  (slot_cnt_{cnt.name}_idx[rel_slot]),\n')
         if has_byte:
-            f.write('    .pkt_byte_len (pkt_byte_len),\n')
+            f.write('    .pkt_byte_len (slot_byte_len[rel_slot]),\n')
         f.write(f'    .cp_query_en  ({cnt.name}_cp_query_en),\n')
         f.write(f'    .cp_query_idx ({cnt.name}_cp_query_idx),\n')
         f.write(f'    .cp_query_busy ({cnt.name}_cp_query_busy)')
@@ -1622,301 +1838,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if has_byte:
             f.write(f',\n    .cp_query_byte_value ({cnt.name}_cp_query_byte_value)')
         f.write('\n  );\n\n')
-
-    # ── RX (ingest) ────────────────────────────────────────────────────────────
-    f.write('  // ── RX (ingest) ──────────────────────────────────────────────────────────\n')
-    f.write('  assign s_axis_tready = !rx_done;\n')
-    f.write('  wire accept_beat = s_axis_tvalid && s_axis_tready;\n')
-    f.write('  wire accept_payload_beat = accept_beat && (rx_beat_cnt >= HDR_MAX_BEATS) && (rx_beat_cnt < MAX_PKT_BEATS);\n\n')
-
-    f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (!rst_n) begin\n')
-    f.write('      pkt_busy    <= 1\'b0;\n')
-    f.write('      rx_done     <= 1\'b0;\n')
-    f.write('      rx_beat_cnt <= \'0;\n')
-    f.write('      overflow    <= 1\'b0;\n')
-    if needs_byte_len:
-        f.write('      pkt_byte_len <= \'0;\n')
-    f.write('    end else begin\n')
-    f.write('      if (accept_beat) begin\n')
-    f.write('        pkt_busy <= 1\'b1;\n')
-    if needs_byte_len:
-        # $countones is an iverilog/simulator-only system function -- real
-        # Quartus synthesis rejects it outright ("Unsupported Feature error
-        # ... system function '$countones' is not supported for synthesis",
-        # confirmed via a real quartus_map run). Population count via a flat,
-        # Python-unrolled per-bit sum instead -- synthesizes to an ordinary
-        # adder tree, no different in kind from every other explicit-sum
-        # idiom already used elsewhere in this file/project for the same
-        # reason (avoid runtime SV constructs Quartus doesn't accept).
-        popcount_terms = ' + '.join(f"{{15'd0, s_axis_tkeep[{i}]}}" for i in range(KEEP_W))
-        f.write(f'        pkt_byte_len <= pkt_byte_len + ({popcount_terms});\n')
-    f.write('        if (rx_beat_cnt < HDR_MAX_BEATS) begin\n')
-    f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
-    f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
-    f.write('        end else if (rx_beat_cnt < MAX_PKT_BEATS) begin\n')
-    f.write('          // pkt_buf_payload\'s own byte-enable write lives in a separate,\n')
-    f.write('          // dedicated always_ff below (accept_payload_beat) -- Quartus\'s RAM\n')
-    f.write('          // inference template was found not to match when the byte-enable\n')
-    f.write('          // write is nested two if-levels deep (accept_beat -> this branch);\n')
-    f.write('          // one level (a single derived enable wire) is required.\n')
-    f.write('          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;\n')
-    f.write(f'          rx_beat_cnt <= rx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
-    f.write('        end else begin\n')
-    f.write('          // Beyond MAX_PKT_BEATS: stop capturing (memory-safety truncation,\n')
-    f.write('          // not a drop -- TX may already be transmitting this packet by now,\n')
-    f.write('          // see the `overflow` declaration comment above). rx_beat_cnt stays\n')
-    f.write('          // frozen at MAX_PKT_BEATS, which TX will correctly treat as the\n')
-    f.write('          // final count once rx_done latches below.\n')
-    f.write('          overflow <= 1\'b1;\n')
-    f.write('        end\n')
-    f.write('        if (s_axis_tlast) rx_done <= 1\'b1;\n')
-    f.write('      end\n')
-    f.write('      if (pkt_ready_to_clear) begin\n')
-    f.write('        pkt_busy    <= 1\'b0;\n')
-    f.write('        rx_done     <= 1\'b0;\n')
-    f.write('        rx_beat_cnt <= \'0;\n')
-    f.write('        overflow    <= 1\'b0;\n')
-    if needs_byte_len:
-        f.write('        pkt_byte_len <= \'0;\n')
-    f.write('      end\n')
-    f.write('    end\n')
-    f.write('  end\n\n')
-
-    f.write('  // pkt_buf_payload\'s only writer, isolated in its own always_ff with a\n')
-    f.write('  // single derived enable and no other nesting -- see accept_payload_beat\n')
-    f.write('  // above and the comment in the RX block for why this had to be pulled out\n')
-    f.write('  // (Quartus\'s byte-enable RAM inference template requires this shape;\n')
-    f.write('  // nested two if-levels deep inside RX\'s own always_ff, it silently failed\n')
-    f.write('  // to infer -- confirmed via a real Quartus run\'s explicit "can\'t infer\n')
-    f.write('  // memory... with attribute M9K" warning).\n')
-    f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (accept_payload_beat) begin\n')
-    for i in range(KEEP_W):
-        f.write(f'      if (s_axis_tkeep[{i}]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][{i}] <= s_axis_tdata[{i*8} +: 8];\n')
-    f.write('    end\n')
-    f.write('  end\n\n')
-
-    # ── PROC (match-action trigger + write-back) ──────────────────────────────
-    f.write('  // ── PROC (match-action trigger + write-back) ────────────────────────────\n')
-    f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (!rst_n) begin\n')
-    f.write('      proc_armed     <= 1\'b0;\n')
-    f.write('      proc_settle    <= 1\'b0;\n')
-    f.write('      proc_committed <= 1\'b0;\n')
-    f.write('    end else begin\n')
-    f.write('      // Trigger as soon as the header region has fully arrived -- not\n')
-    f.write('      // waiting for the whole packet. This is the cut-through trigger.\n')
-    f.write('      // Also trigger on rx_done alone (packet ended before reaching the\n')
-    f.write('      // theoretical cutoff): once RX has finished, no more bytes will EVER\n')
-    f.write('      // arrive, so waiting further would deadlock -- this is a real case,\n')
-    f.write('      // not just defensive, since header-region sizing accounts for the\n')
-    f.write('      // worst-case runtime length of every var_pred field (see\n')
-    f.write('      // _worst_case_hdr_bytes) and can legitimately exceed a specific\n')
-    f.write('      // packet\'s actual total length.\n')
-    # `!proc_valid_out` in the arm condition: do not present the next packet
-    # to processing_generated until the PREVIOUS packet's valid_out tail has
-    # fully drained. proc_settle below fires on `proc_armed && proc_valid_out`,
-    # and the proc_armed guard alone only distinguishes this packet's result
-    # from the previous one's residual tail if that tail has already ENDED by
-    # the time we re-arm. It has not, whenever the inter-packet gap is shorter
-    # than the pipeline depth -- and the depth grew with UserExtern latency
-    # staging. Observed directly: every packet after the first armed with
-    # proc_valid_out still 1, proc_settle fired on that stale tail, and the
-    # sideband latched the previous packet's metadata (tb_ueprobe_top T2/T3).
-    # Waiting for the tail costs a few idle cycles per packet in this
-    # single-packet store-and-forward shell; getting it wrong silently pairs a
-    # packet with its predecessor's result.
-    f.write('      if (!proc_armed && pkt_busy && !proc_valid_out &&\n')
-    f.write('          ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin\n')
-    f.write('        proc_armed <= 1\'b1;\n')
-    f.write('      end\n')
-    f.write('      // proc_armed is required here (not just !proc_committed) so a residual\n')
-    f.write('      // valid_out tail from a just-cleared previous packet can never be\n')
-    f.write('      // mistaken for this packet\'s own result -- processing_generated\'s\n')
-    f.write('      // valid_out lags valid_in by its own pipeline depth, so it can still\n')
-    f.write('      // read high for a few cycles after proc_armed drops back to 0.\n')
-    f.write('      //\n')
-    f.write('      // proc_settle: a one-cycle buffer between first observing proc_valid_out\n')
-    f.write('      // and actually reading out_* / committing write-back. processing_generated\'s\n')
-    f.write('      // own out_* pass-through signals are staged (forwarded through the same\n')
-    f.write('      // number of pipeline registers as valid_out itself) but were observed\n')
-    f.write('      // (via a from-scratch top-level testbench -- this app never had one before)\n')
-    f.write('      // to still reflect the PREVIOUS packet\'s values for one more cycle after\n')
-    f.write('      // proc_valid_out first rises, specifically when valid_in is held\n')
-    f.write('      // continuously high across back-to-back packets (as this design does,\n')
-    f.write('      // and as the direct-mapped store-and-forward design also always did --\n')
-    f.write('      // this is a pre-existing processing_generated timing subtlety, not\n')
-    f.write('      // something this redesign introduces; it was simply never exercised\n')
-    f.write('      // before, since no integrated top-level testbench existed). Waiting one\n')
-    f.write('      // extra cycle before committing is a real, necessary fix, not a stylistic\n')
-    f.write('      // choice -- confirmed empirically against the actual generated RTL.\n')
-    f.write('      if (proc_armed && proc_valid_out && !proc_settle && !proc_committed) begin\n')
-    f.write('        proc_settle <= 1\'b1;\n')
-    f.write('      end\n')
-    f.write('      if (proc_settle && !proc_committed) begin\n')
-    f.write('        proc_committed <= 1\'b1;\n')
-    f.write('      end\n')
-    f.write('      if (pkt_ready_to_clear) begin\n')
-    f.write('        proc_armed     <= 1\'b0;\n')
-    f.write('        proc_settle    <= 1\'b0;\n')
-    f.write('        proc_committed <= 1\'b0;\n')
-    f.write('      end\n')
-    f.write('    end\n')
-    f.write('  end\n\n')
-
-    # ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────
-    f.write('  // ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────\n')
-    f.write('  // pkt_buf_hdr has exactly one driver: this block. RX header-capture and\n')
-    f.write('  // PROC write-back both target pkt_buf_hdr -- two independent always_ff\n')
-    f.write('  // blocks driving the same net is tolerated by iverilog/xsim but rejected\n')
-    f.write('  // by Quartus/Cyclone IV E synthesis ("multiple constant drivers"), so both\n')
-    f.write('  // writes must live in one block. The two conditions are verified disjoint\n')
-    f.write('  // for every packet shape reachable by this app -- see the simulation-only\n')
-    f.write('  // assertion below, which fails loudly (rather than silently dropping one\n')
-    f.write('  // side\'s write) if that ever stops holding for a future app/config.\n')
-    f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS) begin\n')
-    f.write(f'      for (int i = 0; i < {KEEP_W}; i++)\n')
-    f.write('        if (s_axis_tkeep[i])\n')
-    f.write(f'          pkt_buf_hdr[rx_beat_cnt * {KEEP_W} + i] <= s_axis_tdata[i*8 +: 8];\n')
-    f.write('    end else if (proc_settle && !proc_committed && !proc_drop) begin\n')
-    _emit_writeback_block(f, layouts, inst_map, valid_map, '      ')
-    f.write('    end\n')
-    f.write('  `ifndef SYNTHESIS\n')
-    f.write('    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS &&\n')
-    f.write('        proc_settle && !proc_committed && !proc_drop)\n')
-    f.write('      $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");\n')
-    f.write('  `endif\n')
-    f.write('  end\n\n')
-
-    # ── Metadata sideband capture ──────────────────────────────────────────
-    # Latched at exactly the instant the processed headers are committed to
-    # pkt_buf_hdr -- the same one-shot condition -- so the sideband is stable
-    # for the whole TX of the packet it belongs to, rather than tracking
-    # u_proc's combinational output into the next packet. Dropped packets
-    # never commit, so a drop leaves the previous packet's value untouched
-    # (there is no TX to read it).
-    if ir.metadata_fields:
-        f.write('  // ── Metadata sideband capture ──────────────────────────────────────────\n')
-        f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (!rst_n) begin\n')
-        for mf in ir.metadata_fields:
-            f.write(f'      out_meta_{mf.name} <= \'0;\n')
-        f.write('    end else if (proc_settle && !proc_committed && !proc_drop) begin\n')
-        for mf in ir.metadata_fields:
-            f.write(f'      out_meta_{mf.name} <= proc_out_meta_{mf.name};\n')
-        f.write('    end\n')
-        f.write('  end\n\n')
-
-    # ── TX (egress) ────────────────────────────────────────────────────────────
-    f.write('  // ── TX (egress) ──────────────────────────────────────────────────────────\n')
-    f.write('  // pkt_buf_payload is real BRAM (1-cycle registered read), so TX needs a real\n')
-    f.write('  // issue/commit pipeline, not a single same-cycle read -- pkt_buf_hdr stays a\n')
-    f.write('  // plain register array (fresh combinational read, no latency) but is routed\n')
-    f.write('  // through the SAME 2-cycle pipeline for uniformity/simplicity rather than\n')
-    f.write('  // special-cased, at the cost of one harmless extra cycle for header beats.\n')
-    f.write('  //\n')
-    f.write('  // Stage 1 (issue, tx_beat_cnt<rx_beat_cnt gate -- same cut-through chase as\n')
-    f.write('  // before): latches which row/whether-header/keep/last this beat needs, and\n')
-    f.write('  // -- for the payload case -- updates payload_fetch_addr, which ONLY changes\n')
-    f.write('  // on an issue (holds steady otherwise, safe to sit for however long stage 2\n')
-    f.write('  // is backpressured, since the free-running read below just keeps re-settling\n')
-    f.write('  // on the same correct row while it holds).\n')
-    f.write('  //\n')
-    f.write('  // Stage 2 (commit, gated on tx_pend_ready AND tx_pend_valid together --\n')
-    f.write('  // BOTH are required, not tx_pend_ready alone): tx_pend_ready is tx_pend_valid\n')
-    f.write('  // delayed by exactly one more cycle (see the shadow register below), which is\n')
-    f.write('  // what guarantees payload_rd_data has caught up to payload_fetch_addr\'s new\n')
-    f.write('  // value by the time it\'s consumed -- gating on tx_pend_valid alone would read\n')
-    f.write('  // payload_rd_data one cycle too early (its previous, stale row). But\n')
-    f.write('  // tx_pend_ready, being a plain shadow register, itself stays high for one\n')
-    f.write('  // extra cycle AFTER tx_pend_valid is cleared by a commit -- gating on\n')
-    f.write('  // tx_pend_ready alone let stage 2 fire a SECOND time on that trailing-high\n')
-    f.write('  // cycle, re-committing the same already-consumed pend (a real, silent\n')
-    f.write('  // duplicate-beat bug caught only by simulation content mismatches, not by\n')
-    f.write('  // any structural warning). tx_pend_valid in the gate is what stops that.\n')
-    f.write('  //\n')
-    f.write('  // Non-pipelined by construction (stage 1 requires !tx_pend_valid, so a new\n')
-    f.write('  // issue can never overlap an uncommitted pend) -- 2 cycles/beat instead of\n')
-    f.write('  // 1, accepted for correctness/simplicity; nothing in this project asserts an\n')
-    f.write('  // exact TX throughput, only loose cut-through-ordering inequalities.\n')
-    f.write('  wire tx_consumed = tx_out_valid && m_axis_tready;\n')
-    f.write('  wire tx_stage1_issue = !tx_pend_valid && (!tx_out_valid || tx_consumed) && tx_active && (tx_beat_cnt < rx_beat_cnt);\n\n')
-
-    f.write('  always_ff @(posedge clk)\n')
-    f.write('    if (tx_stage1_issue) payload_fetch_addr <= tx_beat_cnt - HDR_MAX_BEATS;\n\n')
-
-    f.write('  always_ff @(posedge clk) payload_rd_data <= pkt_buf_payload[payload_fetch_addr];\n\n')
-
-    f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (!rst_n) begin\n')
-    f.write('      tx_active    <= 1\'b0;\n')
-    f.write('      tx_beat_cnt  <= \'0;\n')
-    f.write('      tx_out_valid <= 1\'b0;\n')
-    f.write('      tx_out_data  <= \'0;\n')
-    f.write('      tx_out_keep  <= \'0;\n')
-    f.write('      tx_out_last  <= 1\'b0;\n')
-    f.write('      tx_pend_valid <= 1\'b0;\n')
-    f.write('      tx_pend_ready <= 1\'b0;\n')
-    f.write('    end else begin\n')
-    f.write('      tx_pend_ready <= tx_pend_valid;  // unconditional shadow, one cycle behind\n')
-    f.write('      // Unconditional drain-on-consume, overridden below by stage 2\'s own\n')
-    f.write('      // tx_out_valid<=1 when it ALSO fires this same cycle (NBA "last write\n')
-    f.write('      // wins" for the same signal in the same always_ff) -- without this,\n')
-    f.write('      // a cycle where the current beat is consumed AND stage 1 issues a new\n')
-    f.write('      // fetch (instead of stage 2 committing) would leave tx_out_valid/data\n')
-    f.write('      // stuck at the just-consumed beat\'s stale value for another cycle,\n')
-    f.write('      // presenting it a second time.\n')
-    f.write('      if (tx_consumed) tx_out_valid <= 1\'b0;\n')
-    f.write('      // Armed on the exact same pre-edge condition that latches\n')
-    f.write('      // proc_committed above (proc_settle && !proc_committed), so both fire\n')
-    f.write('      // together on the true commit cycle (never the cycle write-back\'s own\n')
-    f.write('      // commit happens on -- write-back and this arm both become visible\n')
-    f.write('      // starting the next cycle, so TX only ever fetches pkt_buf_hdr/payload\n')
-    f.write('      // after write-back landed).\n')
-    f.write('      if (!tx_active && proc_settle && !proc_committed && !proc_drop) begin\n')
-    f.write('        tx_active     <= 1\'b1;\n')
-    f.write('        tx_beat_cnt   <= \'0;\n')
-    f.write('        tx_out_valid  <= 1\'b0;\n')
-    f.write('        tx_pend_valid <= 1\'b0;\n')
-    f.write('      end else if (tx_consumed && tx_out_last) begin\n')
-    f.write('        tx_active    <= 1\'b0;\n')
-    f.write('        tx_out_valid <= 1\'b0;\n')
-    f.write('      end else if (tx_pend_ready && tx_pend_valid && (!tx_out_valid || tx_consumed)) begin\n')
-    f.write('        // Stage 2: commit. payload_rd_data is guaranteed fresh here -- see the\n')
-    f.write('        // tx_pend_ready shadow-register comment above.\n')
-    f.write('        tx_out_valid  <= 1\'b1;\n')
-    f.write('        tx_out_keep   <= tx_pend_keep;\n')
-    f.write('        tx_out_last   <= tx_pend_last;\n')
-    f.write('        if (tx_pend_is_hdr) begin\n')
-    f.write(f'          for (int i = 0; i < {KEEP_W}; i++)\n')
-    f.write(f'            tx_out_data[i*8 +: 8] <= pkt_buf_hdr[tx_pend_row * {KEEP_W} + i];\n')
-    f.write('        end else begin\n')
-    f.write('          tx_out_data <= payload_rd_data;\n')
-    f.write('        end\n')
-    f.write('        tx_pend_valid <= 1\'b0;\n')
-    f.write('      end else if (tx_stage1_issue) begin\n')
-    f.write('        // Stage 1: issue. payload_fetch_addr is updated above, same condition.\n')
-    f.write('        tx_pend_valid  <= 1\'b1;\n')
-    f.write('        tx_pend_is_hdr <= (tx_beat_cnt < HDR_MAX_BEATS);\n')
-    f.write('        tx_pend_row    <= tx_beat_cnt;\n')
-    f.write('        tx_pend_keep   <= pkt_keep[tx_beat_cnt];\n')
-    f.write(f'        tx_pend_last   <= (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - {BEAT_CNT_W}\'d1);\n')
-    f.write(f'        tx_beat_cnt    <= tx_beat_cnt + {BEAT_CNT_W}\'d1;\n')
-    f.write('      end\n')
-    f.write('      // (no separate "else if (tx_consumed) tx_out_valid<=0" branch needed --\n')
-    f.write('      // the unconditional drain-on-consume above already covers the case\n')
-    f.write('      // where none of the branches above fire: next row not yet arrived from\n')
-    f.write('      // RX, so tx_out_valid correctly drops and stays a bubble.)\n')
-    f.write('      if (pkt_ready_to_clear) begin\n')
-    f.write('        tx_active     <= 1\'b0;\n')
-    f.write('        tx_beat_cnt   <= \'0;\n')
-    f.write('        tx_out_valid  <= 1\'b0;\n')
-    f.write('        tx_pend_valid <= 1\'b0;\n')
-    f.write('      end\n')
-    f.write('    end\n')
-    f.write('  end\n\n')
 
     # ── TX output ──────────────────────────────────────────────────────────────
     f.write('  // ── TX output ────────────────────────────────────────────────────────────\n')
@@ -1932,6 +1853,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
 
 # ── Offset variable emitter ────────────────────────────────────────────────────
+
+def _counter_idx_w(cnt):
+    return max(1, math.ceil(math.log2(cnt.size))) if cnt.size > 1 else 1
+
 
 def _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted):
     """
@@ -2077,8 +2002,11 @@ def _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred):
 
 # ── Write-back block ──────────────────────────────────────────────────────────
 
-def _emit_writeback_block(f, layouts, inst_map, valid_map, ind):
-    """Emit write-back of modified header fields back into pkt_buf."""
+def _emit_writeback_block(f, layouts, inst_map, valid_map, ind,
+                          target='pkt_buf_hdr', op='<=', fld_pfx='out_', base_pfx='w_'):
+    """Emit placement of the pipeline's output header fields at their layout
+    offsets -- into pkt_buf_hdr (registered write-back) or hdr_out
+    (combinational deparser overlay), see _writeback_bytes."""
     for layout in layouts:
         inst_name    = layout['inst_name']
         inst         = inst_map.get(inst_name)
@@ -2089,8 +2017,10 @@ def _emit_writeback_block(f, layouts, inst_map, valid_map, ind):
         var_pred       = layout['var_pred']
 
         base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred)
+        if not isinstance(base_expr, int):
+            base_expr = base_expr.replace('w_', base_pfx, 1)
         vexpr     = valid_map.get(inst_name, "1'b1")
-        cond      = None if vexpr == "1'b1" else f'out_{inst_name}_valid'
+        cond      = None if vexpr == "1'b1" else f'{fld_pfx}{inst_name}_valid'
 
         _writeback_bytes(f, inst_name, base_expr, inst.header_type,
-                         'out_', cond, ind)
+                         fld_pfx, cond, ind, target=target, op=op)

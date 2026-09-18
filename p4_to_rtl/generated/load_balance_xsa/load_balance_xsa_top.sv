@@ -51,94 +51,88 @@ module load_balance_xsa_top #(
   localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8096
   localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 253
 
-  // ── Packet buffer (header region / payload region, see above) ───────────────
-  logic [7:0] pkt_buf_hdr     [0:HDR_MAX_BYTES-1];
-  (* ramstyle = "M9K" *)
-  logic [BEAT_BYTES-1:0][7:0] pkt_buf_payload [0:PAYLOAD_MAX_BEATS-1];
+  // ── Header slot ring ─────────────────────────────────────────────────────
+  // NSLOT packets can be in flight at once. Each slot holds one packet's
+  // header region (HDR_MAX_BYTES) as received, its per-row keep, its beat
+  // count / done / overflow, and -- once the pipeline has finished with it --
+  // the pipeline's output PHV, drop decision and metadata. Four pointers
+  // walk the ring in order and never overtake each other:
+  //   wr_ptr  : RX fills this slot          (advances on tlast)
+  //   iss_ptr : next slot to issue to u_proc (advances on issue)
+  //   cmp_ptr : next slot expecting a result (advances on out_valid)
+  //   tx_ptr  : TX drains this slot         (advances on last beat / discard)
+  // Each carries one extra bit so "full" and "empty" are distinguishable.
+  // Payload beats do not live in slots: they stream through u_pfifo in
+  // arrival order, and since every stage is in-order, the head of the FIFO
+  // is always the first payload beat of the slot TX is on.
+  localparam int NSLOT   = 4;
+  localparam int SLOT_AW = 2;
+  logic [7:0] slot_hdr [0:NSLOT*HDR_MAX_BYTES-1];
+  logic [AXI_DATA_W/8-1:0] slot_keep [0:NSLOT*HDR_MAX_BEATS-1];
+  logic [8:0] slot_beat_cnt [0:NSLOT-1];
+  logic slot_done     [0:NSLOT-1];
+  logic slot_overflow [0:NSLOT-1];
+  logic slot_drop     [0:NSLOT-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
-    for (int i = 0; i < HDR_MAX_BYTES; i++) pkt_buf_hdr[i] = 8'd0;
-    for (int r = 0; r < PAYLOAD_MAX_BEATS; r++)
-      for (int b = 0; b < BEAT_BYTES; b++) pkt_buf_payload[r][b] = 8'd0;
+    for (int i = 0; i < NSLOT*HDR_MAX_BYTES; i++) slot_hdr[i] = 8'd0;
   end
   // synthesis translate_on
   `endif
-  logic [AXI_DATA_W/8-1:0] pkt_keep [0:MAX_PKT_BEATS-1];
+  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;
+  wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];
+  wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];
+  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];
+  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];
+  wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
+  // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the
+  // slot being reusable are different events: on an OVERSIZE packet the
+  // FIFO entry marked last is pushed at MAX_PKT_BEATS while the link's real
+  // tlast arrives later, so TX can finish while RX is still receiving into
+  // the slot. Releasing then wiped the slot under RX and the remaining
+  // beats were re-read as a new packet's header rows (deadlocked T8).
+  // A slot is released only once its tlast has been seen.
+  wire  [SLOT_AW:0] n_alloc  = wr_ptr - rel_ptr;
+  wire  rx_slot_free = (n_alloc < NSLOT);
+
+  // Header bytes of the slot being issued to the pipeline -- every w_* field
+  // below is extracted from this. (Procedural mux, not continuous assigns
+  // from array elements -- see the note at the extraction block.)
+  logic [7:0] x_hdr [0:HDR_MAX_BYTES-1];
+  always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) x_hdr[i] = slot_hdr[iss_slot*HDR_MAX_BYTES + i];
+
+  localparam int PFIFO_W  = AXI_DATA_W + AXI_DATA_W/8 + 1;  // {last, keep, data}
+  localparam int PFIFO_AW = 8;
+  localparam int PFIFO_DEPTH = 1 << PFIFO_AW;  // 256 >= PAYLOAD_MAX_BEATS
+  logic                pfifo_wr_en;
+  logic [PFIFO_W-1:0]  pfifo_wr_data;
+  logic                pfifo_full;
+  logic                pfifo_rd_valid;
+  logic [PFIFO_W-1:0]  pfifo_rd_data;
+  logic                pfifo_rd_en;
+  logic [PFIFO_AW:0]   pfifo_occupancy;
+  pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
+    .clk(clk), .rst_n(rst_n),
+    .wr_en(pfifo_wr_en), .wr_data(pfifo_wr_data), .full(pfifo_full),
+    .rd_valid(pfifo_rd_valid), .rd_data(pfifo_rd_data), .rd_en(pfifo_rd_en),
+    .occupancy(pfifo_occupancy)
+  );
+  wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];
+  wire [AXI_DATA_W/8-1:0] pfifo_head_keep = pfifo_rd_data[AXI_DATA_W +: AXI_DATA_W/8];
+  wire [AXI_DATA_W-1:0]   pfifo_head_data = pfifo_rd_data[AXI_DATA_W-1:0];
 
   // ── State registers ──────────────────────────────────────────────────────
-  //   pkt_busy   : a packet currently owns the pipeline (any stage). The
-  //                single-packet-in-flight invariant -- packet N+1 cannot
-  //                start until N has drained from BOTH RX and TX.
-  //   rx_done    : RX captured this packet's tlast beat (or the overflow
-  //                path below completed). Reset to 0 whenever pkt_busy is 0,
-  //                by construction of the RX block's own logic -- so
-  //                s_axis_tready = !rx_done is correct on its own.
-  //   rx_beat_cnt: beats captured so far. Freezes automatically once rx_done
-  //                latches (increment is gated on !rx_done) -- no separate
-  //                "final beat count" register needed, TX reads this directly.
-  //   overflow   : this packet exceeded MAX_PKT_BEATS -- diagnostic only, does
-  //                NOT suppress TX (which may already be transmitting by the
-  //                time this is discovered, deep in the payload region -- a
-  //                real cut-through design cannot "unsend" bytes already on
-  //                the wire). The transmitted packet is simply truncated to
-  //                MAX_PKT_BEATS beats with a correctly-placed tlast.
-  //   proc_armed : drives processing_generated.valid_in. Set once
-  //                rx_beat_cnt*BEAT_BYTES >= cutoff_byte and held sticky-high
-  //                for the rest of the packet (processing_generated's lkp_*
-  //                inputs must stay stable from trigger until valid_out).
-  //   proc_settle: one-cycle buffer set the first cycle proc_valid_out fires
-  //                (gated on proc_armed too -- without that qualifier, a
-  //                residual valid_out tail from a JUST-cleared previous packet
-  //                could spuriously re-trigger for a new packet that hasn't
-  //                reached its own cutoff yet, since valid_out lags valid_in by
-  //                processing_generated's own pipeline depth). Exists because
-  //                processing_generated's own out_* pass-through signals were
-  //                observed (via this app's from-scratch top-level testbench --
-  //                none existed before) to still reflect the PREVIOUS packet's
-  //                values for one more cycle after proc_valid_out first rises,
-  //                a pre-existing processing_generated timing subtlety never
-  //                exercised until now.
-  //   proc_committed: one-shot latch, set the cycle AFTER proc_settle -- gates
-  //                write-back and arming TX so they fire exactly once per packet,
-  //                using out_* only once it has genuinely settled.
-  //   tx_active  : armed by proc_settle && !proc_committed && !proc_drop (the
-  //                exact same pre-edge condition proc_committed itself latches
-  //                on, so both fire together); cleared once TX's last beat is
-  //                accepted.
-  //   tx_beat_cnt: the FETCH-ISSUE pointer -- the row TX is about to read this
-  //                cycle, one row ahead of what tx_out_* is currently presenting
-  //                (pkt_buf_payload is real BRAM now, needing a 1-cycle registered
-  //                read; see the TX section below). Issue/advance gated on
-  //                tx_beat_cnt < rx_beat_cnt (never read a beat RX hasn't
-  //                captured yet -- this is what makes TX correctly chase RX's
-  //                arrival frontier instead of racing ahead). tlast is computed
-  //                at issue-time from (rx_done||overflow), to distinguish "caught
-  //                up to RX's live frontier, more beats still coming" from "this
-  //                really is the last beat of the whole packet".
-  //   tx_out_*   : registered output stage -- what m_axis_* actually presents,
-  //                one cycle behind tx_beat_cnt's own fetch-issue.
-  logic pkt_busy;
-  logic rx_done;
-  logic overflow;
-  logic proc_armed;
-  logic proc_settle;
-  logic proc_committed;
-  logic tx_active;
-  logic [8:0] rx_beat_cnt;
-  logic [8:0] tx_beat_cnt;
+  //   iss_fire     : one-cycle valid_in pulse to u_proc for slot iss_slot
+  //   proc_out_valid: u_proc's data-ALIGNED valid (out_valid port) -- the
+  //                  cycle out_*/drop belong to slot cmp_slot
+  //   tx_hdr_row/tx_in_payload: TX progress through slot tx_slot
+  logic [8:0] tx_hdr_row;
+  logic tx_in_payload;
   logic tx_out_valid;
   logic [255:0] tx_out_data;
   logic [31:0] tx_out_keep;
   logic tx_out_last;
-  // 2-stage issue/commit pipeline for TX's own fetch, needed because
-  // pkt_buf_payload is real BRAM (1-cycle registered read) -- see the TX
-  // section below for the full design rationale.
-  logic tx_pend_valid, tx_pend_ready, tx_pend_is_hdr, tx_pend_last;
-  logic [8:0] tx_pend_row;
-  logic [31:0] tx_pend_keep;
-  logic [8:0] payload_fetch_addr;
-  logic [255:0] payload_rd_data;
 
   // ── Header field extraction from pkt_buf ────────────────────────────────
   //    Fields extracted using big-endian (network byte order) bit mapping.
@@ -148,9 +142,9 @@ module load_balance_xsa_top #(
   logic [47:0] w_ethernet_srcAddr;
   logic [15:0] w_ethernet_etherType;
   always_comb begin
-    w_ethernet_dstAddr = {pkt_buf_hdr[0], pkt_buf_hdr[1], pkt_buf_hdr[2], pkt_buf_hdr[3], pkt_buf_hdr[4], pkt_buf_hdr[5]};
-    w_ethernet_srcAddr = {pkt_buf_hdr[6], pkt_buf_hdr[7], pkt_buf_hdr[8], pkt_buf_hdr[9], pkt_buf_hdr[10], pkt_buf_hdr[11]};
-    w_ethernet_etherType = {pkt_buf_hdr[12], pkt_buf_hdr[13]};
+    w_ethernet_dstAddr = {x_hdr[0], x_hdr[1], x_hdr[2], x_hdr[3], x_hdr[4], x_hdr[5]};
+    w_ethernet_srcAddr = {x_hdr[6], x_hdr[7], x_hdr[8], x_hdr[9], x_hdr[10], x_hdr[11]};
+    w_ethernet_etherType = {x_hdr[12], x_hdr[13]};
   end
 
   // ipv4 — base: 14
@@ -167,18 +161,18 @@ module load_balance_xsa_top #(
   logic [31:0] w_ipv4_srcAddr;
   logic [31:0] w_ipv4_dstAddr;
   always_comb begin
-    w_ipv4_version = pkt_buf_hdr[14][7:4];
-    w_ipv4_ihl = pkt_buf_hdr[14][3:0];
-    w_ipv4_diffserv = pkt_buf_hdr[14+1];
-    w_ipv4_totalLen = {pkt_buf_hdr[14+2], pkt_buf_hdr[14+3]};
-    w_ipv4_identification = {pkt_buf_hdr[14+4], pkt_buf_hdr[14+5]};
-    w_ipv4_flags = pkt_buf_hdr[14+6][7:5];
-    w_ipv4_fragOffset = {pkt_buf_hdr[14+6][4:0], pkt_buf_hdr[14+7]};
-    w_ipv4_ttl = pkt_buf_hdr[14+8];
-    w_ipv4_protocol = pkt_buf_hdr[14+9];
-    w_ipv4_hdrChecksum = {pkt_buf_hdr[14+10], pkt_buf_hdr[14+11]};
-    w_ipv4_srcAddr = {pkt_buf_hdr[14+12], pkt_buf_hdr[14+13], pkt_buf_hdr[14+14], pkt_buf_hdr[14+15]};
-    w_ipv4_dstAddr = {pkt_buf_hdr[14+16], pkt_buf_hdr[14+17], pkt_buf_hdr[14+18], pkt_buf_hdr[14+19]};
+    w_ipv4_version = x_hdr[14][7:4];
+    w_ipv4_ihl = x_hdr[14][3:0];
+    w_ipv4_diffserv = x_hdr[14+1];
+    w_ipv4_totalLen = {x_hdr[14+2], x_hdr[14+3]};
+    w_ipv4_identification = {x_hdr[14+4], x_hdr[14+5]};
+    w_ipv4_flags = x_hdr[14+6][7:5];
+    w_ipv4_fragOffset = {x_hdr[14+6][4:0], x_hdr[14+7]};
+    w_ipv4_ttl = x_hdr[14+8];
+    w_ipv4_protocol = x_hdr[14+9];
+    w_ipv4_hdrChecksum = {x_hdr[14+10], x_hdr[14+11]};
+    w_ipv4_srcAddr = {x_hdr[14+12], x_hdr[14+13], x_hdr[14+14], x_hdr[14+15]};
+    w_ipv4_dstAddr = {x_hdr[14+16], x_hdr[14+17], x_hdr[14+18], x_hdr[14+19]};
   end
 
   wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_ihl} << 2;
@@ -196,17 +190,17 @@ module load_balance_xsa_top #(
   logic [15:0] w_tcp_checksum;
   logic [15:0] w_tcp_urgentPtr;
   always_comb begin
-    w_tcp_srcPort = {pkt_buf_hdr[w_tcp_base], pkt_buf_hdr[w_tcp_base+1]};
-    w_tcp_dstPort = {pkt_buf_hdr[w_tcp_base+2], pkt_buf_hdr[w_tcp_base+3]};
-    w_tcp_seqNo = {pkt_buf_hdr[w_tcp_base+4], pkt_buf_hdr[w_tcp_base+5], pkt_buf_hdr[w_tcp_base+6], pkt_buf_hdr[w_tcp_base+7]};
-    w_tcp_ackNo = {pkt_buf_hdr[w_tcp_base+8], pkt_buf_hdr[w_tcp_base+9], pkt_buf_hdr[w_tcp_base+10], pkt_buf_hdr[w_tcp_base+11]};
-    w_tcp_dataOffset = pkt_buf_hdr[w_tcp_base+12][7:4];
-    w_tcp_res = pkt_buf_hdr[w_tcp_base+12][3:1];
-    w_tcp_ecn = {pkt_buf_hdr[w_tcp_base+12][0:0], pkt_buf_hdr[w_tcp_base+13][7:6]};
-    w_tcp_ctrl = pkt_buf_hdr[w_tcp_base+13][5:0];
-    w_tcp_window = {pkt_buf_hdr[w_tcp_base+14], pkt_buf_hdr[w_tcp_base+15]};
-    w_tcp_checksum = {pkt_buf_hdr[w_tcp_base+16], pkt_buf_hdr[w_tcp_base+17]};
-    w_tcp_urgentPtr = {pkt_buf_hdr[w_tcp_base+18], pkt_buf_hdr[w_tcp_base+19]};
+    w_tcp_srcPort = {x_hdr[w_tcp_base], x_hdr[w_tcp_base+1]};
+    w_tcp_dstPort = {x_hdr[w_tcp_base+2], x_hdr[w_tcp_base+3]};
+    w_tcp_seqNo = {x_hdr[w_tcp_base+4], x_hdr[w_tcp_base+5], x_hdr[w_tcp_base+6], x_hdr[w_tcp_base+7]};
+    w_tcp_ackNo = {x_hdr[w_tcp_base+8], x_hdr[w_tcp_base+9], x_hdr[w_tcp_base+10], x_hdr[w_tcp_base+11]};
+    w_tcp_dataOffset = x_hdr[w_tcp_base+12][7:4];
+    w_tcp_res = x_hdr[w_tcp_base+12][3:1];
+    w_tcp_ecn = {x_hdr[w_tcp_base+12][0:0], x_hdr[w_tcp_base+13][7:6]};
+    w_tcp_ctrl = x_hdr[w_tcp_base+13][5:0];
+    w_tcp_window = {x_hdr[w_tcp_base+14], x_hdr[w_tcp_base+15]};
+    w_tcp_checksum = {x_hdr[w_tcp_base+16], x_hdr[w_tcp_base+17]};
+    w_tcp_urgentPtr = {x_hdr[w_tcp_base+18], x_hdr[w_tcp_base+19]};
   end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
@@ -255,7 +249,9 @@ module load_balance_xsa_top #(
   wire [15:0] out_tcp_checksum;
   wire [15:0] out_tcp_urgentPtr;
   wire proc_valid_out;
+  wire proc_out_valid;
   wire proc_drop;
+  logic iss_fire;
   wire [13:0] proc_out_meta_ecmp_select;
   wire [8:0] proc_out_meta_egress_port;
 
@@ -470,7 +466,7 @@ module load_balance_xsa_top #(
   processing_generated u_proc (
     .clk       (clk),
     .rst_n     (rst_n),
-    .valid_in  (proc_armed),
+    .valid_in  (iss_fire),
     .ethernet_valid     (w_ethernet_valid),
     .ipv4_valid     (w_ipv4_valid),
     .tcp_valid     (w_tcp_valid),
@@ -571,354 +567,328 @@ module load_balance_xsa_top #(
     .send_frame_cp_query_action_id (send_frame_cp_query_action_id),
     .send_frame_cp_query_p_smac (send_frame_cp_query_p_smac),
     .send_frame_hit_out  (send_frame_hit_out),
-    .valid_out (proc_valid_out),
+    .out_valid (proc_out_valid),   // aligned with out_*/drop
+    .valid_out (proc_valid_out),   // legacy registered-late valid, unused here
     .drop      (proc_drop)
   );
 
-  // ── Cross-block wiring ───────────────────────────────────────────────────
-  // A new packet may start only once the current one has drained from BOTH
-  // RX and TX (the single-packet-in-flight invariant -- avoids needing a
-  // double-buffered pkt_buf).
-  wire pkt_ready_to_clear = pkt_busy && rx_done && proc_committed && !tx_active;
+  // ── Per-slot pipeline results ────────────────────────────────────────────
+  // Captured on u_proc.out_valid (the data-ALIGNED valid) into slot cmp_slot.
+  // The output PHV is stored, not an overlaid byte image, because at
+  // completion the slot's later header rows may not have arrived yet
+  // (cut-through): the overlay is done at TX time, when TX waits for them.
+  logic slot_phv_ethernet_valid [0:NSLOT-1];
+  logic slot_phv_ipv4_valid [0:NSLOT-1];
+  logic slot_phv_tcp_valid [0:NSLOT-1];
+  logic [47:0] slot_phv_ethernet_dstAddr [0:NSLOT-1];
+  logic [47:0] slot_phv_ethernet_srcAddr [0:NSLOT-1];
+  logic [15:0] slot_phv_ethernet_etherType [0:NSLOT-1];
+  logic [3:0] slot_phv_ipv4_version [0:NSLOT-1];
+  logic [3:0] slot_phv_ipv4_ihl [0:NSLOT-1];
+  logic [7:0] slot_phv_ipv4_diffserv [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_totalLen [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_identification [0:NSLOT-1];
+  logic [2:0] slot_phv_ipv4_flags [0:NSLOT-1];
+  logic [12:0] slot_phv_ipv4_fragOffset [0:NSLOT-1];
+  logic [7:0] slot_phv_ipv4_ttl [0:NSLOT-1];
+  logic [7:0] slot_phv_ipv4_protocol [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_hdrChecksum [0:NSLOT-1];
+  logic [31:0] slot_phv_ipv4_srcAddr [0:NSLOT-1];
+  logic [31:0] slot_phv_ipv4_dstAddr [0:NSLOT-1];
+  logic [15:0] slot_phv_tcp_srcPort [0:NSLOT-1];
+  logic [15:0] slot_phv_tcp_dstPort [0:NSLOT-1];
+  logic [31:0] slot_phv_tcp_seqNo [0:NSLOT-1];
+  logic [31:0] slot_phv_tcp_ackNo [0:NSLOT-1];
+  logic [3:0] slot_phv_tcp_dataOffset [0:NSLOT-1];
+  logic [2:0] slot_phv_tcp_res [0:NSLOT-1];
+  logic [2:0] slot_phv_tcp_ecn [0:NSLOT-1];
+  logic [5:0] slot_phv_tcp_ctrl [0:NSLOT-1];
+  logic [15:0] slot_phv_tcp_window [0:NSLOT-1];
+  logic [15:0] slot_phv_tcp_checksum [0:NSLOT-1];
+  logic [15:0] slot_phv_tcp_urgentPtr [0:NSLOT-1];
+  logic [13:0] slot_meta_ecmp_select [0:NSLOT-1];
+  logic [8:0] slot_meta_egress_port [0:NSLOT-1];
 
   // ── RX (ingest) ──────────────────────────────────────────────────────────
-  assign s_axis_tready = !rx_done;
+  // Accept whenever the next slot is free and the payload FIFO has room.
+  // Never because the pipeline or TX is busy -- that is the whole point.
+  assign s_axis_tready = rx_slot_free && !pfifo_full;
   wire accept_beat = s_axis_tvalid && s_axis_tready;
+  wire [8:0] rx_beat_cnt = slot_beat_cnt[wr_slot];
   wire accept_payload_beat = accept_beat && (rx_beat_cnt >= HDR_MAX_BEATS) && (rx_beat_cnt < MAX_PKT_BEATS);
+  assign pfifo_wr_en   = accept_payload_beat;
+  assign pfifo_wr_data = { (s_axis_tlast || (rx_beat_cnt == MAX_PKT_BEATS - 1)),
+                            s_axis_tkeep, s_axis_tdata };
 
+  logic rx_active;   // a packet is being received into wr_slot
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      pkt_busy    <= 1'b0;
-      rx_done     <= 1'b0;
-      rx_beat_cnt <= '0;
-      overflow    <= 1'b0;
+      wr_ptr <= '0;
+      rel_ptr <= '0;
+      rx_active <= 1'b0;
+      for (int sl = 0; sl < NSLOT; sl++) begin
+        slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
+      end
     end else begin
       if (accept_beat) begin
-        pkt_busy <= 1'b1;
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
-          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
-          rx_beat_cnt <= rx_beat_cnt + 9'd1;
+          for (int i = 0; i < 32; i++)
+            if (s_axis_tkeep[i])
+              slot_hdr[wr_slot*HDR_MAX_BYTES + rx_beat_cnt*32 + i] <= s_axis_tdata[i*8 +: 8];
+          slot_keep[wr_slot*HDR_MAX_BEATS + rx_beat_cnt] <= s_axis_tkeep;
+          slot_beat_cnt[wr_slot] <= rx_beat_cnt + 9'd1;
         end else if (rx_beat_cnt < MAX_PKT_BEATS) begin
-          // pkt_buf_payload's own byte-enable write lives in a separate,
-          // dedicated always_ff below (accept_payload_beat) -- Quartus's RAM
-          // inference template was found not to match when the byte-enable
-          // write is nested two if-levels deep (accept_beat -> this branch);
-          // one level (a single derived enable wire) is required.
-          pkt_keep[rx_beat_cnt] <= s_axis_tkeep;
-          rx_beat_cnt <= rx_beat_cnt + 9'd1;
+          slot_beat_cnt[wr_slot] <= rx_beat_cnt + 9'd1;
         end else begin
-          // Beyond MAX_PKT_BEATS: stop capturing (memory-safety truncation,
-          // not a drop -- TX may already be transmitting this packet by now,
-          // see the `overflow` declaration comment above). rx_beat_cnt stays
-          // frozen at MAX_PKT_BEATS, which TX will correctly treat as the
-          // final count once rx_done latches below.
-          overflow <= 1'b1;
+          slot_overflow[wr_slot] <= 1'b1;   // truncated; FIFO entry already marked last
         end
-        if (s_axis_tlast) rx_done <= 1'b1;
+        rx_active <= !s_axis_tlast;
+        if (s_axis_tlast) begin
+          slot_done[wr_slot] <= 1'b1;
+          wr_ptr <= wr_ptr + 1'b1;
+        end
       end
-      if (pkt_ready_to_clear) begin
-        pkt_busy    <= 1'b0;
-        rx_done     <= 1'b0;
-        rx_beat_cnt <= '0;
-        overflow    <= 1'b0;
-      end
-    end
-  end
-
-  // pkt_buf_payload's only writer, isolated in its own always_ff with a
-  // single derived enable and no other nesting -- see accept_payload_beat
-  // above and the comment in the RX block for why this had to be pulled out
-  // (Quartus's byte-enable RAM inference template requires this shape;
-  // nested two if-levels deep inside RX's own always_ff, it silently failed
-  // to infer -- confirmed via a real Quartus run's explicit "can't infer
-  // memory... with attribute M9K" warning).
-  always_ff @(posedge clk) begin
-    if (accept_payload_beat) begin
-      if (s_axis_tkeep[0]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][0] <= s_axis_tdata[0 +: 8];
-      if (s_axis_tkeep[1]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][1] <= s_axis_tdata[8 +: 8];
-      if (s_axis_tkeep[2]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][2] <= s_axis_tdata[16 +: 8];
-      if (s_axis_tkeep[3]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][3] <= s_axis_tdata[24 +: 8];
-      if (s_axis_tkeep[4]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][4] <= s_axis_tdata[32 +: 8];
-      if (s_axis_tkeep[5]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][5] <= s_axis_tdata[40 +: 8];
-      if (s_axis_tkeep[6]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][6] <= s_axis_tdata[48 +: 8];
-      if (s_axis_tkeep[7]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][7] <= s_axis_tdata[56 +: 8];
-      if (s_axis_tkeep[8]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][8] <= s_axis_tdata[64 +: 8];
-      if (s_axis_tkeep[9]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][9] <= s_axis_tdata[72 +: 8];
-      if (s_axis_tkeep[10]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][10] <= s_axis_tdata[80 +: 8];
-      if (s_axis_tkeep[11]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][11] <= s_axis_tdata[88 +: 8];
-      if (s_axis_tkeep[12]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][12] <= s_axis_tdata[96 +: 8];
-      if (s_axis_tkeep[13]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][13] <= s_axis_tdata[104 +: 8];
-      if (s_axis_tkeep[14]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][14] <= s_axis_tdata[112 +: 8];
-      if (s_axis_tkeep[15]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][15] <= s_axis_tdata[120 +: 8];
-      if (s_axis_tkeep[16]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][16] <= s_axis_tdata[128 +: 8];
-      if (s_axis_tkeep[17]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][17] <= s_axis_tdata[136 +: 8];
-      if (s_axis_tkeep[18]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][18] <= s_axis_tdata[144 +: 8];
-      if (s_axis_tkeep[19]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][19] <= s_axis_tdata[152 +: 8];
-      if (s_axis_tkeep[20]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][20] <= s_axis_tdata[160 +: 8];
-      if (s_axis_tkeep[21]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][21] <= s_axis_tdata[168 +: 8];
-      if (s_axis_tkeep[22]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][22] <= s_axis_tdata[176 +: 8];
-      if (s_axis_tkeep[23]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][23] <= s_axis_tdata[184 +: 8];
-      if (s_axis_tkeep[24]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][24] <= s_axis_tdata[192 +: 8];
-      if (s_axis_tkeep[25]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][25] <= s_axis_tdata[200 +: 8];
-      if (s_axis_tkeep[26]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][26] <= s_axis_tdata[208 +: 8];
-      if (s_axis_tkeep[27]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][27] <= s_axis_tdata[216 +: 8];
-      if (s_axis_tkeep[28]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][28] <= s_axis_tdata[224 +: 8];
-      if (s_axis_tkeep[29]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][29] <= s_axis_tdata[232 +: 8];
-      if (s_axis_tkeep[30]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][30] <= s_axis_tdata[240 +: 8];
-      if (s_axis_tkeep[31]) pkt_buf_payload[rx_beat_cnt - HDR_MAX_BEATS][31] <= s_axis_tdata[248 +: 8];
-    end
-  end
-
-  // ── PROC (match-action trigger + write-back) ────────────────────────────
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      proc_armed     <= 1'b0;
-      proc_settle    <= 1'b0;
-      proc_committed <= 1'b0;
-    end else begin
-      // Trigger as soon as the header region has fully arrived -- not
-      // waiting for the whole packet. This is the cut-through trigger.
-      // Also trigger on rx_done alone (packet ended before reaching the
-      // theoretical cutoff): once RX has finished, no more bytes will EVER
-      // arrive, so waiting further would deadlock -- this is a real case,
-      // not just defensive, since header-region sizing accounts for the
-      // worst-case runtime length of every var_pred field (see
-      // _worst_case_hdr_bytes) and can legitimately exceed a specific
-      // packet's actual total length.
-      if (!proc_armed && pkt_busy && !proc_valid_out &&
-          ((rx_beat_cnt * BEAT_BYTES >= cutoff_byte) || rx_done)) begin
-        proc_armed <= 1'b1;
-      end
-      // proc_armed is required here (not just !proc_committed) so a residual
-      // valid_out tail from a just-cleared previous packet can never be
-      // mistaken for this packet's own result -- processing_generated's
-      // valid_out lags valid_in by its own pipeline depth, so it can still
-      // read high for a few cycles after proc_armed drops back to 0.
-      //
-      // proc_settle: a one-cycle buffer between first observing proc_valid_out
-      // and actually reading out_* / committing write-back. processing_generated's
-      // own out_* pass-through signals are staged (forwarded through the same
-      // number of pipeline registers as valid_out itself) but were observed
-      // (via a from-scratch top-level testbench -- this app never had one before)
-      // to still reflect the PREVIOUS packet's values for one more cycle after
-      // proc_valid_out first rises, specifically when valid_in is held
-      // continuously high across back-to-back packets (as this design does,
-      // and as the direct-mapped store-and-forward design also always did --
-      // this is a pre-existing processing_generated timing subtlety, not
-      // something this redesign introduces; it was simply never exercised
-      // before, since no integrated top-level testbench existed). Waiting one
-      // extra cycle before committing is a real, necessary fix, not a stylistic
-      // choice -- confirmed empirically against the actual generated RTL.
-      if (proc_armed && proc_valid_out && !proc_settle && !proc_committed) begin
-        proc_settle <= 1'b1;
-      end
-      if (proc_settle && !proc_committed) begin
-        proc_committed <= 1'b1;
-      end
-      if (pkt_ready_to_clear) begin
-        proc_armed     <= 1'b0;
-        proc_settle    <= 1'b0;
-        proc_committed <= 1'b0;
+      // slot release: TX has moved past rel_slot AND its tlast has arrived
+      if (slot_release) begin
+        rel_ptr <= rel_ptr + 1'b1;
+        slot_beat_cnt[rel_slot] <= '0; slot_done[rel_slot] <= 1'b0; slot_overflow[rel_slot] <= 1'b0;
       end
     end
   end
 
-  // ── HDR write arbitration (RX ingest vs PROC write-back) ────────────────
-  // pkt_buf_hdr has exactly one driver: this block. RX header-capture and
-  // PROC write-back both target pkt_buf_hdr -- two independent always_ff
-  // blocks driving the same net is tolerated by iverilog/xsim but rejected
-  // by Quartus/Cyclone IV E synthesis ("multiple constant drivers"), so both
-  // writes must live in one block. The two conditions are verified disjoint
-  // for every packet shape reachable by this app -- see the simulation-only
-  // assertion below, which fails loudly (rather than silently dropping one
-  // side's write) if that ever stops holding for a future app/config.
+  // ── Issue (one-cycle valid_in pulse per packet) ──────────────────────────
+  // Slot iss_slot is issuable once it is allocated (RX has at least started
+  // it) and its header region has arrived -- the same cutoff the old shell
+  // armed on. u_proc is a free-running pipeline: it captures the w_* inputs
+  // on the issue edge, so nothing has to be held afterwards and the next
+  // slot can be issued on the very next cycle.
+  // iss_ptr can legitimately be ONE ahead of wr_ptr (a packet issued cut-
+  // through before its tlast). "Behind" therefore has to exclude that case,
+  // or an empty future slot would look allocated.
+  wire iss_behind_wr = (iss_ptr != wr_ptr) && (iss_ptr != wr_ptr + 1'b1);
+  // "RX is mid-packet in wr_slot" is tracked EXPLICITLY (rx_active), not
+  // inferred from slot_beat_cnt != 0: wr_ptr advances on tlast even when the
+  // next slot still holds an older packet awaiting TX, and that packet's
+  // beat count is nonzero too -- inferring from it re-issued a stale slot.
+  wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
+  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
+  assign iss_fire = iss_allocated && iss_hdr_ready;
   always_ff @(posedge clk) begin
-    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS) begin
-      for (int i = 0; i < 32; i++)
-        if (s_axis_tkeep[i])
-          pkt_buf_hdr[rx_beat_cnt * 32 + i] <= s_axis_tdata[i*8 +: 8];
-    end else if (proc_settle && !proc_committed && !proc_drop) begin
-      pkt_buf_hdr[0] <= out_ethernet_dstAddr[47:40];
-      pkt_buf_hdr[1] <= out_ethernet_dstAddr[39:32];
-      pkt_buf_hdr[2] <= out_ethernet_dstAddr[31:24];
-      pkt_buf_hdr[3] <= out_ethernet_dstAddr[23:16];
-      pkt_buf_hdr[4] <= out_ethernet_dstAddr[15:8];
-      pkt_buf_hdr[5] <= out_ethernet_dstAddr[7:0];
-      pkt_buf_hdr[6] <= out_ethernet_srcAddr[47:40];
-      pkt_buf_hdr[7] <= out_ethernet_srcAddr[39:32];
-      pkt_buf_hdr[8] <= out_ethernet_srcAddr[31:24];
-      pkt_buf_hdr[9] <= out_ethernet_srcAddr[23:16];
-      pkt_buf_hdr[10] <= out_ethernet_srcAddr[15:8];
-      pkt_buf_hdr[11] <= out_ethernet_srcAddr[7:0];
-      pkt_buf_hdr[12] <= out_ethernet_etherType[15:8];
-      pkt_buf_hdr[13] <= out_ethernet_etherType[7:0];
-      if (out_ipv4_valid) begin
-          pkt_buf_hdr[14] <= {out_ipv4_version, out_ipv4_ihl};
-          pkt_buf_hdr[14+1] <= out_ipv4_diffserv;
-          pkt_buf_hdr[14+2] <= out_ipv4_totalLen[15:8];
-          pkt_buf_hdr[14+3] <= out_ipv4_totalLen[7:0];
-          pkt_buf_hdr[14+4] <= out_ipv4_identification[15:8];
-          pkt_buf_hdr[14+5] <= out_ipv4_identification[7:0];
-          pkt_buf_hdr[14+6] <= {out_ipv4_flags, out_ipv4_fragOffset[12:8]};
-          pkt_buf_hdr[14+7] <= out_ipv4_fragOffset[7:0];
-          pkt_buf_hdr[14+8] <= out_ipv4_ttl;
-          pkt_buf_hdr[14+9] <= out_ipv4_protocol;
-          pkt_buf_hdr[14+10] <= out_ipv4_hdrChecksum[15:8];
-          pkt_buf_hdr[14+11] <= out_ipv4_hdrChecksum[7:0];
-          pkt_buf_hdr[14+12] <= out_ipv4_srcAddr[31:24];
-          pkt_buf_hdr[14+13] <= out_ipv4_srcAddr[23:16];
-          pkt_buf_hdr[14+14] <= out_ipv4_srcAddr[15:8];
-          pkt_buf_hdr[14+15] <= out_ipv4_srcAddr[7:0];
-          pkt_buf_hdr[14+16] <= out_ipv4_dstAddr[31:24];
-          pkt_buf_hdr[14+17] <= out_ipv4_dstAddr[23:16];
-          pkt_buf_hdr[14+18] <= out_ipv4_dstAddr[15:8];
-          pkt_buf_hdr[14+19] <= out_ipv4_dstAddr[7:0];
-      end
-      if (out_tcp_valid) begin
-          pkt_buf_hdr[w_tcp_base] <= out_tcp_srcPort[15:8];
-          pkt_buf_hdr[w_tcp_base+1] <= out_tcp_srcPort[7:0];
-          pkt_buf_hdr[w_tcp_base+2] <= out_tcp_dstPort[15:8];
-          pkt_buf_hdr[w_tcp_base+3] <= out_tcp_dstPort[7:0];
-          pkt_buf_hdr[w_tcp_base+4] <= out_tcp_seqNo[31:24];
-          pkt_buf_hdr[w_tcp_base+5] <= out_tcp_seqNo[23:16];
-          pkt_buf_hdr[w_tcp_base+6] <= out_tcp_seqNo[15:8];
-          pkt_buf_hdr[w_tcp_base+7] <= out_tcp_seqNo[7:0];
-          pkt_buf_hdr[w_tcp_base+8] <= out_tcp_ackNo[31:24];
-          pkt_buf_hdr[w_tcp_base+9] <= out_tcp_ackNo[23:16];
-          pkt_buf_hdr[w_tcp_base+10] <= out_tcp_ackNo[15:8];
-          pkt_buf_hdr[w_tcp_base+11] <= out_tcp_ackNo[7:0];
-          pkt_buf_hdr[w_tcp_base+12] <= {out_tcp_dataOffset, out_tcp_res, out_tcp_ecn[2]};
-          pkt_buf_hdr[w_tcp_base+13] <= {out_tcp_ecn[1:0], out_tcp_ctrl};
-          pkt_buf_hdr[w_tcp_base+14] <= out_tcp_window[15:8];
-          pkt_buf_hdr[w_tcp_base+15] <= out_tcp_window[7:0];
-          pkt_buf_hdr[w_tcp_base+16] <= out_tcp_checksum[15:8];
-          pkt_buf_hdr[w_tcp_base+17] <= out_tcp_checksum[7:0];
-          pkt_buf_hdr[w_tcp_base+18] <= out_tcp_urgentPtr[15:8];
-          pkt_buf_hdr[w_tcp_base+19] <= out_tcp_urgentPtr[7:0];
-      end
-    end
-  `ifndef SYNTHESIS
-    if (accept_beat && rx_beat_cnt < HDR_MAX_BEATS &&
-        proc_settle && !proc_committed && !proc_drop)
-      $error("pkt_buf_hdr write collision: RX and PROC write-back fired the same cycle");
-  `endif
+    if (!rst_n) iss_ptr <= '0;
+    else if (iss_fire) iss_ptr <= iss_ptr + 1'b1;
   end
 
-  // ── Metadata sideband capture ──────────────────────────────────────────
+  // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      out_meta_ecmp_select <= '0;
-      out_meta_egress_port <= '0;
-    end else if (proc_settle && !proc_committed && !proc_drop) begin
-      out_meta_ecmp_select <= proc_out_meta_ecmp_select;
-      out_meta_egress_port <= proc_out_meta_egress_port;
+    if (!rst_n) cmp_ptr <= '0;
+    else if (proc_out_valid) begin
+      cmp_ptr <= cmp_ptr + 1'b1;
+      slot_drop[cmp_slot] <= proc_drop;
+      slot_phv_ethernet_valid[cmp_slot] <= out_ethernet_valid;
+      slot_phv_ipv4_valid[cmp_slot] <= out_ipv4_valid;
+      slot_phv_tcp_valid[cmp_slot] <= out_tcp_valid;
+      slot_phv_ethernet_dstAddr[cmp_slot] <= out_ethernet_dstAddr;
+      slot_phv_ethernet_srcAddr[cmp_slot] <= out_ethernet_srcAddr;
+      slot_phv_ethernet_etherType[cmp_slot] <= out_ethernet_etherType;
+      slot_phv_ipv4_version[cmp_slot] <= out_ipv4_version;
+      slot_phv_ipv4_ihl[cmp_slot] <= out_ipv4_ihl;
+      slot_phv_ipv4_diffserv[cmp_slot] <= out_ipv4_diffserv;
+      slot_phv_ipv4_totalLen[cmp_slot] <= out_ipv4_totalLen;
+      slot_phv_ipv4_identification[cmp_slot] <= out_ipv4_identification;
+      slot_phv_ipv4_flags[cmp_slot] <= out_ipv4_flags;
+      slot_phv_ipv4_fragOffset[cmp_slot] <= out_ipv4_fragOffset;
+      slot_phv_ipv4_ttl[cmp_slot] <= out_ipv4_ttl;
+      slot_phv_ipv4_protocol[cmp_slot] <= out_ipv4_protocol;
+      slot_phv_ipv4_hdrChecksum[cmp_slot] <= out_ipv4_hdrChecksum;
+      slot_phv_ipv4_srcAddr[cmp_slot] <= out_ipv4_srcAddr;
+      slot_phv_ipv4_dstAddr[cmp_slot] <= out_ipv4_dstAddr;
+      slot_phv_tcp_srcPort[cmp_slot] <= out_tcp_srcPort;
+      slot_phv_tcp_dstPort[cmp_slot] <= out_tcp_dstPort;
+      slot_phv_tcp_seqNo[cmp_slot] <= out_tcp_seqNo;
+      slot_phv_tcp_ackNo[cmp_slot] <= out_tcp_ackNo;
+      slot_phv_tcp_dataOffset[cmp_slot] <= out_tcp_dataOffset;
+      slot_phv_tcp_res[cmp_slot] <= out_tcp_res;
+      slot_phv_tcp_ecn[cmp_slot] <= out_tcp_ecn;
+      slot_phv_tcp_ctrl[cmp_slot] <= out_tcp_ctrl;
+      slot_phv_tcp_window[cmp_slot] <= out_tcp_window;
+      slot_phv_tcp_checksum[cmp_slot] <= out_tcp_checksum;
+      slot_phv_tcp_urgentPtr[cmp_slot] <= out_tcp_urgentPtr;
+      slot_meta_ecmp_select[cmp_slot] <= proc_out_meta_ecmp_select;
+      slot_meta_egress_port[cmp_slot] <= proc_out_meta_egress_port;
+    end
+  end
+
+  // ── TX-side view of slot tx_slot ─────────────────────────────────────────
+  logic [7:0] t_hdr [0:HDR_MAX_BYTES-1];
+  always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) t_hdr[i] = slot_hdr[tx_slot*HDR_MAX_BYTES + i];
+  wire phv_ethernet_valid = slot_phv_ethernet_valid[tx_slot];
+  wire phv_ipv4_valid = slot_phv_ipv4_valid[tx_slot];
+  wire phv_tcp_valid = slot_phv_tcp_valid[tx_slot];
+  wire [47:0] phv_ethernet_dstAddr = slot_phv_ethernet_dstAddr[tx_slot];
+  wire [47:0] phv_ethernet_srcAddr = slot_phv_ethernet_srcAddr[tx_slot];
+  wire [15:0] phv_ethernet_etherType = slot_phv_ethernet_etherType[tx_slot];
+  wire [3:0] phv_ipv4_version = slot_phv_ipv4_version[tx_slot];
+  wire [3:0] phv_ipv4_ihl = slot_phv_ipv4_ihl[tx_slot];
+  wire [7:0] phv_ipv4_diffserv = slot_phv_ipv4_diffserv[tx_slot];
+  wire [15:0] phv_ipv4_totalLen = slot_phv_ipv4_totalLen[tx_slot];
+  wire [15:0] phv_ipv4_identification = slot_phv_ipv4_identification[tx_slot];
+  wire [2:0] phv_ipv4_flags = slot_phv_ipv4_flags[tx_slot];
+  wire [12:0] phv_ipv4_fragOffset = slot_phv_ipv4_fragOffset[tx_slot];
+  wire [7:0] phv_ipv4_ttl = slot_phv_ipv4_ttl[tx_slot];
+  wire [7:0] phv_ipv4_protocol = slot_phv_ipv4_protocol[tx_slot];
+  wire [15:0] phv_ipv4_hdrChecksum = slot_phv_ipv4_hdrChecksum[tx_slot];
+  wire [31:0] phv_ipv4_srcAddr = slot_phv_ipv4_srcAddr[tx_slot];
+  wire [31:0] phv_ipv4_dstAddr = slot_phv_ipv4_dstAddr[tx_slot];
+  wire [15:0] phv_tcp_srcPort = slot_phv_tcp_srcPort[tx_slot];
+  wire [15:0] phv_tcp_dstPort = slot_phv_tcp_dstPort[tx_slot];
+  wire [31:0] phv_tcp_seqNo = slot_phv_tcp_seqNo[tx_slot];
+  wire [31:0] phv_tcp_ackNo = slot_phv_tcp_ackNo[tx_slot];
+  wire [3:0] phv_tcp_dataOffset = slot_phv_tcp_dataOffset[tx_slot];
+  wire [2:0] phv_tcp_res = slot_phv_tcp_res[tx_slot];
+  wire [2:0] phv_tcp_ecn = slot_phv_tcp_ecn[tx_slot];
+  wire [5:0] phv_tcp_ctrl = slot_phv_tcp_ctrl[tx_slot];
+  wire [15:0] phv_tcp_window = slot_phv_tcp_window[tx_slot];
+  wire [15:0] phv_tcp_checksum = slot_phv_tcp_checksum[tx_slot];
+  wire [15:0] phv_tcp_urgentPtr = slot_phv_tcp_urgentPtr[tx_slot];
+
+  // header byte offsets over the stored PHV (same arithmetic as w_*_base)
+  wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_ihl} << 2;
+  wire [13:0] phv_tcp_base = 14 + phv_ipv4_hdr_bytes;
+
+  // ── Deparser: header-region assembly for slot tx_slot ────────────────────
+  // Received bytes of the slot with its stored output PHV overlaid at each
+  // header's layout offset, guarded by the stored output validity.
+  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
+  always_comb begin
+    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];
+    hdr_out[0] = phv_ethernet_dstAddr[47:40];
+    hdr_out[1] = phv_ethernet_dstAddr[39:32];
+    hdr_out[2] = phv_ethernet_dstAddr[31:24];
+    hdr_out[3] = phv_ethernet_dstAddr[23:16];
+    hdr_out[4] = phv_ethernet_dstAddr[15:8];
+    hdr_out[5] = phv_ethernet_dstAddr[7:0];
+    hdr_out[6] = phv_ethernet_srcAddr[47:40];
+    hdr_out[7] = phv_ethernet_srcAddr[39:32];
+    hdr_out[8] = phv_ethernet_srcAddr[31:24];
+    hdr_out[9] = phv_ethernet_srcAddr[23:16];
+    hdr_out[10] = phv_ethernet_srcAddr[15:8];
+    hdr_out[11] = phv_ethernet_srcAddr[7:0];
+    hdr_out[12] = phv_ethernet_etherType[15:8];
+    hdr_out[13] = phv_ethernet_etherType[7:0];
+    if (phv_ipv4_valid) begin
+        hdr_out[14] = {phv_ipv4_version, phv_ipv4_ihl};
+        hdr_out[14+1] = phv_ipv4_diffserv;
+        hdr_out[14+2] = phv_ipv4_totalLen[15:8];
+        hdr_out[14+3] = phv_ipv4_totalLen[7:0];
+        hdr_out[14+4] = phv_ipv4_identification[15:8];
+        hdr_out[14+5] = phv_ipv4_identification[7:0];
+        hdr_out[14+6] = {phv_ipv4_flags, phv_ipv4_fragOffset[12:8]};
+        hdr_out[14+7] = phv_ipv4_fragOffset[7:0];
+        hdr_out[14+8] = phv_ipv4_ttl;
+        hdr_out[14+9] = phv_ipv4_protocol;
+        hdr_out[14+10] = phv_ipv4_hdrChecksum[15:8];
+        hdr_out[14+11] = phv_ipv4_hdrChecksum[7:0];
+        hdr_out[14+12] = phv_ipv4_srcAddr[31:24];
+        hdr_out[14+13] = phv_ipv4_srcAddr[23:16];
+        hdr_out[14+14] = phv_ipv4_srcAddr[15:8];
+        hdr_out[14+15] = phv_ipv4_srcAddr[7:0];
+        hdr_out[14+16] = phv_ipv4_dstAddr[31:24];
+        hdr_out[14+17] = phv_ipv4_dstAddr[23:16];
+        hdr_out[14+18] = phv_ipv4_dstAddr[15:8];
+        hdr_out[14+19] = phv_ipv4_dstAddr[7:0];
+    end
+    if (phv_tcp_valid) begin
+        hdr_out[phv_tcp_base] = phv_tcp_srcPort[15:8];
+        hdr_out[phv_tcp_base+1] = phv_tcp_srcPort[7:0];
+        hdr_out[phv_tcp_base+2] = phv_tcp_dstPort[15:8];
+        hdr_out[phv_tcp_base+3] = phv_tcp_dstPort[7:0];
+        hdr_out[phv_tcp_base+4] = phv_tcp_seqNo[31:24];
+        hdr_out[phv_tcp_base+5] = phv_tcp_seqNo[23:16];
+        hdr_out[phv_tcp_base+6] = phv_tcp_seqNo[15:8];
+        hdr_out[phv_tcp_base+7] = phv_tcp_seqNo[7:0];
+        hdr_out[phv_tcp_base+8] = phv_tcp_ackNo[31:24];
+        hdr_out[phv_tcp_base+9] = phv_tcp_ackNo[23:16];
+        hdr_out[phv_tcp_base+10] = phv_tcp_ackNo[15:8];
+        hdr_out[phv_tcp_base+11] = phv_tcp_ackNo[7:0];
+        hdr_out[phv_tcp_base+12] = {phv_tcp_dataOffset, phv_tcp_res, phv_tcp_ecn[2]};
+        hdr_out[phv_tcp_base+13] = {phv_tcp_ecn[1:0], phv_tcp_ctrl};
+        hdr_out[phv_tcp_base+14] = phv_tcp_window[15:8];
+        hdr_out[phv_tcp_base+15] = phv_tcp_window[7:0];
+        hdr_out[phv_tcp_base+16] = phv_tcp_checksum[15:8];
+        hdr_out[phv_tcp_base+17] = phv_tcp_checksum[7:0];
+        hdr_out[phv_tcp_base+18] = phv_tcp_urgentPtr[15:8];
+        hdr_out[phv_tcp_base+19] = phv_tcp_urgentPtr[7:0];
     end
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────
-  // pkt_buf_payload is real BRAM (1-cycle registered read), so TX needs a real
-  // issue/commit pipeline, not a single same-cycle read -- pkt_buf_hdr stays a
-  // plain register array (fresh combinational read, no latency) but is routed
-  // through the SAME 2-cycle pipeline for uniformity/simplicity rather than
-  // special-cased, at the cost of one harmless extra cycle for header beats.
-  //
-  // Stage 1 (issue, tx_beat_cnt<rx_beat_cnt gate -- same cut-through chase as
-  // before): latches which row/whether-header/keep/last this beat needs, and
-  // -- for the payload case -- updates payload_fetch_addr, which ONLY changes
-  // on an issue (holds steady otherwise, safe to sit for however long stage 2
-  // is backpressured, since the free-running read below just keeps re-settling
-  // on the same correct row while it holds).
-  //
-  // Stage 2 (commit, gated on tx_pend_ready AND tx_pend_valid together --
-  // BOTH are required, not tx_pend_ready alone): tx_pend_ready is tx_pend_valid
-  // delayed by exactly one more cycle (see the shadow register below), which is
-  // what guarantees payload_rd_data has caught up to payload_fetch_addr's new
-  // value by the time it's consumed -- gating on tx_pend_valid alone would read
-  // payload_rd_data one cycle too early (its previous, stale row). But
-  // tx_pend_ready, being a plain shadow register, itself stays high for one
-  // extra cycle AFTER tx_pend_valid is cleared by a commit -- gating on
-  // tx_pend_ready alone let stage 2 fire a SECOND time on that trailing-high
-  // cycle, re-committing the same already-consumed pend (a real, silent
-  // duplicate-beat bug caught only by simulation content mismatches, not by
-  // any structural warning). tx_pend_valid in the gate is what stops that.
-  //
-  // Non-pipelined by construction (stage 1 requires !tx_pend_valid, so a new
-  // issue can never overlap an uncommitted pend) -- 2 cycles/beat instead of
-  // 1, accepted for correctness/simplicity; nothing in this project asserts an
-  // exact TX throughput, only loose cut-through-ordering inequalities.
-  wire tx_consumed = tx_out_valid && m_axis_tready;
-  wire tx_stage1_issue = !tx_pend_valid && (!tx_out_valid || tx_consumed) && tx_active && (tx_beat_cnt < rx_beat_cnt);
-
-  always_ff @(posedge clk)
-    if (tx_stage1_issue) payload_fetch_addr <= tx_beat_cnt - HDR_MAX_BEATS;
-
-  always_ff @(posedge clk) payload_rd_data <= pkt_buf_payload[payload_fetch_addr];
+  // No start cycle and no finish-on-consume: the slot at tx_slot is "live"
+  // the moment its result is captured (cmp_ptr != tx_ptr), its first row
+  // loads on any cycle the output register is free, and the packet is
+  // FINISHED when its last beat is LOADED into tx_out (the data is a copy,
+  // so the slot can be released right then). tx_ptr advances on that
+  // edge, so on the cycle the last beat is consumed the next slot's first
+  // row is already loading -- one beat per cycle across packet boundaries.
+  // Before this TX cost ~2.5 cycles per packet on top of its beats (a
+  // start cycle plus finish-on-consume), which was the whole gap to ideal.
+  // Per-slot facts (drop, metadata, counter request) are read straight
+  // from the slot each cycle -- they are stable for the slot's lifetime --
+  // so nothing needs latching at a start event. The metadata sideband
+  // rides in tx_out with the beat, so it changes exactly when the first
+  // beat of the next packet is presented.
+  wire tx_consumed  = tx_out_valid && m_axis_tready;
+  wire tx_slot_free = !tx_out_valid || tx_consumed;
+  wire slot_live    = (cmp_ptr != tx_ptr);
+  wire cur_discard  = slot_drop[tx_slot];
+  wire [8:0] tx_beat_cnt_s = slot_beat_cnt[tx_slot];
+  wire tx_done_s        = slot_done[tx_slot];
+  wire pkt_ends_in_hdr  = tx_done_s && (tx_beat_cnt_s <= HDR_MAX_BEATS);
+  wire hdr_row_ready    = (tx_hdr_row < tx_beat_cnt_s) && (tx_hdr_row < HDR_MAX_BEATS);
+  wire hdr_row_is_last  = tx_done_s && (tx_hdr_row == tx_beat_cnt_s - 9'd1);
+  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;
+  wire emit_pl     = slot_live && !cur_discard &&  tx_in_payload && pfifo_rd_valid && tx_slot_free;
+  wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;
+  assign pfifo_rd_en = emit_pl || discard_pop;
+  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);
+  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));
+  wire tx_finish    = last_loaded || discard_done;
+  wire slot_release = (rel_ptr != tx_ptr) && slot_done[rel_slot];
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      tx_active    <= 1'b0;
-      tx_beat_cnt  <= '0;
-      tx_out_valid <= 1'b0;
-      tx_out_data  <= '0;
-      tx_out_keep  <= '0;
-      tx_out_last  <= 1'b0;
-      tx_pend_valid <= 1'b0;
-      tx_pend_ready <= 1'b0;
+      tx_ptr        <= '0;
+      tx_in_payload <= 1'b0;
+      tx_hdr_row    <= '0;
+      tx_out_valid  <= 1'b0;
+      tx_out_data   <= '0;
+      tx_out_keep   <= '0;
+      tx_out_last   <= 1'b0;
+      out_meta_ecmp_select <= '0;
+      out_meta_egress_port <= '0;
     end else begin
-      tx_pend_ready <= tx_pend_valid;  // unconditional shadow, one cycle behind
-      // Unconditional drain-on-consume, overridden below by stage 2's own
-      // tx_out_valid<=1 when it ALSO fires this same cycle (NBA "last write
-      // wins" for the same signal in the same always_ff) -- without this,
-      // a cycle where the current beat is consumed AND stage 1 issues a new
-      // fetch (instead of stage 2 committing) would leave tx_out_valid/data
-      // stuck at the just-consumed beat's stale value for another cycle,
-      // presenting it a second time.
       if (tx_consumed) tx_out_valid <= 1'b0;
-      // Armed on the exact same pre-edge condition that latches
-      // proc_committed above (proc_settle && !proc_committed), so both fire
-      // together on the true commit cycle (never the cycle write-back's own
-      // commit happens on -- write-back and this arm both become visible
-      // starting the next cycle, so TX only ever fetches pkt_buf_hdr/payload
-      // after write-back landed).
-      if (!tx_active && proc_settle && !proc_committed && !proc_drop) begin
-        tx_active     <= 1'b1;
-        tx_beat_cnt   <= '0;
-        tx_out_valid  <= 1'b0;
-        tx_pend_valid <= 1'b0;
-      end else if (tx_consumed && tx_out_last) begin
-        tx_active    <= 1'b0;
-        tx_out_valid <= 1'b0;
-      end else if (tx_pend_ready && tx_pend_valid && (!tx_out_valid || tx_consumed)) begin
-        // Stage 2: commit. payload_rd_data is guaranteed fresh here -- see the
-        // tx_pend_ready shadow-register comment above.
-        tx_out_valid  <= 1'b1;
-        tx_out_keep   <= tx_pend_keep;
-        tx_out_last   <= tx_pend_last;
-        if (tx_pend_is_hdr) begin
-          for (int i = 0; i < 32; i++)
-            tx_out_data[i*8 +: 8] <= pkt_buf_hdr[tx_pend_row * 32 + i];
-        end else begin
-          tx_out_data <= payload_rd_data;
-        end
-        tx_pend_valid <= 1'b0;
-      end else if (tx_stage1_issue) begin
-        // Stage 1: issue. payload_fetch_addr is updated above, same condition.
-        tx_pend_valid  <= 1'b1;
-        tx_pend_is_hdr <= (tx_beat_cnt < HDR_MAX_BEATS);
-        tx_pend_row    <= tx_beat_cnt;
-        tx_pend_keep   <= pkt_keep[tx_beat_cnt];
-        tx_pend_last   <= (rx_done || overflow) && (tx_beat_cnt == rx_beat_cnt - 9'd1);
-        tx_beat_cnt    <= tx_beat_cnt + 9'd1;
+      if (emit_hdr) begin
+        tx_out_valid <= 1'b1;
+        for (int i = 0; i < 32; i++)
+          tx_out_data[i*8 +: 8] <= hdr_out[tx_hdr_row * 32 + i];
+        tx_out_keep  <= slot_keep[tx_slot*HDR_MAX_BEATS + tx_hdr_row];
+        tx_out_last  <= hdr_row_is_last;
+        tx_hdr_row   <= tx_hdr_row + 9'd1;
+        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1'b1;
+        out_meta_ecmp_select <= slot_meta_ecmp_select[tx_slot];
+        out_meta_egress_port <= slot_meta_egress_port[tx_slot];
+      end else if (emit_pl) begin
+        tx_out_valid <= 1'b1;
+        tx_out_data  <= pfifo_head_data;
+        tx_out_keep  <= pfifo_head_keep;
+        tx_out_last  <= pfifo_head_last;
+        out_meta_ecmp_select <= slot_meta_ecmp_select[tx_slot];
+        out_meta_egress_port <= slot_meta_egress_port[tx_slot];
       end
-      // (no separate "else if (tx_consumed) tx_out_valid<=0" branch needed --
-      // the unconditional drain-on-consume above already covers the case
-      // where none of the branches above fire: next row not yet arrived from
-      // RX, so tx_out_valid correctly drops and stays a bubble.)
-      if (pkt_ready_to_clear) begin
-        tx_active     <= 1'b0;
-        tx_beat_cnt   <= '0;
-        tx_out_valid  <= 1'b0;
-        tx_pend_valid <= 1'b0;
+      if (tx_finish) begin
+        tx_in_payload <= 1'b0;
+        tx_hdr_row    <= '0;
+        tx_ptr        <= tx_ptr + 1'b1;
       end
     end
   end

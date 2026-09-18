@@ -4,18 +4,17 @@ module ByteCounter_counter #(
   input  logic clk,
   input  logic rst_n,
 
-  // Increment request, from processing_generated -- one-cycle pulse per
-  // packet, raised at whatever pipeline stage the .count() action runs.
+  // Increment request: ONE cycle per packet, everything valid together.
+  // incr_fire pulses when the shell releases a packet's slot (its byte
+  // length is final by then); incr_req says whether this packet's
+  // .count() ran, incr_idx which entry. The old two-phase commit/done
+  // interface held a single pending request and a 2-cycle RMW, and
+  // LOST a count when releases came 2 cycles apart (measured: 33 of 34
+  // back-to-back minimum packets). This path accepts one request per
+  // cycle -- see the pipelined RMW below.
+  input  logic              incr_fire,
   input  logic              incr_req,
   input  logic [12:0] incr_idx,
-  // pkt_commit: proc_settle&&!proc_committed -- latches the request.
-  // pkt_done  : pkt_ready_to_clear -- applies the RMW, once per packet,
-  //             deliberately one step later so pkt_byte_len (below) is
-  //             final by the time a BYTES-type counter reads it (a
-  //             cut-through packet's length is NOT yet known at
-  //             pkt_commit time -- see emit_top.py's instantiation site).
-  input  logic pkt_commit,
-  input  logic pkt_done,
   input  logic [15:0] pkt_byte_len,
 
   // Control-plane query (read-only -- counters aren't operator-settable,
@@ -25,23 +24,6 @@ module ByteCounter_counter #(
   output logic              cp_query_busy,
   output logic [63:0]       cp_query_byte_value
 );
-
-  // Decouples "request" (raised mid-packet, before length is final)
-  // from "apply" (once per packet, once pkt_byte_len is final). Safe
-  // with no cross-packet hazard: this pipeline is single-packet-in-
-  // flight (packet N+1 cannot start until N has fully drained), so at
-  // most one increment is ever pending at a time.
-  logic pend_valid;
-  logic [12:0] pend_idx;
-  always_ff @(posedge clk) begin
-    if (!rst_n) pend_valid <= 1'b0;
-    else if (pkt_commit && incr_req) begin
-      pend_valid <= 1'b1;
-      pend_idx   <= incr_idx;
-    end else if (pkt_done && pend_valid) begin
-      pend_valid <= 1'b0;
-    end
-  end
 
   // byte sub-counter: 64-bit value per index, real
   // block-RAM-safe registered read-modify-write (never a bare
@@ -60,19 +42,15 @@ module ByteCounter_counter #(
   logic byte_clearing = 1'b1;
   logic [12:0] byte_clr_idx = '0;
 
-  typedef enum logic { BYTE_INCR_IDLE, BYTE_INCR_APPLY } byte_incr_st_t;
-  byte_incr_st_t byte_incr_st = BYTE_INCR_IDLE;
-  logic [12:0] byte_incr_addr_r;
-  logic [63:0] byte_rd_data;
-  // pkt_byte_len is reset by the top level on the SAME edge
-  // pkt_done first pulses (preparing for the next packet), but
-  // APPLY (below) does not consume the delta until the FOLLOWING
-  // cycle -- reading pkt_byte_len directly there would race that
-  // reset and always see 0. Capture it here, on the same edge as
-  // the IDLE->APPLY transition (before the top level's own reset
-  // takes effect, by ordinary non-blocking-assignment semantics),
-  // and use the captured copy in APPLY instead of the live port.
-  logic [15:0] byte_len_captured;
+  logic              byte_a_v;
+  logic [12:0] byte_a_idx;
+  logic [15:0]       byte_a_len;
+  logic [63:0]       byte_mem_q;
+  logic              byte_b_v;
+  logic [12:0] byte_b_idx;
+  logic [63:0]       byte_b_new;
+  wire  [63:0]       byte_cur = (byte_b_v && byte_b_idx == byte_a_idx) ? byte_b_new : byte_mem_q;
+  wire  [63:0]       byte_nxt = byte_cur + {48'd0, byte_a_len};
 
   always_ff @(posedge clk) begin
     if (byte_clearing) begin
@@ -82,20 +60,20 @@ module ByteCounter_counter #(
       end else begin
         byte_clr_idx <= byte_clr_idx + 1'b1;
       end
+      byte_a_v <= 1'b0; byte_b_v <= 1'b0;
     end else begin
-      case (byte_incr_st)
-        BYTE_INCR_IDLE: if (pkt_done && pend_valid) begin
-          byte_incr_addr_r <= pend_idx;
-          byte_rd_data     <= byte_mem[pend_idx];
-          byte_len_captured <= pkt_byte_len;
-          byte_incr_st     <= BYTE_INCR_APPLY;
-        end
-        BYTE_INCR_APPLY: begin
-          byte_mem[byte_incr_addr_r] <= byte_rd_data + {48'd0, byte_len_captured};
-          byte_incr_st <= BYTE_INCR_IDLE;
-        end
-        default: ;
-      endcase
+      // stage A
+      byte_a_v   <= incr_fire && incr_req;
+      byte_a_idx <= incr_idx;
+      byte_a_len  <= pkt_byte_len;
+      byte_mem_q <= byte_mem[incr_idx];
+      // stage B
+      byte_b_v <= byte_a_v;
+      if (byte_a_v) begin
+        byte_mem[byte_a_idx] <= byte_nxt;
+        byte_b_idx <= byte_a_idx;
+        byte_b_new <= byte_nxt;
+      end
     end
   end
 

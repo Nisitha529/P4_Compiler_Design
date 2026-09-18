@@ -13,6 +13,7 @@ from emit_deparser import emit_deparser
 from emit_table import emit_tables, _find_processing_ctrl
 from emit_counters import emit_counter_module
 from emit_user_extern import emit_user_extern_module
+from emit_fifo import emit_pkt_beat_fifo
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
@@ -303,7 +304,7 @@ def debug_ir(ir):
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
                   axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
-                  register_ram=False):
+                  register_ram=False, nslot=4):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -410,7 +411,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         print("[INFO] Generating processing RTL...")
         emit_processing(ir, out_processing, budget_levels=budget_levels, ways=ways, enable_query=enable_query,
                          checksum_updates=None if has_real_egress else ir.checksum_updates,
-                         register_ram=register_ram)
+                         register_ram=register_ram, board=board)
         print(f"[SUCCESS] Processing RTL   -> {out_processing}")
 
         # Counter externs (p4test/XilinxPipeline path only, for now -- see
@@ -459,7 +460,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
         print("[INFO] Generating egress processing RTL...")
         emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query,
-                         checksum_updates=ir.checksum_updates, register_ram=register_ram)
+                         checksum_updates=ir.checksum_updates, register_ram=register_ram, board=board)
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
@@ -471,8 +472,14 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
-        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board)
+        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
+        # The top's payload path is pkt_beat_fifo (emit_fifo.py); it is a
+        # generic module emitted next to the top so every XSA app carries its
+        # own copy and the per-app file set stays self-contained.
+        out_fifo = os.path.join(out_dir, "pkt_beat_fifo.sv")
+        emit_pkt_beat_fifo(out_fifo)
+        print(f"[SUCCESS] Beat FIFO RTL    -> {out_fifo}")
 
         if board is not None:
             print(f"[INFO] Generating constraint-file skeleton for board '{board['name']}'...")
@@ -616,6 +623,12 @@ def main():
         ),
     )
     parser.add_argument(
+        "--nslot", type=int, default=4, metavar="N",
+        help=("Streaming shell: number of packets that can be in flight (header "
+              "slot ring depth, power of two). Default 4. More slots hide more "
+              "pipeline latency at the cost of NSLOT x header-region registers."),
+    )
+    parser.add_argument(
         "--board",
         choices=available_boards(),
         default=None,
@@ -721,6 +734,7 @@ def main():
         board=board,
         self_test=args.self_test,
         register_ram=args.register_ram,
+        nslot=args.nslot,
     )
 
 

@@ -189,6 +189,7 @@ module processing_generated (
   output logic        ipv4_route_hit_out,
   output logic        ecmp_group_hit_out,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -714,6 +715,7 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_port_s4;
   logic [8:0] std_meta_ingress_port_s4;
   logic drop_s4;
+  logic __stage_cond_0_r_p3;
   logic valid_s5;
   logic out_ethernet_valid_s5;
   logic ethernet_valid_s5;
@@ -962,6 +964,8 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_port_s6;
   logic [8:0] std_meta_ingress_port_s6;
   logic drop_s6;
+  logic __stage_cond_2_r_p5;
+  logic __stage_cond_1_r_p5;
   logic valid_s7;
   logic out_ethernet_valid_s7;
   logic ethernet_valid_s7;
@@ -1209,6 +1213,7 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_port_s8;
   logic [8:0] std_meta_ingress_port_s8;
   logic drop_s8;
+  logic __stage_cond_3_r_p7;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -3341,6 +3346,7 @@ module processing_generated (
       mpls_2_ttl_s4 <= mpls_2_ttl__st3;
       out_std_meta_egress_port_s4 <= out_std_meta_egress_port__st3;
       std_meta_ingress_port_s4 <= std_meta_ingress_port__st3;
+      __stage_cond_0_r_p3 <= (__stage_cond_0_r);
     end
   end
 
@@ -3470,7 +3476,7 @@ module processing_generated (
     std_meta_ingress_port__st4 = std_meta_ingress_port_s4;
 
     // apply block (stage 4 of 8)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p3) begin
       // mpls_swap.apply()
       if (mpls_swap_hit) begin
         unique case (mpls_swap_act_id)
@@ -3899,6 +3905,8 @@ module processing_generated (
       mpls_2_ttl_s6 <= mpls_2_ttl__st5;
       out_std_meta_egress_port_s6 <= out_std_meta_egress_port__st5;
       std_meta_ingress_port_s6 <= std_meta_ingress_port__st5;
+      __stage_cond_2_r_p5 <= (__stage_cond_2_r);
+      __stage_cond_1_r_p5 <= (__stage_cond_1_r);
     end
   end
 
@@ -4028,8 +4036,8 @@ module processing_generated (
     std_meta_ingress_port__st6 = std_meta_ingress_port_s6;
 
     // apply block (stage 6 of 8)
-    if (__stage_cond_2_r) begin
-      if (__stage_cond_1_r) begin
+    if (__stage_cond_2_r_p5) begin
+      if (__stage_cond_1_r_p5) begin
         // qos_policy.apply()
         if (qos_policy_hit) begin
           unique case (qos_policy_act_id)
@@ -4173,7 +4181,7 @@ module processing_generated (
       mpls_2_ttl_s7 <= mpls_2_ttl__st6;
       out_std_meta_egress_port_s7 <= out_std_meta_egress_port__st6;
       std_meta_ingress_port_s7 <= std_meta_ingress_port__st6;
-      __stage_cond_3_r <= (__stage_cond_2_r);
+      __stage_cond_3_r <= (__stage_cond_2_r_p5);
     end
   end
 
@@ -4432,6 +4440,7 @@ module processing_generated (
       mpls_2_ttl_s8 <= mpls_2_ttl__st7;
       out_std_meta_egress_port_s8 <= out_std_meta_egress_port__st7;
       std_meta_ingress_port_s8 <= std_meta_ingress_port__st7;
+      __stage_cond_3_r_p7 <= (__stage_cond_3_r);
     end
   end
 
@@ -4561,7 +4570,7 @@ module processing_generated (
     std_meta_ingress_port__st8 = std_meta_ingress_port_s8;
 
     // apply block (stage 8 of 8)
-    if (__stage_cond_3_r) begin
+    if (__stage_cond_3_r_p7) begin
       // ipv4_route.apply()
       if (ipv4_route_hit) begin
         unique case (ipv4_route_act_id)
@@ -4612,5 +4621,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s8;
   end
+  assign out_valid = valid_s8;
 
 endmodule

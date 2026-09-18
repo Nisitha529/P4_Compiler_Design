@@ -212,6 +212,33 @@ module tb_fiveTuple_counters_e2e;
     s_axis_tlast  = 1'b0;
   endtask
 
+  task automatic send_packet_b2b(input byte data[]);
+    int nbytes, nbeats;
+    nbytes = data.size();
+    nbeats = (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+    for (int b = 0; b < nbeats; b++) begin
+      logic [TB_AXI_DATA_W-1:0] beat_data;
+      logic [TB_BEAT_BYTES-1:0] beat_keep;
+      int base, valid_bytes;
+      base = b * TB_BEAT_BYTES;
+      valid_bytes = ((base + TB_BEAT_BYTES) <= nbytes) ? TB_BEAT_BYTES : (nbytes - base);
+      beat_data = '0;
+      beat_keep = '0;
+      for (int i = 0; i < valid_bytes; i++) begin
+        beat_data[i*8 +: 8] = data[base + i];
+        beat_keep[i] = 1'b1;
+      end
+      @(negedge clk);
+      s_axis_tdata  = beat_data;
+      s_axis_tkeep  = beat_keep;
+      s_axis_tvalid = 1'b1;
+      s_axis_tlast  = (b == nbeats - 1);
+      @(posedge clk);
+      while (!s_axis_tready) @(posedge clk);
+      #1;
+    end
+  endtask
+
   byte pb[$];
   task automatic append16(input [15:0] v);
     pb.push_back(v[15:8]); pb.push_back(v[7:0]);
@@ -309,6 +336,25 @@ module tb_fiveTuple_counters_e2e;
 
       query_byte_counter(13'd77, byte_val);
       chk("T2: ByteCounter[77] == 84 (42+42)", byte_val == 64'd84);
+    end
+
+    $display("\n== T3: 32 minimum packets BACK-TO-BACK into the same counter -- none may be lost ==");
+    begin
+      byte pkt_arr[];
+      logic [63:0] pkt_val, byte_val;
+      pb.delete();
+      append_eth(16'h0800);
+      append_ipv4(4'd5, 8'd17, 32'hC0A80005, 32'hC0A80006);
+      append_udp(16'd5000, 16'd6000);
+      pkt_arr = pb;
+      for (int k = 0; k < 32; k++) send_packet_b2b(pkt_arr);
+      @(negedge clk); s_axis_tvalid = 1'b0; s_axis_tlast = 1'b0;
+      repeat(200) @(posedge clk);
+      #1;
+      query_packet_counter(13'd77, pkt_val);
+      chk($sformatf("T3: PacketCounter[77] == 34 after 32 back-to-back hits (got %0d)", pkt_val), pkt_val == 64'd34);
+      query_byte_counter(13'd77, byte_val);
+      chk($sformatf("T3: ByteCounter[77] == 34*42 = 1428 (got %0d)", byte_val), byte_val == 64'd1428);
     end
 
     $display("\n================================================================");

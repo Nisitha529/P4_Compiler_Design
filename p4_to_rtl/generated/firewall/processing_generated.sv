@@ -107,6 +107,7 @@ module processing_generated (
   output logic        ipv4_lpm_hit_out,
   output logic        check_ports_hit_out,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -350,6 +351,7 @@ module processing_generated (
   logic [8:0] std_meta_egress_spec_s2;
   logic [8:0] std_meta_ingress_port_s2;
   logic drop_s2;
+  logic __stage_cond_0_r_p1;
   logic valid_s3;
   logic out_ethernet_valid_s3;
   logic ethernet_valid_s3;
@@ -554,6 +556,8 @@ module processing_generated (
   logic [8:0] std_meta_egress_spec_s4;
   logic [8:0] std_meta_ingress_port_s4;
   logic drop_s4;
+  logic __stage_cond_2_r_p3;
+  logic __stage_cond_1_r_p3;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -1434,6 +1438,7 @@ module processing_generated (
       out_std_meta_egress_spec_s2 <= out_std_meta_egress_spec__st1;
       std_meta_egress_spec_s2 <= std_meta_egress_spec__st1;
       std_meta_ingress_port_s2 <= std_meta_ingress_port__st1;
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -1541,7 +1546,7 @@ module processing_generated (
     std_meta_ingress_port__st2 = std_meta_ingress_port_s2;
 
     // apply block (stage 2 of 4)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p1) begin
       // ipv4_lpm.apply()
       if (ipv4_lpm_hit) begin
         unique case (ipv4_lpm_act_id)
@@ -1673,7 +1678,7 @@ module processing_generated (
       out_std_meta_egress_spec_s3 <= out_std_meta_egress_spec__st2;
       std_meta_egress_spec_s3 <= std_meta_egress_spec__st2;
       std_meta_ingress_port_s3 <= std_meta_ingress_port__st2;
-      __stage_cond_2_r <= (__stage_cond_0_r);
+      __stage_cond_2_r <= (__stage_cond_0_r_p1);
       __stage_cond_1_r <= (tcp_valid__st2);
     end
   end
@@ -1889,6 +1894,8 @@ module processing_generated (
       out_std_meta_egress_spec_s4 <= out_std_meta_egress_spec__st3;
       std_meta_egress_spec_s4 <= std_meta_egress_spec__st3;
       std_meta_ingress_port_s4 <= std_meta_ingress_port__st3;
+      __stage_cond_2_r_p3 <= (__stage_cond_2_r);
+      __stage_cond_1_r_p3 <= (__stage_cond_1_r);
     end
   end
 
@@ -2002,8 +2009,8 @@ module processing_generated (
     std_meta_ingress_port__st4 = std_meta_ingress_port_s4;
 
     // apply block (stage 4 of 4)
-    if (__stage_cond_2_r) begin
-      if (__stage_cond_1_r) begin
+    if (__stage_cond_2_r_p3) begin
+      if (__stage_cond_1_r_p3) begin
         // check_ports.apply()
         if (check_ports_hit) begin
           unique case (check_ports_act_id)
@@ -2087,5 +2094,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s4;
   end
+  assign out_valid = valid_s4;
 
 endmodule

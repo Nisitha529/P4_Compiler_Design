@@ -1089,6 +1089,75 @@ def _split_stages_for_user_externs(stages, boundary_forwards, ue_map, fwd_counte
     return new_stages, new_bounds
 
 
+def _cond_refs(stmts, name):
+    """True if any IfStatement condition in stmts (recursively) mentions name."""
+    pat = re.compile(r'\b' + re.escape(name) + r'\b')
+    for st in stmts:
+        if isinstance(st, IfStatement):
+            if pat.search(st.condition or ''):
+                return True
+            if _cond_refs(st.then_body, name) or _cond_refs(st.else_body, name):
+                return True
+    return False
+
+
+def _rename_cond(stmts, old, new):
+    pat = re.compile(r'\b' + re.escape(old) + r'\b')
+    for st in stmts:
+        if isinstance(st, IfStatement):
+            st.condition = pat.sub(new, st.condition or '')
+            _rename_cond(st.then_body, old, new)
+            _rename_cond(st.else_body, old, new)
+
+
+def _forward_conds_through_stages(stages, boundary_forwards):
+    """Make every __stage_cond_N_r behave like a per-packet pipeline value.
+
+    _split_stage registers an IfStatement's condition at the boundary where
+    the split happens and rewrites the consumer to read that register. That
+    is only right if the consumer runs in the very next stage. Whenever the
+    scheduler inserts stages in between -- a table's no-op latency stages,
+    a UserExtern's latency stages, a budget split -- the register keeps being
+    rewritten every cycle from LIVE inputs while the consumer reads it one or
+    more stages later, so it sees the condition of a LATER packet. It went
+    unnoticed for as long as the shell held one packet's inputs stable for
+    the whole packet; with one-cycle issue (the streaming shell) it silently
+    skipped the entire ipv4 block of load_balance_xsa on isolated packets --
+    and the back-to-back test passed only because the next packet was also
+    IPv4. Found 2026-09-19 by tb_load_balance_xsa_top T1 after step 3.
+
+    This pass walks the boundaries in order. A condition register created at
+    boundary j and still referenced at any stage beyond j+1 is re-registered
+    at each intervening boundary (`<name>_pK`), exactly as the `_sK`
+    forwarding registers carry data, and each consuming stage is renamed to
+    the copy that is valid there."""
+    live = {}   # original reg name -> name valid in the stage after the last boundary processed
+    for k, fwd in enumerate(boundary_forwards):
+        # conditions evaluated AT this boundary live in stage k's context
+        for orig, cur in live.items():
+            if cur != orig:
+                for i, (r, c) in enumerate(fwd):
+                    fwd[i] = (r, re.sub(r'\b' + re.escape(orig) + r'\b', cur, c or ''))
+        created = [r for r, _ in fwd]
+        extra = []
+        for orig in list(live):
+            cur = live[orig]
+            if any(_cond_refs(stg, orig) for stg in stages[k + 1:]):
+                new = f'{orig}_p{k}'
+                extra.append((new, cur))
+                live[orig] = new
+            else:
+                del live[orig]
+        fwd.extend(extra)
+        for r in created:
+            live[r] = r
+        if k + 1 < len(stages):
+            for orig, cur in live.items():
+                if cur != orig:
+                    _rename_cond(stages[k + 1], orig, cur)
+    return stages, boundary_forwards
+
+
 def _budget_split_stages(stages, boundary_forwards, budget_levels, cmap, width_of):
     """Refines Phase A's (stages, boundary_forwards) by budget-splitting
     each non-empty stage. Phase A's empty no-op pass-through stages (one
@@ -1177,7 +1246,7 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None, extern_
 # ============================================================
 
 def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False,
-                     checksum_updates=None, register_ram=False):
+                     checksum_updates=None, register_ram=False, board=None):
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
@@ -1337,6 +1406,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     with open(output_path, 'w') as f:
 
         # ── Module declaration ──────────────────────────────────────────
+        # Vendor pragma keeping the per-stage forwarding registers as flip-flops
+        # (see boards/*.json shift_reg_pragma). No board -> nothing emitted, so
+        # the default output is byte-identical.
+        if board is not None and board.get('shift_reg_pragma'):
+            f.write(board['shift_reg_pragma'] + '\n')
         f.write(f'module {module_name} (\n')
         f.write('  input  logic        clk,\n')
         f.write('  input  logic        rst_n,\n')
@@ -1477,7 +1551,19 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 f.write(f'  output logic        {cnt.name}_incr_en,\n')
                 f.write(f'  output logic [{idx_w-1}:0] {cnt.name}_incr_idx,\n')
 
-        f.write('\n  output logic        valid_out,\n')
+        # Two valid outputs, deliberately. `valid_out` is registered one cycle
+        # AFTER the last stage, while every out_* / drop is combinational from
+        # the last stage's registers -- so under back-to-back issue (a new
+        # packet every cycle) the out_* seen on a valid_out cycle belong to the
+        # NEXT packet. Ten-plus existing testbenches assert valid_out's exact
+        # "1 baseline + N boundary" edge count, so it stays as it is.
+        # `out_valid` is the one aligned with the data: it and out_* are both
+        # functions of the same stage registers, so they change on the same
+        # edge. The streaming shell captures out_* on out_valid. Collapsing the
+        # two (re-timing valid_out and updating those testbenches) is a
+        # separate cleanup, kept out of the shell rewrite on purpose.
+        f.write('\n  output logic        out_valid,   // aligned with out_*/drop -- see note\n')
+        f.write('  output logic        valid_out,\n')
         f.write('  output logic        drop\n')
         f.write(');\n\n')
 
@@ -1537,6 +1623,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                   f'not a synthesis measurement)')
             stages, boundary_forwards = _budget_split_stages(
                 stages, boundary_forwards, budget_levels, cmap, _cost_width_of(fwmap))
+
+        # Every stage-splitting pass is done; now carry each forwarded
+        # condition through the stages between where it was registered and
+        # where it is consumed (see _forward_conds_through_stages).
+        stages, boundary_forwards = _forward_conds_through_stages(stages, boundary_forwards)
 
         n_bounds = len(boundary_forwards)
 
@@ -2280,6 +2371,11 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             f.write(f'    else        valid_out <= valid_s{n_bounds};\n')
         else:
             f.write('    else        valid_out <= valid_in;\n')
-        f.write('  end\n\n')
+        f.write('  end\n')
+        # out_valid: same source the last stage's out_* are computed from.
+        if n_bounds:
+            f.write(f'  assign out_valid = valid_s{n_bounds};\n\n')
+        else:
+            f.write('  assign out_valid = valid_in;\n\n')
 
         f.write('endmodule\n')

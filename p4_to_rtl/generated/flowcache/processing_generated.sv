@@ -97,6 +97,7 @@ module processing_generated (
   output logic        switch_0_table_hit_out,
   output logic        flow_cache_hit_out,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -239,6 +240,7 @@ module processing_generated (
   logic [8:0] out_std_meta_egress_spec_s2;
   logic [8:0] std_meta_ingress_port_s2;
   logic drop_s2;
+  logic __stage_cond_0_r_p1;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -725,6 +727,7 @@ module processing_generated (
       ipv4_dstAddr_s2 <= ipv4_dstAddr__st1;
       out_std_meta_egress_spec_s2 <= out_std_meta_egress_spec__st1;
       std_meta_ingress_port_s2 <= std_meta_ingress_port__st1;
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -793,7 +796,7 @@ module processing_generated (
     std_meta_ingress_port__st2 = std_meta_ingress_port_s2;
 
     // apply block (stage 2 of 2)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p1) begin
       // switch_0_table.apply()
       if (switch_0_table_hit) begin
         unique case (switch_0_table_act_id)
@@ -813,5 +816,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s2;
   end
+  assign out_valid = valid_s2;
 
 endmodule

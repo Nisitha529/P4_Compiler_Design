@@ -1,3 +1,4 @@
+(* altera_attribute = "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF" *)
 module processing_generated (
   input  logic        clk,
   input  logic        rst_n,
@@ -144,6 +145,7 @@ module processing_generated (
   output logic        ByteCounter_incr_en,
   output logic [12:0] ByteCounter_incr_idx,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -354,6 +356,8 @@ module processing_generated (
   logic [15:0] table_key_dport_s2;
   logic [15:0] table_key_sport_s2;
   logic drop_s2;
+  logic __stage_cond_1_r_p1;
+  logic __stage_cond_0_r_p1;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -1000,6 +1004,8 @@ module processing_generated (
       udp_length_s2 <= udp_length__st1;
       out_udp_checksum_s2 <= out_udp_checksum__st1;
       udp_checksum_s2 <= udp_checksum__st1;
+      __stage_cond_1_r_p1 <= (__stage_cond_1_r);
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -1109,7 +1115,7 @@ module processing_generated (
     udp_checksum__st2 = udp_checksum_s2;
 
     // apply block (stage 2 of 2)
-    if (__stage_cond_1_r) begin
+    if (__stage_cond_1_r_p1) begin
       if (FiveTuple_hit) begin
         // FiveTuple.apply()
         if (FiveTuple_hit) begin
@@ -1136,7 +1142,7 @@ module processing_generated (
       end
     end
     else begin
-      if (__stage_cond_0_r) begin
+      if (__stage_cond_0_r_p1) begin
         if (FiveTuple_hit) begin
           // FiveTuple.apply()
           if (FiveTuple_hit) begin
@@ -1177,5 +1183,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s2;
   end
+  assign out_valid = valid_s2;
 
 endmodule

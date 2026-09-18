@@ -25,8 +25,7 @@ module tb_ByteCounter_standalone;
 
   logic              incr_req;
   logic [IDX_W-1:0]  incr_idx;
-  logic              pkt_commit;
-  logic              pkt_done;
+  logic              incr_fire;
   logic [15:0]       pkt_byte_len;
   logic              cp_query_en;
   logic [IDX_W-1:0]  cp_query_idx;
@@ -36,7 +35,7 @@ module tb_ByteCounter_standalone;
   ByteCounter_counter #(.DEPTH(DEPTH)) dut (
     .clk (clk), .rst_n (rst_n),
     .incr_req (incr_req), .incr_idx (incr_idx),
-    .pkt_commit (pkt_commit), .pkt_done (pkt_done),
+    .incr_fire (incr_fire),
     .pkt_byte_len (pkt_byte_len),
     .cp_query_en (cp_query_en), .cp_query_idx (cp_query_idx),
     .cp_query_busy (cp_query_busy),
@@ -51,7 +50,7 @@ module tb_ByteCounter_standalone;
 
   task automatic do_reset;
     rst_n = 0; incr_req = 0; incr_idx = 0;
-    pkt_commit = 0; pkt_done = 0; pkt_byte_len = 0;
+    incr_fire = 0; pkt_byte_len = 0;
     cp_query_en = 0; cp_query_idx = 0;
     repeat(5) @(posedge clk); @(negedge clk);
     rst_n = 1; @(posedge clk); #1;
@@ -59,22 +58,15 @@ module tb_ByteCounter_standalone;
     #1;
   endtask
 
-  // Simulates one packet's worth of .count(idx) with a given packet length
-  // -- pkt_byte_len is held stable across the whole commit->done window,
-  // mirroring how emit_top.py's real accumulator freezes once rx_done
-  // latches (i.e. well before pkt_ready_to_clear/pkt_done fires).
+  // One request per packet: everything valid on the incr_fire cycle. The
+  // pipelined RMW issues the read on that edge (stage A) and writes on the
+  // next (stage B), so the value is applied two edges after the request.
   task automatic do_count(input [IDX_W-1:0] idx, input [15:0] byte_len);
-    pkt_byte_len = byte_len;
     @(negedge clk);
-    incr_req = 1; incr_idx = idx; pkt_commit = 1;
-    @(posedge clk); #1;
-    incr_req = 0; pkt_commit = 0;
-    repeat(2) @(posedge clk);
-    @(negedge clk);
-    pkt_done = 1;
-    @(posedge clk); #1;      // IDLE -> APPLY transition
-    pkt_done = 0;
-    @(posedge clk); #1;      // APPLY commits byte_mem[idx]
+    pkt_byte_len = byte_len; incr_req = 1; incr_idx = idx; incr_fire = 1;
+    @(posedge clk); #1;      // stage A: read issued
+    incr_req = 0; incr_fire = 0;
+    @(posedge clk); #1;      // stage B: byte_mem[idx] written on this edge
   endtask
 
   task automatic cp_query(input [IDX_W-1:0] idx);
@@ -111,6 +103,29 @@ module tb_ByteCounter_standalone;
     chk("T3: idx=4 reads back 42", cp_query_byte_value == 64'd42);
     cp_query(13'd1);
     chk("T3: idx=1 unaffected by idx=4's packet, still 1692", cp_query_byte_value == 64'd1692);
+
+
+    // Consecutive-cycle requests to the same index: the accumulated sum
+    // must include every length (stage-B bypass), and the neighbouring
+    // index must only see its own.
+    $display("\n== T4: back-to-back requests (bypass) ==");
+    begin
+      @(negedge clk);
+      incr_req = 1; incr_fire = 1; incr_idx = 13'd4; pkt_byte_len = 16'd100;
+      @(posedge clk); #1;
+      incr_idx = 13'd4; pkt_byte_len = 16'd200;
+      @(posedge clk); #1;
+      incr_idx = 13'd4; pkt_byte_len = 16'd300;
+      @(posedge clk); #1;
+      incr_idx = 13'd1; pkt_byte_len = 16'd7;
+      @(posedge clk); #1;
+      incr_req = 0; incr_fire = 0;
+      repeat (3) @(posedge clk); #1;
+    end
+    cp_query(13'd4);
+    chk("T4: idx 4 = 42 + 100+200+300 back-to-back", cp_query_byte_value == 64'd642);
+    cp_query(13'd1);
+    chk("T4: idx 1 = 1692 + only its own 7", cp_query_byte_value == 64'd1699);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);

@@ -1,3 +1,4 @@
+(* altera_attribute = "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF" *)
 module processing_generated (
   input  logic        clk,
   input  logic        rst_n,
@@ -121,6 +122,7 @@ module processing_generated (
   output logic [1:0] send_frame_cp_query_action_id,
   output logic [47:0] send_frame_cp_query_p_smac,
 
+  output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
 );
@@ -272,6 +274,7 @@ module processing_generated (
   logic [8:0] meta_egress_port_w_s2;
   logic [15:0] ecmp_hash_val_s2;
   logic drop_s2;
+  logic __stage_cond_0_r_p1;
   logic valid_s3;
   logic out_ethernet_valid_s3;
   logic ethernet_valid_s3;
@@ -400,6 +403,8 @@ module processing_generated (
   logic [8:0] meta_egress_port_w_s4;
   logic [15:0] ecmp_hash_val_s4;
   logic drop_s4;
+  logic __stage_cond_2_r_p3;
+  logic __stage_cond_1_r_p3;
   logic valid_s5;
   logic out_ethernet_valid_s5;
   logic ethernet_valid_s5;
@@ -528,6 +533,8 @@ module processing_generated (
   logic [8:0] meta_egress_port_w_s6;
   logic [15:0] ecmp_hash_val_s6;
   logic drop_s6;
+  logic __stage_cond_4_r_p5;
+  logic __stage_cond_3_r_p5;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
   // last, which drives the real output ports directly
@@ -1251,6 +1258,7 @@ module processing_generated (
       tcp_checksum_s2 <= tcp_checksum__st1;
       out_tcp_urgentPtr_s2 <= out_tcp_urgentPtr__st1;
       tcp_urgentPtr_s2 <= tcp_urgentPtr__st1;
+      __stage_cond_0_r_p1 <= (__stage_cond_0_r);
     end
   end
 
@@ -1320,7 +1328,7 @@ module processing_generated (
     tcp_urgentPtr__st2 = tcp_urgentPtr_s2;
 
     // apply block (stage 2 of 6)
-    if (__stage_cond_0_r) begin
+    if (__stage_cond_0_r_p1) begin
       if (ecmp_group_hit) begin
         // ecmp_group.apply()
         if (ecmp_group_hit) begin
@@ -1409,7 +1417,7 @@ module processing_generated (
       tcp_checksum_s3 <= tcp_checksum__st2;
       out_tcp_urgentPtr_s3 <= out_tcp_urgentPtr__st2;
       tcp_urgentPtr_s3 <= tcp_urgentPtr__st2;
-      __stage_cond_2_r <= (__stage_cond_0_r);
+      __stage_cond_2_r <= (__stage_cond_0_r_p1);
       __stage_cond_1_r <= (ecmp_group_hit);
     end
   end
@@ -1549,6 +1557,8 @@ module processing_generated (
       tcp_checksum_s4 <= tcp_checksum__st3;
       out_tcp_urgentPtr_s4 <= out_tcp_urgentPtr__st3;
       tcp_urgentPtr_s4 <= tcp_urgentPtr__st3;
+      __stage_cond_2_r_p3 <= (__stage_cond_2_r);
+      __stage_cond_1_r_p3 <= (__stage_cond_1_r);
     end
   end
 
@@ -1618,8 +1628,8 @@ module processing_generated (
     tcp_urgentPtr__st4 = tcp_urgentPtr_s4;
 
     // apply block (stage 4 of 6)
-    if (__stage_cond_2_r) begin
-      if (__stage_cond_1_r) begin
+    if (__stage_cond_2_r_p3) begin
+      if (__stage_cond_1_r_p3) begin
         // ecmp_nhop.apply()
         if (ecmp_nhop_hit) begin
           unique case (ecmp_nhop_act_id)
@@ -1709,8 +1719,8 @@ module processing_generated (
       tcp_checksum_s5 <= tcp_checksum__st4;
       out_tcp_urgentPtr_s5 <= out_tcp_urgentPtr__st4;
       tcp_urgentPtr_s5 <= tcp_urgentPtr__st4;
-      __stage_cond_4_r <= (__stage_cond_2_r);
-      __stage_cond_3_r <= (__stage_cond_1_r);
+      __stage_cond_4_r <= (__stage_cond_2_r_p3);
+      __stage_cond_3_r <= (__stage_cond_1_r_p3);
     end
   end
 
@@ -1849,6 +1859,8 @@ module processing_generated (
       tcp_checksum_s6 <= tcp_checksum__st5;
       out_tcp_urgentPtr_s6 <= out_tcp_urgentPtr__st5;
       tcp_urgentPtr_s6 <= tcp_urgentPtr__st5;
+      __stage_cond_4_r_p5 <= (__stage_cond_4_r);
+      __stage_cond_3_r_p5 <= (__stage_cond_3_r);
     end
   end
 
@@ -1918,8 +1930,8 @@ module processing_generated (
     tcp_urgentPtr__st6 = tcp_urgentPtr_s6;
 
     // apply block (stage 6 of 6)
-    if (__stage_cond_4_r) begin
-      if (__stage_cond_3_r) begin
+    if (__stage_cond_4_r_p5) begin
+      if (__stage_cond_3_r_p5) begin
         // send_frame.apply()
         if (send_frame_hit) begin
           unique case (send_frame_act_id)
@@ -1948,5 +1960,6 @@ module processing_generated (
     if (!rst_n) valid_out <= 0;
     else        valid_out <= valid_s6;
   end
+  assign out_valid = valid_s6;
 
 endmodule

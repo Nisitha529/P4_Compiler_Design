@@ -31,9 +31,9 @@ def emit_counter_module(cnt, output_path):
     if has_pkt:
         subs.append(('pkt', "64'd1"))
     if has_byte:
-        # NOT a direct reference to the pkt_byte_len port -- see the
-        # byte_len_captured comment below for why.
-        subs.append(('byte', "{48'd0, byte_len_captured}"))
+        # the byte length latched in stage A alongside the request
+        subs.append(('byte', "{48'd0, byte_a_len}"))
+    delta_expr = dict(subs)
 
     with open(output_path, 'w') as f:
         f.write(f'module {cnt.name}_counter #(\n')
@@ -42,18 +42,17 @@ def emit_counter_module(cnt, output_path):
         f.write('  input  logic clk,\n')
         f.write('  input  logic rst_n,\n\n')
 
-        f.write('  // Increment request, from processing_generated -- one-cycle pulse per\n')
-        f.write('  // packet, raised at whatever pipeline stage the .count() action runs.\n')
+        f.write('  // Increment request: ONE cycle per packet, everything valid together.\n')
+        f.write('  // incr_fire pulses when the shell releases a packet\'s slot (its byte\n')
+        f.write('  // length is final by then); incr_req says whether this packet\'s\n')
+        f.write('  // .count() ran, incr_idx which entry. The old two-phase commit/done\n')
+        f.write('  // interface held a single pending request and a 2-cycle RMW, and\n')
+        f.write('  // LOST a count when releases came 2 cycles apart (measured: 33 of 34\n')
+        f.write('  // back-to-back minimum packets). This path accepts one request per\n')
+        f.write('  // cycle -- see the pipelined RMW below.\n')
+        f.write('  input  logic              incr_fire,\n')
         f.write(f'  input  logic              incr_req,\n')
         f.write(f'  input  logic [{idx_w-1}:0] incr_idx,\n')
-        f.write('  // pkt_commit: proc_settle&&!proc_committed -- latches the request.\n')
-        f.write('  // pkt_done  : pkt_ready_to_clear -- applies the RMW, once per packet,\n')
-        f.write('  //             deliberately one step later so pkt_byte_len (below) is\n')
-        f.write('  //             final by the time a BYTES-type counter reads it (a\n')
-        f.write('  //             cut-through packet\'s length is NOT yet known at\n')
-        f.write('  //             pkt_commit time -- see emit_top.py\'s instantiation site).\n')
-        f.write('  input  logic pkt_commit,\n')
-        f.write('  input  logic pkt_done,\n')
         if has_byte:
             f.write('  input  logic [15:0] pkt_byte_len,\n')
         f.write('\n')
@@ -67,25 +66,6 @@ def emit_counter_module(cnt, output_path):
             f.write(f',\n  output logic [63:0]       cp_query_{sub}_value')
         f.write('\n);\n\n')
 
-        # ── Increment-request latch ──────────────────────────────────────────
-        f.write('  // Decouples "request" (raised mid-packet, before length is final)\n')
-        f.write('  // from "apply" (once per packet, once pkt_byte_len is final). Safe\n')
-        f.write('  // with no cross-packet hazard: this pipeline is single-packet-in-\n')
-        f.write('  // flight (packet N+1 cannot start until N has fully drained), so at\n')
-        f.write('  // most one increment is ever pending at a time.\n')
-        f.write('  logic pend_valid;\n')
-        f.write(f'  logic [{idx_w-1}:0] pend_idx;\n')
-        f.write('  always_ff @(posedge clk) begin\n')
-        f.write("    if (!rst_n) pend_valid <= 1'b0;\n")
-        f.write('    else if (pkt_commit && incr_req) begin\n')
-        f.write("      pend_valid <= 1'b1;\n")
-        f.write('      pend_idx   <= incr_idx;\n')
-        f.write('    end else if (pkt_done && pend_valid) begin\n')
-        f.write("      pend_valid <= 1'b0;\n")
-        f.write('    end\n')
-        f.write('  end\n\n')
-
-        # ── Per-sub-counter storage + real BRAM-safe registered RMW ─────────
         for sub, delta in subs:
             f.write(f'  // {sub} sub-counter: {cnt.data_width}-bit value per index, real\n')
             f.write('  // block-RAM-safe registered read-modify-write (never a bare\n')
@@ -104,27 +84,23 @@ def emit_counter_module(cnt, output_path):
             f.write(f"  logic {sub}_clearing = 1'b1;\n")
             f.write(f"  logic [{idx_w-1}:0] {sub}_clr_idx = '0;\n\n")
 
-            f.write(f'  typedef enum logic {{ {sub.upper()}_INCR_IDLE, {sub.upper()}_INCR_APPLY }} {sub}_incr_st_t;\n')
-            # Inline initial value (not an if(!rst_n) branch -- this block
-            # already follows clearing's own no-rst_n, initial-value-only
-            # convention above): without one, this enum powers up
-            # undefined, and the case statement's default branch would
-            # then silently never leave that undefined state.
-            f.write(f'  {sub}_incr_st_t {sub}_incr_st = {sub.upper()}_INCR_IDLE;\n')
-            f.write(f'  logic [{idx_w-1}:0] {sub}_incr_addr_r;\n')
-            f.write(f'  logic [63:0] {sub}_rd_data;\n')
+            # Pipelined read-modify-write, one request per cycle.
+            #   stage A (issue): latch the request and issue the BRAM read
+            #   stage B (apply): data is back; add; write. If the request now
+            #   in A targets the SAME index B just wrote, B's read was issued
+            #   on the very edge of that write and returns the stale word --
+            #   forward B's new value instead. Two apart is safe: the write
+            #   has landed before the later read is issued.
+            f.write(f'  logic              {sub}_a_v;\n')
+            f.write(f'  logic [{idx_w-1}:0] {sub}_a_idx;\n')
             if sub == 'byte':
-                f.write('  // pkt_byte_len is reset by the top level on the SAME edge\n')
-                f.write('  // pkt_done first pulses (preparing for the next packet), but\n')
-                f.write('  // APPLY (below) does not consume the delta until the FOLLOWING\n')
-                f.write('  // cycle -- reading pkt_byte_len directly there would race that\n')
-                f.write('  // reset and always see 0. Capture it here, on the same edge as\n')
-                f.write('  // the IDLE->APPLY transition (before the top level\'s own reset\n')
-                f.write('  // takes effect, by ordinary non-blocking-assignment semantics),\n')
-                f.write('  // and use the captured copy in APPLY instead of the live port.\n')
-                f.write('  logic [15:0] byte_len_captured;\n')
-            f.write('\n')
-
+                f.write('  logic [15:0]       byte_a_len;\n')
+            f.write(f'  logic [63:0]       {sub}_mem_q;\n')
+            f.write(f'  logic              {sub}_b_v;\n')
+            f.write(f'  logic [{idx_w-1}:0] {sub}_b_idx;\n')
+            f.write(f'  logic [63:0]       {sub}_b_new;\n')
+            f.write(f'  wire  [63:0]       {sub}_cur = ({sub}_b_v && {sub}_b_idx == {sub}_a_idx) ? {sub}_b_new : {sub}_mem_q;\n')
+            f.write(f'  wire  [63:0]       {sub}_nxt = {sub}_cur + {delta_expr[sub]};\n\n')
             f.write('  always_ff @(posedge clk) begin\n')
             f.write(f'    if ({sub}_clearing) begin\n')
             f.write(f"      {sub}_mem[{sub}_clr_idx] <= 64'd0;\n")
@@ -133,21 +109,21 @@ def emit_counter_module(cnt, output_path):
             f.write('      end else begin\n')
             f.write(f"        {sub}_clr_idx <= {sub}_clr_idx + 1'b1;\n")
             f.write('      end\n')
-            f.write(f'    end else begin\n')
-            f.write(f'      case ({sub}_incr_st)\n')
-            f.write(f'        {sub.upper()}_INCR_IDLE: if (pkt_done && pend_valid) begin\n')
-            f.write(f'          {sub}_incr_addr_r <= pend_idx;\n')
-            f.write(f'          {sub}_rd_data     <= {sub}_mem[pend_idx];\n')
+            f.write(f"      {sub}_a_v <= 1'b0; {sub}_b_v <= 1'b0;\n")
+            f.write('    end else begin\n')
+            f.write('      // stage A\n')
+            f.write(f'      {sub}_a_v   <= incr_fire && incr_req;\n')
+            f.write(f'      {sub}_a_idx <= incr_idx;\n')
             if sub == 'byte':
-                f.write('          byte_len_captured <= pkt_byte_len;\n')
-            f.write(f'          {sub}_incr_st     <= {sub.upper()}_INCR_APPLY;\n')
-            f.write('        end\n')
-            f.write(f'        {sub.upper()}_INCR_APPLY: begin\n')
-            f.write(f'          {sub}_mem[{sub}_incr_addr_r] <= {sub}_rd_data + {delta};\n')
-            f.write(f'          {sub}_incr_st <= {sub.upper()}_INCR_IDLE;\n')
-            f.write('        end\n')
-            f.write('        default: ;\n')
-            f.write('      endcase\n')
+                f.write('      byte_a_len  <= pkt_byte_len;\n')
+            f.write(f'      {sub}_mem_q <= {sub}_mem[incr_idx];\n')
+            f.write('      // stage B\n')
+            f.write(f'      {sub}_b_v <= {sub}_a_v;\n')
+            f.write(f'      if ({sub}_a_v) begin\n')
+            f.write(f'        {sub}_mem[{sub}_a_idx] <= {sub}_nxt;\n')
+            f.write(f'        {sub}_b_idx <= {sub}_a_idx;\n')
+            f.write(f'        {sub}_b_new <= {sub}_nxt;\n')
+            f.write('      end\n')
             f.write('    end\n')
             f.write('  end\n\n')
 
