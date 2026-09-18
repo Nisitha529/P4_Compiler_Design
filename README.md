@@ -19,7 +19,7 @@ An open-source, vendor-agnostic compiler that generates a complete hardware pipe
 - **Target Board Abstraction**: Vendor-neutral synthesis pragmas (Xilinx/Altera) with constraint-file skeletons.
 - **On-Chip Self-Test Wrapper**: Optional packet generator + capture for hardware validation without an Ethernet MAC/PHY.
 - **Timing-Driven Pipeline Splitting**: Optional budget-based stage partitioning for high-frequency closure.
-
+  
 ## Quick Start
 
 ```bash
