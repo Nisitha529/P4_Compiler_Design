@@ -99,6 +99,9 @@ module processing_generated (
   output logic [0:0] out_srcRoutes_8_bos,
   output logic [14:0] out_srcRoutes_8_port,
 
+  // Standard metadata outputs
+  output logic [8:0] out_std_meta_egress_spec,
+
   output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
   output logic        drop
@@ -107,6 +110,9 @@ module processing_generated (
   // ---- Pipeline stage 0 ----
   always_comb begin
     drop = 0;
+
+    // Standard metadata defaults
+    out_std_meta_egress_spec = 9'b0;
 
     // Header valid flag pass-through defaults
     out_ethernet_valid = ethernet_valid;

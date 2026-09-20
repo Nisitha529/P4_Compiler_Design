@@ -29,12 +29,14 @@ from emit_selftest import emit_selftest_top
 # ============================================================
 
 def _detect_p4_arch(p4_path):
-    """Return 'xsa', 'v1model', or 'unknown' based on package instantiation."""
+    """Return 'p4rtl', 'xsa', 'v1model', or 'unknown' based on package instantiation."""
     try:
         with open(p4_path) as f:
             src = f.read()
     except OSError:
         return 'unknown'
+    if 'P4RtlPipeline' in src:
+        return 'p4rtl'
     if 'XilinxPipeline' in src:
         return 'xsa'
     if 'V1Switch' in src:
@@ -363,7 +365,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     # ── Stage 1: choose front-end based on architecture ───────────────
     if frontend is None:
         arch = _detect_p4_arch(p4_path)
-        frontend = 'p4test' if arch == 'xsa' else 'bmv2'
+        frontend = 'p4test' if arch in ('xsa', 'p4rtl') else 'bmv2'
         print(f"[INFO] Detected architecture : {arch}  → using {frontend} frontend")
 
     # CP query/delete (see emit_table.py's enable_query) is only reachable
@@ -460,8 +462,23 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
         print("[INFO] Generating egress processing RTL...")
         emit_processing(ir, out_egress_processing, stage='egress', budget_levels=budget_levels, ways=ways, enable_query=enable_query,
-                         checksum_updates=ir.checksum_updates, register_ram=register_ram, board=board)
+                         checksum_updates=ir.checksum_updates, register_ram=register_ram, board=board,
+                         drop_in=(frontend == 'p4test'))
         print(f"[SUCCESS] Egress processing RTL -> {out_egress_processing}")
+
+        # P4RtlPipeline egress externs: same storage modules as ingress's
+        # (emit_top.py instantiates both controls' counters side by side).
+        if frontend == 'p4test':
+            if eg.counters:
+                print("[INFO] Generating egress counter RTL...")
+                for cnt in eg.counters:
+                    out_counter = os.path.join(out_dir, f"{cnt.name}_counter.sv")
+                    emit_counter_module(cnt, out_counter)
+                    print(f"[SUCCESS] Counter RTL      -> {out_counter}")
+            for ue in getattr(eg, 'user_externs', None) or []:
+                out_ue = os.path.join(out_dir, f"{ue.name}_user_extern.sv")
+                status = emit_user_extern_module(ue, out_ue)
+                print(f"[{'SUCCESS' if status == 'created' else 'KEEP'}]    UserExtern body  -> {out_ue}")
 
     if ir.pipeline.deparser and ir.pipeline.deparser.emit_list:
         print("[INFO] Generating deparser RTL...")
@@ -522,6 +539,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Frontend selection:\n"
+            "  P4RTL apps (P4RtlPipeline)  → p4test MidEnd IR  [auto]\n"
             "  XSA apps   (XilinxPipeline) → p4test MidEnd IR  [auto]\n"
             "  v1model apps (V1Switch)     → p4c-bm2-ss JSON   [auto]\n"
             "\np4test setup (for XSA / p4test frontend):\n"

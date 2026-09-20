@@ -260,9 +260,13 @@ def _find_processing_ctrl(ir, stage='ingress'):
 # ============================================================
 
 def _collect_std_meta_outputs(ctrl):
+    """Every standard_metadata.* field WRITTEN anywhere in the control --
+    action bodies and the apply block (including nested if-blocks) -- gets
+    an out_std_meta_* port."""
     fields = {}
-    for action in ctrl.actions:
-        for stmt in action.body:
+
+    def _scan(stmts):
+        for stmt in stmts:
             if isinstance(stmt, Assignment):
                 fn = _std_meta_fname(stmt.lhs)
                 # 'drop' is deliberately excluded: _lhs_sig routes
@@ -271,6 +275,13 @@ def _collect_std_meta_outputs(ctrl):
                 # would be a permanently-zero vestigial output.
                 if fn and fn != 'drop':
                     fields[fn] = _std_meta_width(fn, 32)
+            elif isinstance(stmt, IfStatement):
+                _scan(stmt.then_body)
+                _scan(stmt.else_body)
+
+    for action in ctrl.actions:
+        _scan(action.body)
+    _scan(ctrl.statements)
     return fields
 
 
@@ -613,7 +624,11 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None, extern_ctx=None
             return
         if method == 'count' and len(stmt.args) >= 1:
             idx = _subst(stmt.args[0], pmap, cmap)
-            f.write(f'{ind}{obj}_incr_en  = 1\'b1;\n')
+            # Egress with a sticky ingress drop: a packet the traffic manager
+            # discarded never runs egress, so its counters must not see it.
+            # `drop_in` is a pool-B name and gets this stage's forwarded copy.
+            en = '!drop_in' if (extern_ctx or {}).get('drop_in') else "1'b1"
+            f.write(f'{ind}{obj}_incr_en  = {en};\n')
             f.write(f'{ind}{obj}_incr_idx = {idx};\n')
             return
         ctx = extern_ctx or {}
@@ -1246,7 +1261,15 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None, extern_
 # ============================================================
 
 def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False,
-                     checksum_updates=None, register_ram=False, board=None):
+                     checksum_updates=None, register_ram=False, board=None, drop_in=False):
+    # drop_in: True only for the EGRESS module on the p4test/P4RtlPipeline
+    # path (docs/egress_stage_plan.md). Adds a `drop_in` input carrying the
+    # ingress stage's drop decision: it seeds this module's `drop` in stage
+    # 0 (so drop is sticky across the ingress->egress boundary -- egress can
+    # set it, never clear it), is forwarded through the stages like any
+    # other input, and gates every Counter.count() in this module, because
+    # a packet the traffic manager discarded never runs egress. False keeps
+    # the bmv2-path egress modules (and their testbenches) byte-identical.
     # budget_levels: None (default) = no budget-splitting, output identical
     # to before this parameter existed -- every existing call site stays a
     # no-op. Otherwise (see compiler/timing_model.py and the architecture-
@@ -1395,6 +1418,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
     # no-op for existing apps.
     hash_sites, hash_unsupported = _collect_hash_sites(ctrl, fwmap)
     extern_ctx = {
+        'drop_in': drop_in,
         'hashes': {h.name for h in getattr(ctrl, 'hashes', [])},
         'user_externs': ue_map,
     }
@@ -1415,6 +1439,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         f.write('  input  logic        clk,\n')
         f.write('  input  logic        rst_n,\n')
         f.write('  input  logic        valid_in,\n')
+        if drop_in:
+            f.write('  input  logic        drop_in,   // ingress drop (sticky; PHV pass-through)\n')
 
         f.write('\n  // Header valid flags\n')
         for hname in hdr_valids:
@@ -1813,6 +1839,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             _pool_b.add(f'{hname}_valid')
         for fname in std_meta_ins:
             _pool_b.add(f'std_meta_{fname}')
+        if drop_in:
+            _pool_b.add('drop_in')
 
         def _mk_re(pool):
             names = sorted(pool, key=len, reverse=True)
@@ -1977,6 +2005,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 for fname in sorted(std_meta_ins):
                     fw = std_meta_ins[fname]
                     f.write(f'  logic [{fw-1}:0] std_meta_{fname}_s{k+1};\n')
+                if drop_in:
+                    f.write(f'  logic drop_in_s{k+1};\n')
                 f.write(f'  logic drop_s{k+1};\n')
                 for reg_name, _ in boundary_forwards[k]:
                     f.write(f'  logic {reg_name};\n')
@@ -2011,6 +2041,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 for fname in sorted(std_meta_ins):
                     fw = std_meta_ins[fname]
                     f.write(f'  logic [{fw-1}:0] std_meta_{fname}{suf};\n')
+                if drop_in:
+                    f.write(f'  logic drop_in{suf};\n')
             f.write('\n')
 
         # ── Register memory arrays + write-staging signals ─────────────
@@ -2234,7 +2266,7 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             buf.write('  always_comb begin\n')
 
             if k == 0:
-                buf.write('    drop = 0;\n')
+                buf.write('    drop = drop_in;\n' if drop_in else '    drop = 0;\n')
                 for lname, lw in sorted(locals_.items()):
                     buf.write(f'    {lname} = {lw}\'b0;\n')
                 if meta_fields:
@@ -2286,6 +2318,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     buf.write(f'    out_std_meta_{fname} = out_std_meta_{fname}_s{k};\n')
                 for fname in sorted(std_meta_ins):
                     buf.write(f'    std_meta_{fname} = std_meta_{fname}_s{k};\n')
+                if drop_in:
+                    buf.write(f'    drop_in = drop_in_s{k};\n')
 
             if stmts_k:
                 stage_note = f' (stage {k} of {n_bounds})' if n_bounds else ''
@@ -2337,6 +2371,9 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 for fname in sorted(std_meta_ins):
                     src = f'std_meta_{fname}' if k == 0 else f'std_meta_{fname}__st{k}'
                     f.write(f'      std_meta_{fname}_s{k+1} <= {src};\n')
+                if drop_in:
+                    src = 'drop_in' if k == 0 else f'drop_in__st{k}'
+                    f.write(f'      drop_in_s{k+1} <= {src};\n')
                 for reg_name, raw_cond in boundary_forwards[k]:
                     f.write(f'      {reg_name} <= ({_stage_text(_map_cond(raw_cond, cmap), k)});\n')
                 f.write('    end\n')

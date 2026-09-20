@@ -42,6 +42,9 @@ from emit_processing import (
     _table_action_ids,
     _sig as _proc_sig,
     _collect_std_meta_inputs,
+    _collect_std_meta_outputs,
+    _std_meta_fname,
+    _std_meta_width,
 )
 
 # ── Module-level constants ─────────────────────────────────────────────────────
@@ -369,12 +372,17 @@ def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind,
 
 # ── AXI4-Lite register map ─────────────────────────────────────────────────────
 
-def _build_axil_regmap(ctrl, amap, fwmap):
+def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None):
     """
-    Return list of table register-map entries:
+    Return list of table register-map entries, ingress control first, then
+    (P4RtlPipeline) the egress control's, each tagged 'stage' so the
+    instantiation code knows which processing module the cp_* ports belong
+    to. Table and counter names must be unique across the two controls: they
+    name the AXI4-Lite windows and the storage modules.
     [
       {
         'tname': str,
+        'stage': 'ingress' | 'egress',
         'base':  int,   # byte offset in AXI4-Lite address space
         'regs':  [(reg_name, cp_sig_name, width_bits)],  # WRITABLE words, in order
         'read_regs': [(reg_name, cp_sig_name_or_None, width_bits)],  # READ-ONLY words
@@ -395,15 +403,23 @@ def _build_axil_regmap(ctrl, amap, fwmap):
     """
     result = []
     base   = 0
+    seen   = {}
 
-    for tbl in ctrl.tables:
+    for stage, c, am in (('ingress', ctrl, amap), ('egress', ectrl, eamap)):
+      if c is None:
+        continue
+      for tbl in c.tables:
         tname   = tbl.name
+        if tname in seen:
+            raise ValueError(f"table '{tname}' is declared in both the {seen[tname]} "
+                             f"and {stage} controls -- names must be unique across the pipeline")
+        seen[tname] = stage
         depth   = tbl.size or 1024
         idx_w   = max(1, math.ceil(math.log2(max(depth, 2))))
         act_ids = _table_action_ids(tbl)
         n_acts  = max(act_ids.values()) + 1 if act_ids else 1
         act_w   = max(1, math.ceil(math.log2(max(n_acts, 2))))
-        params  = _table_params(tbl, amap)
+        params  = _table_params(tbl, am)
 
         mt = tbl.keys[0].match_type if tbl.keys else 'exact'
         supports_query = bool(tbl.keys) and mt not in ('lpm', 'ternary')
@@ -421,7 +437,14 @@ def _build_axil_regmap(ctrl, amap, fwmap):
                                                             # mismatch, fixed here since it otherwise blocks
                                                             # even compiling {app}_top.sv against
                                                             # processing_generated.sv)
-            kw    = fwmap.get(kname, 32)
+            # Widths: header fields from fwmap; standard_metadata keys (e.g.
+            # egress_port in a P4RtlPipeline egress table) from the
+            # architecture's own struct, matching the cp_wr_key_* port width.
+            # metadata keys (meta.X) are resolved by the caller through fwmap too.
+            kw    = fwmap.get(kname)
+            if kw is None:
+                sm = _std_meta_fname(key.field)
+                kw = _std_meta_width(sm, 32) if sm else 32
             key_regs.append((kbase, kw))
             regs.append((f'key_{kbase}', f'{tname}_cp_wr_key_{kbase}', kw))
         # LPM/ternary tables carry one extra control-plane input each beyond
@@ -463,6 +486,7 @@ def _build_axil_regmap(ctrl, amap, fwmap):
 
         result.append({
             'tname': tname,
+            'stage': stage,
             'base':  base,
             'regs':  regs,
             'read_regs': read_regs,
@@ -483,8 +507,15 @@ def _build_axil_regmap(ctrl, amap, fwmap):
     # separate {Name}_counter module (see emit_counters.py), not inside
     # processing_generated, so it isn't wired through u_proc's table ports
     # at all.
-    for cnt in ctrl.counters:
+    for stage, c in (('ingress', ctrl), ('egress', ectrl)):
+      if c is None:
+        continue
+      for cnt in c.counters:
         cname = cnt.name
+        if cname in seen:
+            raise ValueError(f"'{cname}' is declared in both the {seen[cname]} and "
+                             f"{stage} controls -- table/counter names must be unique across the pipeline")
+        seen[cname] = stage
         idx_w = max(1, math.ceil(math.log2(max(cnt.size, 2))))
         has_pkt  = cnt.counter_type in ('PACKETS', 'PACKETS_AND_BYTES')
         has_byte = cnt.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
@@ -503,6 +534,7 @@ def _build_axil_regmap(ctrl, amap, fwmap):
 
         result.append({
             'tname': cname,
+            'stage': stage,
             'base':  base,
             'regs':  regs,
             'read_regs': read_regs,
@@ -1007,7 +1039,14 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
 
     amap  = {a.name: a for a in ctrl.actions}
     fwmap = _build_fwmap(ir)
-    regmap = _build_axil_regmap(ctrl, amap, fwmap)
+    # P4RtlPipeline egress control (docs/egress_stage_plan.md). Same
+    # "has real content" test main.py uses to decide whether
+    # egress_processing_generated is emitted at all, so the two agree.
+    ectrl = ir.pipeline.egress
+    if ectrl is not None and not (ectrl.tables or ectrl.statements):
+        ectrl = None
+    eamap = {a.name: a for a in ectrl.actions} if ectrl else None
+    regmap = _build_axil_regmap(ctrl, amap, fwmap, ectrl=ectrl, eamap=eamap)
 
     # Determine which headers are non-stack and appear in emit list
     emit_list = (ir.pipeline.deparser.emit_list
@@ -1022,7 +1061,8 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       ctrl, amap, fwmap, regmap,
                       emit_insts, total_hdr_bytes,
                       axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                      board, verify_terms=verify_terms, nslot=nslot)
+                      board, verify_terms=verify_terms, nslot=nslot,
+                      ectrl=ectrl)
 
 
 def _build_fwmap(ir):
@@ -1062,7 +1102,7 @@ def _write_ram_style_pragma(f, board):
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
                   axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                  board=None, verify_terms=None, nslot=4):
+                  board=None, verify_terms=None, nslot=4, ectrl=None):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -1096,19 +1136,55 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # BYTES/PACKETS_AND_BYTES counters do) -- gates whether pkt_byte_len is
     # emitted at all, so apps with no such counter (or no counters) get
     # byte-identical output to before this feature existed.
+    # Counters of BOTH controls: storage modules, slot capture and the AXI
+    # windows are per counter regardless of which control calls .count().
+    ig_counters  = list(ctrl.counters)
+    eg_counters  = list(ectrl.counters) if ectrl else []
+    all_counters = ig_counters + eg_counters
     needs_byte_len = any(c.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
-                          for c in ctrl.counters)
+                          for c in all_counters)
 
     # Standard-metadata inputs the processing module declares (same scan
     # emit_processing uses, so the two can't disagree about which ports exist).
     # These were previously left completely unconnected: the ports were
     # declared and nothing drove them.
     std_meta_ins = _collect_std_meta_inputs(ctrl)
+    # ── Standard metadata across the ingress -> egress boundary ─────────────
+    # The slot ring is the queueing point, so it carries the packet's standard
+    # metadata between the stages, exactly as a traffic manager would:
+    #   ig_std_outs : fields ingress WRITES (out_std_meta_* ports) -- captured
+    #                 into the slot at ingress completion and fed to egress
+    #   eg_std_outs : fields egress WRITES -- captured at egress completion
+    #   eg_shell_std: fields egress READS that ingress does not write -- these
+    #                 are shell-sourced (timestamp, parsed_bytes, parser_error),
+    #                 sampled into the slot at issue time so egress sees the
+    #                 SAME packet's values, not a later packet's live inputs
+    # Every pipeline-written field leaves the shell as the sideband
+    # out_std_meta_<field>, alongside the user-metadata sideband.
+    ig_std_outs  = _collect_std_meta_outputs(ctrl)
+    eg_std_ins   = _collect_std_meta_inputs(ectrl) if ectrl else {}
+    eg_std_outs  = _collect_std_meta_outputs(ectrl) if ectrl else {}
+    eg_shell_std = {k: w for k, w in eg_std_ins.items() if k not in ig_std_outs}
+    slot_std     = dict(ig_std_outs); slot_std.update(eg_std_outs); slot_std.update(eg_shell_std)
+    sideband_std = dict(ig_std_outs); sideband_std.update(eg_std_outs)
+    # shell-sourced fields SOME control reads (drives ingress_ts_ctr/byte_len)
+    shell_std_used = dict(std_meta_ins); shell_std_used.update(eg_shell_std)
     # parsed_bytes is the packet's byte count, which the shell already knows
     # how to compute for BYTES-type counters -- reuse it rather than counting
     # twice.
-    if 'parsed_bytes' in std_meta_ins:
+    if 'parsed_bytes' in shell_std_used:
         needs_byte_len = True
+
+    def _shell_std_src(fname, fw):
+        """The shell's source expression for a shell-written std-meta field at
+        ISSUE time (what ingress's std_meta_* input is connected to)."""
+        if fname == 'ingress_timestamp':
+            return 'ingress_ts_ctr'
+        if fname == 'parsed_bytes':
+            return f"{fw}'({{slot_byte_len[iss_slot]}})"
+        if fname == 'parser_error':
+            return 'w_parser_error' if verify_terms else f"{fw}'d0"
+        return f"{fw}'b0"
 
     # ── Module header ──────────────────────────────────────────────────────────
     f.write(f'module {app_name}_top #(\n')
@@ -1153,11 +1229,15 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # as plain outputs rather than packed into m_axis_tuser: that keeps the
     # shell's AXI4-Stream contract untouched and lets an integrator map the
     # fields to tuser (or anywhere else) themselves.
-    if ir.metadata_fields:
+    sideband = [(f'out_meta_{mf.name}', mf.width) for mf in ir.metadata_fields]
+    # Pipeline-written standard metadata (P4RtlPipeline: egress_port,
+    # mcast_group, ...) leaves the same way -- it is the shell's port model.
+    sideband += [(f'out_std_meta_{fn}', fw) for fn, fw in sorted(sideband_std.items())]
+    if sideband:
         f.write(',\n\n    // Metadata sideband (valid while m_axis_tvalid for the packet)\n')
-        for i, mf in enumerate(ir.metadata_fields):
-            comma = ',' if i < len(ir.metadata_fields) - 1 else ''
-            f.write(f'    output logic [{mf.width-1}:0] out_meta_{mf.name}{comma}\n')
+        for i, (pname, pw) in enumerate(sideband):
+            comma = ',' if i < len(sideband) - 1 else ''
+            f.write(f'    output logic [{pw-1}:0] {pname}{comma}\n')
     else:
         f.write('\n')
     f.write(');\n\n')
@@ -1232,6 +1312,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;\n')
     f.write('  wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];\n')
     f.write('  wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];\n')
+    if ectrl:
+        f.write('  // ig_ptr: slot whose packet is currently completing INGRESS (advances on\n')
+        f.write('  // u_proc.out_valid, when the PHV is handed to u_egress); sits between\n')
+        f.write('  // iss_ptr and cmp_ptr. The slot ring is the queueing point between the\n')
+        f.write('  // two controls, so the packet\'s standard metadata rides in the slot.\n')
+        f.write('  logic [SLOT_AW:0] ig_ptr;\n')
+        f.write('  wire  [SLOT_AW-1:0] ig_slot = ig_ptr[SLOT_AW-1:0];\n')
     f.write('  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];\n')
     f.write('  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];\n')
     f.write('  wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];\n')
@@ -1279,8 +1366,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  //   proc_out_valid: u_proc\'s data-ALIGNED valid (out_valid port) -- the\n')
     f.write('  //                  cycle out_*/drop belong to slot cmp_slot\n')
     f.write('  //   tx_hdr_row/tx_in_payload: TX progress through slot tx_slot\n')
-    if 'ingress_timestamp' in std_meta_ins:
-        tsw = std_meta_ins['ingress_timestamp']
+    if 'ingress_timestamp' in shell_std_used:
+        tsw = shell_std_used['ingress_timestamp']
         f.write(f'  logic [{tsw-1}:0] ingress_ts_ctr;   // free-running, bit<{tsw}> per the architecture\n')
     f.write(f'  logic [{BEAT_CNT_W-1}:0] tx_hdr_row;\n')
     f.write('  logic tx_in_payload;\n')
@@ -1417,7 +1504,32 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic iss_fire;\n')
     for mf in ir.metadata_fields:
         f.write(f'  wire [{mf.width-1}:0] proc_out_meta_{mf.name};\n')
+    for fn, fw in sorted(ig_std_outs.items()):
+        f.write(f'  wire [{fw-1}:0] ig_out_std_meta_{fn};\n')
+    if ectrl:
+        f.write('  // egress_processing_generated outputs (the FINAL PHV the shell captures)\n')
+        for hname in all_hdr_names:
+            inst = inst_map.get(hname)
+            if not inst:
+                continue
+            f.write(f'  wire eg_out_{hname}_valid;\n')
+            for fld in inst.header_type.fields:
+                if fld.width:
+                    f.write(f'  wire [{fld.width-1}:0] eg_out_{hname}_{fld.name};\n')
+        f.write('  wire eg_valid_out;\n')
+        f.write('  wire eg_out_valid;\n')
+        f.write('  wire eg_drop;\n')
+        for mf in ir.metadata_fields:
+            f.write(f'  wire [{mf.width-1}:0] eg_out_meta_{mf.name};\n')
+        for fn, fw in sorted(eg_std_outs.items()):
+            f.write(f'  wire [{fw-1}:0] eg_out_std_meta_{fn};\n')
     f.write('\n')
+    # Names of the signals the shell captures at pipeline completion: the
+    # egress module's when there is one, else ingress's.
+    fin_valid = 'eg_out_valid' if ectrl else 'proc_out_valid'
+    fin_drop  = 'eg_drop' if ectrl else 'proc_drop'
+    fin_hdr   = 'eg_out_' if ectrl else 'out_'
+    fin_meta  = 'eg_out_meta_' if ectrl else 'proc_out_meta_'
 
     # Plain (no-initializer) query-result wires declared here, BEFORE the
     # AXI4-Lite decoder -- the decoder's own read-side logic (query_status/
@@ -1476,14 +1588,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # {cname}_incr_en/_incr_idx output ports straight through to the
     # separate {cname}_counter module instantiated below (after
     # pkt_ready_to_clear, which that module also needs).
-    for cnt in ctrl.counters:
+    for cnt in all_counters:
         idx_w = max(1, math.ceil(math.log2(cnt.size))) if cnt.size > 1 else 1
         f.write(f'  wire {cnt.name}_incr_en;\n')
         f.write(f'  wire [{idx_w-1}:0] {cnt.name}_incr_idx;\n')
 
     f.write('\n')
-    if 'ingress_timestamp' in std_meta_ins:
-        tsw = std_meta_ins['ingress_timestamp']
+    if 'ingress_timestamp' in shell_std_used:
+        tsw = shell_std_used['ingress_timestamp']
         f.write('  // ── ingress_timestamp source ───────────────────────────────────────────\n')
         f.write('  always_ff @(posedge clk) begin\n')
         f.write('    if (!rst_n) ingress_ts_ctr <= \'0;\n')
@@ -1516,19 +1628,15 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # is tied off explicitly and said so, rather than left floating.
     for fname in sorted(std_meta_ins):
         fw = std_meta_ins[fname]
-        if fname == 'ingress_timestamp':
-            f.write(f'    .std_meta_{fname}  (ingress_ts_ctr),\n')
-        elif fname == 'parsed_bytes':
-            f.write(f'    .std_meta_{fname}  ({fw}\'({{slot_byte_len[iss_slot]}})),\n')
-        elif fname == 'parser_error':
-            if verify_terms:
-                f.write(f'    .std_meta_{fname}  (w_parser_error),\n')
-            else:
-                # No verify() in this program, so there is nothing that could
-                # ever set it: NoError by construction.
-                f.write(f'    .std_meta_{fname}  ({fw}\'d0),  // NoError -- program has no verify()\n')
-        else:
-            f.write(f'    .std_meta_{fname}  ({fw}\'b0),  // no shell source for this field\n')
+        src = _shell_std_src(fname, fw)
+        note = ''
+        if fname == 'parser_error' and not verify_terms:
+            # No verify() in this program, so there is nothing that could
+            # ever set it: NoError by construction.
+            note = '  // NoError -- program has no verify()'
+        elif fname not in ('ingress_timestamp', 'parsed_bytes', 'parser_error'):
+            note = '  // no shell source for this field'
+        f.write(f'    .std_meta_{fname}  ({src}),{note}\n')
     # valid flag outputs
     for hname in all_hdr_names:
         f.write(f'    .out_{hname}_valid     (out_{hname}_valid),\n')
@@ -1542,10 +1650,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                 f.write(f'    .out_{hname}_{fld.name}  (out_{hname}_{fld.name}),\n')
     for mf in ir.metadata_fields:
         f.write(f'    .out_meta_{mf.name}  (proc_out_meta_{mf.name}),\n')
+    for fn in sorted(ig_std_outs):
+        f.write(f'    .out_std_meta_{fn}  (ig_out_std_meta_{fn}),\n')
     # cp_wr ports (tables only -- counters have no cp_wr/cp_query/hit_out
     # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
-        if ti.get('is_counter'):
+        if ti.get('is_counter') or ti['stage'] != 'ingress':
             continue
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -1562,13 +1672,81 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                 f.write(f'    .{tname}_cp_query_p_{pname} ({tname}_cp_query_p_{pname}),\n')
         f.write(f'    .{tname}_hit_out  ({tname}_hit_out),\n')
     # Counter increment-request ports
-    for cnt in ctrl.counters:
+    for cnt in ig_counters:
         f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
         f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
     f.write('    .out_valid (proc_out_valid),   // aligned with out_*/drop\n')
     f.write('    .valid_out (proc_valid_out),   // legacy registered-late valid, unused here\n')
     f.write('    .drop      (proc_drop)\n')
     f.write('  );\n\n')
+
+    # ── Egress processing module (P4RtlPipeline): PHV pass-through ──────────
+    if ectrl:
+        f.write('  // ── egress_processing_generated: PHV pass-through ────────────────────────\n')
+        f.write('  // Fed directly from u_proc\'s outputs on u_proc.out_valid: the header\n')
+        f.write('  // vector, user metadata and standard metadata exactly as ingress left\n')
+        f.write('  // them -- the packet is never re-parsed. Shell-sourced standard metadata\n')
+        f.write('  // egress reads comes from the slot (sampled at issue for THIS packet).\n')
+        f.write('  // drop is sticky: ingress\'s decision enters as drop_in and egress can\n')
+        f.write('  // only add to it (its counters are gated on drop_in inside the module).\n')
+        f.write('  egress_processing_generated u_egress (\n')
+        f.write('    .clk       (clk),\n')
+        f.write('    .rst_n     (rst_n),\n')
+        f.write('    .valid_in  (proc_out_valid),\n')
+        f.write('    .drop_in   (proc_drop),\n')
+        for hname in all_hdr_names:
+            f.write(f'    .{hname}_valid     (out_{hname}_valid),\n')
+        for hname in all_hdr_names:
+            inst = inst_map.get(hname)
+            if not inst:
+                continue
+            for fld in inst.header_type.fields:
+                if fld.width:
+                    f.write(f'    .{hname}_{fld.name}  (out_{hname}_{fld.name}),\n')
+        for mf in ir.metadata_fields:
+            f.write(f'    .meta_{mf.name}  (proc_out_meta_{mf.name}),\n')
+        for fname in sorted(eg_std_ins):
+            if fname in ig_std_outs:
+                f.write(f'    .std_meta_{fname}  (ig_out_std_meta_{fname}),   // written by ingress\n')
+            else:
+                f.write(f'    .std_meta_{fname}  (slot_std_meta_{fname}[ig_slot]),   // shell-sourced, sampled at issue\n')
+        for hname in all_hdr_names:
+            f.write(f'    .out_{hname}_valid     (eg_out_{hname}_valid),\n')
+        for hname in all_hdr_names:
+            inst = inst_map.get(hname)
+            if not inst:
+                continue
+            for fld in inst.header_type.fields:
+                if fld.width:
+                    f.write(f'    .out_{hname}_{fld.name}  (eg_out_{hname}_{fld.name}),\n')
+        for mf in ir.metadata_fields:
+            f.write(f'    .out_meta_{mf.name}  (eg_out_meta_{mf.name}),\n')
+        for fn in sorted(eg_std_outs):
+            f.write(f'    .out_std_meta_{fn}  (eg_out_std_meta_{fn}),\n')
+        for ti in regmap:
+            if ti.get('is_counter') or ti['stage'] != 'egress':
+                continue
+            tname = ti['tname']
+            f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
+            for rname, cp_sig, width in ti['regs']:
+                if rname not in ('commit', 'query_commit', 'delete_commit'):
+                    f.write(f'    .{cp_sig} ({cp_sig}),\n')
+            if ti['supports_query']:
+                f.write(f'    .{tname}_cp_query_en  ({tname}_cp_query_en),\n')
+                f.write(f'    .{tname}_cp_query_del ({tname}_cp_query_del),\n')
+                f.write(f'    .{tname}_cp_query_busy ({tname}_cp_query_busy),\n')
+                f.write(f'    .{tname}_cp_query_hit  ({tname}_cp_query_hit),\n')
+                f.write(f'    .{tname}_cp_query_action_id ({tname}_cp_query_action_id),\n')
+                for pname, pw in ti['params']:
+                    f.write(f'    .{tname}_cp_query_p_{pname} ({tname}_cp_query_p_{pname}),\n')
+            f.write(f'    .{tname}_hit_out  ({tname}_hit_out),\n')
+        for cnt in eg_counters:
+            f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
+            f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
+        f.write('    .out_valid (eg_out_valid),   // aligned with out_*/drop\n')
+        f.write('    .valid_out (eg_valid_out),\n')
+        f.write('    .drop      (eg_drop)\n')
+        f.write('  );\n\n')
 
     # ═════════════════════════════════════════════════════════════════════════
     # Streaming datapath (step 3): RX -> slot ring -> issue -> u_proc ->
@@ -1596,7 +1774,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  logic [{w-1}:0] slot_phv_{hname}_{fname} [0:NSLOT-1];\n')
     for mf in ir.metadata_fields:
         f.write(f'  logic [{mf.width-1}:0] slot_meta_{mf.name} [0:NSLOT-1];\n')
-    for cnt in ctrl.counters:
+    for fn, fw in sorted(slot_std.items()):
+        f.write(f'  logic [{fw-1}:0] slot_std_meta_{fn} [0:NSLOT-1];\n')
+    for cnt in all_counters:
         f.write(f'  logic slot_cnt_{cnt.name}_en [0:NSLOT-1];\n')
         f.write(f'  logic [{_counter_idx_w(cnt)-1}:0] slot_cnt_{cnt.name}_idx [0:NSLOT-1];\n')
     f.write('\n')
@@ -1676,31 +1856,57 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  assign iss_fire = iss_allocated && iss_hdr_ready;\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
-    f.write('    else if (iss_fire) iss_ptr <= iss_ptr + 1\'b1;\n')
+    f.write('    else if (iss_fire) begin\n')
+    f.write('      iss_ptr <= iss_ptr + 1\'b1;\n')
+    for fn, fw in sorted(eg_shell_std.items()):
+        f.write(f'      slot_std_meta_{fn}[iss_slot] <= {_shell_std_src(fn, fw)};   // for egress\n')
+    f.write('    end\n')
     f.write('  end\n\n')
-    if 'ingress_timestamp' in std_meta_ins:
+    # ── Ingress completion (only with an egress stage) ────────────────────────
+    if ectrl:
+        f.write('  // ── Ingress completion (u_proc.out_valid -> slot ig_slot) ────────────────\n')
+        f.write('  // The PHV itself goes straight into u_egress; what the slot keeps from\n')
+        f.write('  // ingress is what egress does not carry: its counter requests and the\n')
+        f.write('  // standard metadata it wrote (the sideband value if egress leaves it).\n')
         f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (!rst_n) ingress_ts_ctr <= \'0;\n')
-        f.write('    else        ingress_ts_ctr <= ingress_ts_ctr + 1\'b1;\n')
+        f.write('    if (!rst_n) ig_ptr <= \'0;\n')
+        f.write('    else if (proc_out_valid) begin\n')
+        f.write('      ig_ptr <= ig_ptr + 1\'b1;\n')
+        for fn in sorted(ig_std_outs):
+            f.write(f'      slot_std_meta_{fn}[ig_slot] <= ig_out_std_meta_{fn};\n')
+        for cnt in ig_counters:
+            f.write(f'      slot_cnt_{cnt.name}_en[ig_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'      slot_cnt_{cnt.name}_idx[ig_slot] <= {cnt.name}_incr_idx;\n')
+        f.write('    end\n')
         f.write('  end\n\n')
 
     # ── Capture ───────────────────────────────────────────────────────────────
-    f.write('  // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────\n')
+    fin_mod = 'u_egress' if ectrl else 'u_proc'
+    f.write(f'  // ── Capture ({fin_mod}.out_valid -> slot cmp_slot) ──────────────────────────\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) cmp_ptr <= \'0;\n')
-    f.write('    else if (proc_out_valid) begin\n')
+    f.write(f'    else if ({fin_valid}) begin\n')
     f.write('      cmp_ptr <= cmp_ptr + 1\'b1;\n')
-    f.write('      slot_drop[cmp_slot] <= proc_drop;\n')
+    f.write(f'      slot_drop[cmp_slot] <= {fin_drop};\n')
     for hname in all_hdr_names:
         if inst_map.get(hname):
-            f.write(f'      slot_phv_{hname}_valid[cmp_slot] <= out_{hname}_valid;\n')
+            f.write(f'      slot_phv_{hname}_valid[cmp_slot] <= {fin_hdr}{hname}_valid;\n')
     for hname, fname, w in hdr_fields:
-        f.write(f'      slot_phv_{hname}_{fname}[cmp_slot] <= out_{hname}_{fname};\n')
+        f.write(f'      slot_phv_{hname}_{fname}[cmp_slot] <= {fin_hdr}{hname}_{fname};\n')
     for mf in ir.metadata_fields:
-        f.write(f'      slot_meta_{mf.name}[cmp_slot] <= proc_out_meta_{mf.name};\n')
-    for cnt in ctrl.counters:
-        f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
-        f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+        f.write(f'      slot_meta_{mf.name}[cmp_slot] <= {fin_meta}{mf.name};\n')
+    if ectrl:
+        for fn in sorted(eg_std_outs):
+            f.write(f'      slot_std_meta_{fn}[cmp_slot] <= eg_out_std_meta_{fn};\n')
+        for cnt in eg_counters:
+            f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+    else:
+        for fn in sorted(ig_std_outs):
+            f.write(f'      slot_std_meta_{fn}[cmp_slot] <= ig_out_std_meta_{fn};\n')
+        for cnt in ig_counters:
+            f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
     f.write('    end\n')
     f.write('  end\n\n')
 
@@ -1787,6 +1993,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
     for mf in ir.metadata_fields:
         f.write(f'      out_meta_{mf.name} <= \'0;\n')
+    for fn in sorted(sideband_std):
+        f.write(f'      out_std_meta_{fn} <= \'0;\n')
     f.write('    end else begin\n')
 
     f.write('      if (tx_consumed) tx_out_valid <= 1\'b0;\n')
@@ -1800,6 +2008,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1\'b1;\n')
     for mf in ir.metadata_fields:
         f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+    for fn in sorted(sideband_std):
+        f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
     f.write('      end else if (emit_pl) begin\n')
     f.write('        tx_out_valid <= 1\'b1;\n')
     f.write('        tx_out_data  <= pfifo_head_data;\n')
@@ -1807,6 +2017,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('        tx_out_last  <= pfifo_head_last;\n')
     for mf in ir.metadata_fields:
         f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+    for fn in sorted(sideband_std):
+        f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
     f.write('      end\n')
     f.write('      if (tx_finish) begin\n')
     f.write('        tx_in_payload <= 1\'b0;\n')
@@ -1816,8 +2028,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    end\n')
     f.write('  end\n\n')
 
-    # ── Counter externs (serialised at TX: commit on start, apply on finish) ──
-    for cnt in ctrl.counters:
+    # ── Counter externs (one request per packet at slot release) ──────────────
+    for cnt in all_counters:
         has_pkt  = cnt.counter_type in ('PACKETS', 'PACKETS_AND_BYTES')
         has_byte = cnt.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
         f.write(f'  {cnt.name}_counter #(.DEPTH({cnt.size})) u_{cnt.name} (\n')

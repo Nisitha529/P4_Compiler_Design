@@ -286,12 +286,9 @@ module smprobe_top #(
   assign iss_fire = iss_allocated && iss_hdr_ready;
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
-    else if (iss_fire) iss_ptr <= iss_ptr + 1'b1;
-  end
-
-  always_ff @(posedge clk) begin
-    if (!rst_n) ingress_ts_ctr <= '0;
-    else        ingress_ts_ctr <= ingress_ts_ctr + 1'b1;
+    else if (iss_fire) begin
+      iss_ptr <= iss_ptr + 1'b1;
+    end
   end
 
   // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────

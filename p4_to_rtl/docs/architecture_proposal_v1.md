@@ -72,7 +72,12 @@ Four fields kept from xsa.p4 (all now real), four added. The grouping — *shell
 
 ### 4.3 Pipeline
 
-Unchanged shape: `Parser → MatchAction → Deparser`, package `P4RtlPipeline<H,M>`. An egress stage is explicitly a v2 item (§7).
+`Parser → Ingress → Egress → Deparser`, package `P4RtlPipeline<H,M>`.
+**Revised 2026-09-19 (user decision, after the streaming shell landed):** the
+egress stage is in v1, with **PHV pass-through** — egress receives the header
+vector and metadata exactly as ingress left them, no re-parse. The queueing
+point between the two is the streaming shell's slot ring; `drop` is sticky
+across it. Contract and step plan: `docs/egress_stage_plan.md`.
 
 ### 4.4 Removed
 
@@ -143,7 +148,7 @@ Nothing in v1 requires touching the staging machinery, the table emitters, or th
 
 **v2 candidates, in order of value:**
 1. **Variable-latency extern** — `UserExternVL<I,O>` with ready/valid. Needs a pipeline stall, which is real work in `emit_processing`, but is what lets the pipeline talk to DRAM.
-2. **Egress stage** — a second `MatchAction` after a queueing point. Biggest single change; only worth it once there is a traffic manager to put between them.
+2. ~~**Egress stage**~~ — moved into v1 (§4.3). What remains v2 is a real traffic manager (per-port queues) between the two controls.
 3. `clone` / `recirculate` — need packet replication in the shell.
 
 Deliberately not planned: `range` match (no demand), `resubmit`.
@@ -177,7 +182,7 @@ error { BadEther }
 parser P(packet_in b, out headers hdr, inout metadata meta, inout standard_metadata_t sm) {
     state start { b.extract(hdr.eth); verify(hdr.eth.etype != 0xFFFF, error.BadEther); transition accept; }
 }
-control MA(inout headers hdr, inout metadata meta, inout standard_metadata_t sm) {
+control IG(inout headers hdr, inout metadata meta, inout standard_metadata_t sm) {
     Register<bit<8>, bit<12>>(4096) flow_state;
     Counter<bit<64>, bit<9>>(512, CounterType_t.PACKETS_AND_BYTES) per_port;
     Meter<bit<9>>(512) port_meter;
@@ -199,6 +204,12 @@ control MA(inout headers hdr, inout metadata meta, inout standard_metadata_t sm)
         sm.mcast_group = 0;
     }
 }
+control EG(inout headers hdr, inout metadata meta, inout standard_metadata_t sm) {
+    Counter<bit<64>, bit<9>>(512, CounterType_t.PACKETS) tx_pkts;
+    action smac(bit<48> m) { hdr.eth.src = m; }
+    table port_smac { key = { sm.egress_port: exact; } actions = { smac; NoAction; } size = 512; }
+    apply { port_smac.apply(); tx_pkts.count(sm.egress_port); }
+}
 control D(packet_out b, in headers hdr, inout metadata meta, inout standard_metadata_t sm) { apply { b.emit(hdr.eth); } }
-P4RtlPipeline(P(), MA(), D()) main;
+P4RtlPipeline(P(), IG(), EG(), D()) main;
 ```

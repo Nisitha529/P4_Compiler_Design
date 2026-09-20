@@ -12,7 +12,11 @@
 //      no `field_mask`, no `unused`.
 //   4. Stateful primitives state their hazard semantics.
 //
-// Single match-action stage, like xsa.p4. An egress stage is a v2 item.
+// Two match-action stages, ingress and egress, with PHV PASS-THROUGH: the
+// egress control receives the header vector and metadata exactly as ingress
+// left them -- the packet is never re-parsed. The queueing point between them
+// is the shell's slot ring (docs/egress_stage_plan.md). drop is sticky
+// across the boundary: a packet ingress dropped never "runs" egress.
 // ============================================================================
 #include <core.p4>
 
@@ -92,9 +96,12 @@ extern InternetChecksum {
 // ── Pipeline ────────────────────────────────────────────────────────────────
 parser  Parser<H, M>(packet_in b, out H hdr, inout M meta,
                      inout standard_metadata_t standard_metadata);
-control MatchAction<H, M>(inout H hdr, inout M meta,
-                          inout standard_metadata_t standard_metadata);
+control Ingress<H, M>(inout H hdr, inout M meta,
+                      inout standard_metadata_t standard_metadata);
+control Egress<H, M>(inout H hdr, inout M meta,
+                     inout standard_metadata_t standard_metadata);
 control Deparser<H, M>(packet_out b, in H hdr, inout M meta,
                        inout standard_metadata_t standard_metadata);
 
-package P4RtlPipeline<H, M>(Parser<H, M> p, MatchAction<H, M> ma, Deparser<H, M> dep);
+package P4RtlPipeline<H, M>(Parser<H, M> p, Ingress<H, M> ig, Egress<H, M> eg,
+                            Deparser<H, M> dep);

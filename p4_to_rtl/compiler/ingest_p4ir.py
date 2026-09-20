@@ -302,6 +302,8 @@ def _parse_structs(text, header_type_map):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _detect_arch(text):
+    if re.search(r'\bP4RtlPipeline\s*<', text):
+        return 'p4rtl'
     if re.search(r'\bXilinxPipeline\s*<', text):
         return 'xsa'
     if re.search(r'\bV1Switch\s*<', text):
@@ -311,22 +313,31 @@ def _detect_arch(text):
 
 def _extract_control_names(text, arch):
     """
-    Return (parser_name, ingress_name, deparser_name) from package instantiation.
+    Return (parser_name, ingress_name, egress_name, deparser_name) from the
+    package instantiation. egress_name is None for the single-control
+    architectures (xsa.p4, and v1model on this path).
     """
-    if arch == 'xsa':
+    if arch == 'p4rtl':
+        m = re.search(
+            r'P4RtlPipeline\s*<[^>]*>\s*\(\s*(\w+)\s*\(\s*\)\s*,\s*(\w+)\s*\(\s*\)\s*,'
+            r'\s*(\w+)\s*\(\s*\)\s*,\s*(\w+)',
+            text)
+        if m:
+            return m.group(1), m.group(2), m.group(3), m.group(4)
+    elif arch == 'xsa':
         m = re.search(
             r'XilinxPipeline\s*<[^>]*>\s*\(\s*(\w+)\s*\(\s*\)\s*,\s*(\w+)\s*\(\s*\)\s*,\s*(\w+)',
             text)
         if m:
-            return m.group(1), m.group(2), m.group(3)
+            return m.group(1), m.group(2), None, m.group(3)
     elif arch == 'v1model':
         m = re.search(
             r'V1Switch\s*<[^>]*>\s*\(\s*(\w+)\s*\(\s*\)\s*,\s*\w+\s*\(\s*\)\s*,'
             r'\s*(\w+)\s*\(\s*\)\s*,\s*\w+\s*\(\s*\)\s*,\s*\w+\s*\(\s*\)\s*,\s*(\w+)',
             text)
         if m:
-            return m.group(1), m.group(2), m.group(3)
-    return None, None, None
+            return m.group(1), m.group(2), None, m.group(3)
+    return None, None, None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -452,11 +463,15 @@ def _parse_action_body(body_text, name_map=None):
                     stmts.append(ExternCall(f'{obj}.{method}', args))
                     continue
 
-        # EXTERN.method(ARGS)
-        m = re.match(r'(\w+)\s*\.\s*(\w+)\s*\(([^)]*)\)', raw)
+        # EXTERN.method(ARGS) -- the argument list is read with paren
+        # matching, not `[^)]*`: an argument can itself contain parentheses
+        # (a cast such as `count((bit<4>)smeta.egress_port)`), and the naive
+        # form silently truncated it to `(bit<4>`.
+        m = re.match(r'(\w+)\s*\.\s*(\w+)\s*\(', raw)
         if m:
-            obj, method, args_str = m.group(1), m.group(2), m.group(3)
-            args = [_convert_expr(a.strip()) for a in args_str.split(',') if a.strip()]
+            obj, method = m.group(1), m.group(2)
+            inner, _ = _read_matching_paren(raw, m.end() - 1)
+            args = [_convert_expr(a.strip()) for a in _split_top_level_commas(inner) if a.strip()]
             stmts.append(ExternCall(f'{obj}.{method}', args))
             continue
 
@@ -657,11 +672,12 @@ class _ApplyParser:
             rhs = _convert_expr(m.group(2).strip())
             return Assignment(lhs, rhs)
 
-        # extern call as statement
-        m = re.match(r'(\w+)\.(\w+)\s*\(([^)]*)\)', stmt_text)
+        # extern call as statement (paren-matched: arguments may carry casts)
+        m = re.match(r'(\w+)\.(\w+)\s*\(', stmt_text)
         if m:
             obj = m.group(1)
-            args = [_convert_expr(a.strip()) for a in m.group(3).split(',') if a.strip()]
+            inner, _ = _read_matching_paren(stmt_text, m.end() - 1)
+            args = [_convert_expr(a.strip()) for a in _split_top_level_commas(inner) if a.strip()]
             return ExternCall(f'{obj}.{m.group(2)}', args)
 
         return None
@@ -1166,6 +1182,83 @@ def _parse_std_meta_struct(text, error_width):
     return widths, unresolved
 
 
+def _ingest_control(text, ctrl_name, stage, ir):
+    """Ingest one match-action control (`stage` = 'ingress' | 'egress') into
+    the IR. Both P4RtlPipeline controls have the same shape -- tables,
+    actions, externs, an apply block -- so one walker serves both; only the
+    pipeline slot it lands in differs. Returns the ControlBlock or None."""
+    ctrl_body = _find_control_body(text, ctrl_name)
+    if not ctrl_body:
+        return None
+    (local_vars, registers, counters, hashes, user_externs,
+     actions_raw, tables_raw, apply_text, name_map) = \
+        _parse_control_body(ctrl_body, ctrl_name)
+
+    ctrl = ControlBlock(ctrl_name)
+
+    for lv in local_vars:
+        ctrl.add_local_var(lv)
+
+    for reg in registers:
+        ctrl.add_register(reg)
+
+    for cnt in counters:
+        ctrl.add_counter(cnt)
+
+    for h in hashes:
+        ctrl.add_hash(h)
+
+    for ue in user_externs:
+        ctrl.add_user_extern(ue)
+
+    # Build action lookup dicts
+    actions_by_local = {}
+    actions_by_canon = {}
+    for (local_name, action, _hidden) in actions_raw:
+        actions_by_local[local_name] = action
+        actions_by_canon[action.name] = action
+        ctrl.add_action(action)
+        ir.add_action(action)
+
+    # InternetChecksum: real .clear()/.add()/.subtract()/.get() sequences
+    # get hoisted by p4c's own MidEnd into ordinary (often @hidden)
+    # actions -- ctrl.actions is now fully populated (hidden actions
+    # included, e.g. a checksum computation guarded by an
+    # if(hdr.X.isValid()) block), so this can run once, here.
+    csum_state = {}
+    for action in ctrl.actions:
+        _extract_checksum_updates(action.body, csum_state, ir)
+
+    # Build table maps
+    real_tables = {}     # local_name → Table
+    hidden_tables = {}   # local_name → [stmts]
+
+    for (local_name, table_or_none, is_hidden, default_action_name) in tables_raw:
+        if is_hidden:
+            if default_action_name:
+                act = (actions_by_local.get(default_action_name)
+                       or actions_by_canon.get(default_action_name)
+                       or actions_by_local.get(name_map.get(default_action_name, ''))
+                       or actions_by_canon.get(name_map.get(default_action_name, '')))
+                hidden_tables[local_name] = list(act.body) if act else []
+            else:
+                hidden_tables[local_name] = []
+        else:
+            real_tables[local_name] = table_or_none
+            ctrl.add_table(table_or_none)
+            ir.add_table(table_or_none)
+
+    # Parse apply block
+    if apply_text:
+        ap = _ApplyParser(apply_text, real_tables, hidden_tables, name_map)
+        for stmt in ap.parse_stmts():
+            ctrl.add_statement(stmt)
+
+    ir.add_control(ctrl)
+    ir.set_pipeline_stage(stage, ctrl)
+    return ctrl
+
+
 def ingest_p4ir(p4_text: str) -> IR:
     """Parse MidEnd P4 IR text → hardware IR."""
     ir = IR()
@@ -1206,9 +1299,9 @@ def ingest_p4ir(p4_text: str) -> IR:
 
     # 3. Architecture + control names
     arch = _detect_arch(text)
-    parser_name, ingress_name, deparser_name = _extract_control_names(text, arch)
+    parser_name, ingress_name, egress_name, deparser_name = _extract_control_names(text, arch)
     if not parser_name:
-        parser_name, ingress_name, deparser_name = 'MyParser', 'MyProcessing', 'MyDeparser'
+        parser_name, ingress_name, egress_name, deparser_name = 'MyParser', 'MyProcessing', None, 'MyDeparser'
 
     # 4. Parser states
     parser_body = _find_parser_body(text, parser_name)
@@ -1218,75 +1311,12 @@ def ingest_p4ir(p4_text: str) -> IR:
         if 'start' in ir.parser_states:
             ir.set_start_state('start')
 
-    # 5. Match-action control (ingress)
-    ctrl_body = _find_control_body(text, ingress_name)
-    if ctrl_body:
-        (local_vars, registers, counters, hashes, user_externs,
-         actions_raw, tables_raw, apply_text, name_map) = \
-            _parse_control_body(ctrl_body, ingress_name)
-
-        ctrl = ControlBlock(ingress_name)
-
-        for lv in local_vars:
-            ctrl.add_local_var(lv)
-
-        for reg in registers:
-            ctrl.add_register(reg)
-
-        for cnt in counters:
-            ctrl.add_counter(cnt)
-
-        for h in hashes:
-            ctrl.add_hash(h)
-
-        for ue in user_externs:
-            ctrl.add_user_extern(ue)
-
-        # Build action lookup dicts
-        actions_by_local = {}
-        actions_by_canon = {}
-        for (local_name, action, _hidden) in actions_raw:
-            actions_by_local[local_name] = action
-            actions_by_canon[action.name] = action
-            ctrl.add_action(action)
-            ir.add_action(action)
-
-        # InternetChecksum: real .clear()/.add()/.subtract()/.get() sequences
-        # get hoisted by p4c's own MidEnd into ordinary (often @hidden)
-        # actions -- ctrl.actions is now fully populated (hidden actions
-        # included, e.g. a checksum computation guarded by an
-        # if(hdr.X.isValid()) block), so this can run once, here.
-        csum_state = {}
-        for action in ctrl.actions:
-            _extract_checksum_updates(action.body, csum_state, ir)
-
-        # Build table maps
-        real_tables = {}     # local_name → Table
-        hidden_tables = {}   # local_name → [stmts]
-
-        for (local_name, table_or_none, is_hidden, default_action_name) in tables_raw:
-            if is_hidden:
-                if default_action_name:
-                    act = (actions_by_local.get(default_action_name)
-                           or actions_by_canon.get(default_action_name)
-                           or actions_by_local.get(name_map.get(default_action_name, ''))
-                           or actions_by_canon.get(name_map.get(default_action_name, '')))
-                    hidden_tables[local_name] = list(act.body) if act else []
-                else:
-                    hidden_tables[local_name] = []
-            else:
-                real_tables[local_name] = table_or_none
-                ctrl.add_table(table_or_none)
-                ir.add_table(table_or_none)
-
-        # Parse apply block
-        if apply_text:
-            ap = _ApplyParser(apply_text, real_tables, hidden_tables, name_map)
-            for stmt in ap.parse_stmts():
-                ctrl.add_statement(stmt)
-
-        ir.add_control(ctrl)
-        ir.set_pipeline_stage('ingress', ctrl)
+    # 5. Match-action controls. xsa.p4 has one; P4RtlPipeline has ingress
+    #    and egress, ingested identically and chained by emit_top.py with
+    #    PHV pass-through (docs/egress_stage_plan.md).
+    _ingest_control(text, ingress_name, 'ingress', ir)
+    if egress_name:
+        _ingest_control(text, egress_name, 'egress', ir)
 
     # 6. Deparser
     dep_body = _find_control_body(text, deparser_name)
