@@ -72,6 +72,8 @@ module egprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
+  logic [63:0] slot_sop_ingress_timestamp [0:NSLOT-1];   // sampled at SOP
+  logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
@@ -432,7 +434,7 @@ module egprobe_top #(
     .eth_etype  (out_eth_etype),
     .meta_ts  (proc_out_meta_ts),
     .std_meta_egress_port  (ig_out_std_meta_egress_port),   // written by ingress
-    .std_meta_ingress_timestamp  (slot_std_meta_ingress_timestamp[ig_slot]),   // shell-sourced, sampled at issue
+    .std_meta_ingress_timestamp  (slot_sop_ingress_timestamp[ig_slot]),   // shell-sourced, sampled at SOP
     .out_eth_valid     (eg_out_eth_valid),
     .out_eth_dst  (eg_out_eth_dst),
     .out_eth_src  (eg_out_eth_src),
@@ -468,8 +470,6 @@ module egprobe_top #(
   logic [47:0] slot_phv_eth_src [0:NSLOT-1];
   logic [15:0] slot_phv_eth_etype [0:NSLOT-1];
   logic [63:0] slot_meta_ts [0:NSLOT-1];
-  logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
-  logic [63:0] slot_std_meta_ingress_timestamp [0:NSLOT-1];
   logic slot_cnt_tx_pkts_en [0:NSLOT-1];
   logic [3:0] slot_cnt_tx_pkts_idx [0:NSLOT-1];
 
@@ -495,6 +495,9 @@ module egprobe_top #(
       end
     end else begin
       if (accept_beat) begin
+        if (!rx_active) begin   // start of packet
+          slot_sop_ingress_timestamp[wr_slot] <= ingress_ts_ctr;
+        end
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
           for (int i = 0; i < 32; i++)
             if (s_axis_tkeep[i])
@@ -541,7 +544,6 @@ module egprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
-      slot_std_meta_ingress_timestamp[iss_slot] <= ingress_ts_ctr;   // for egress
     end
   end
 

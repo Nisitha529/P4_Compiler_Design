@@ -2367,12 +2367,20 @@ module processing_generated (
   end
 
   // Register write-back (initialized via initial block above)
+  // The write is qualified with the pipeline valid of the stage the
+  // write statement lives in. `<reg>_wr_en` alone only says "the
+  // program reaches a .write() here": it is combinational from that
+  // stage's registers, which HOLD after a packet drains, so without
+  // the valid it stays asserted and rewrites the same address every
+  // idle cycle. Invisible for a write of a constant (a Bloom filter
+  // setting a bit to 1 is idempotent), corrupting for any
+  // read-modify-write: the value is re-accumulated once per cycle.
   always_ff @(posedge clk) begin
-    if (byte_cnt_reg_wr_en)
+    if (byte_cnt_reg_wr_en && valid_in)
       byte_cnt_reg_mem[byte_cnt_reg_wr_addr] <= byte_cnt_reg_wr_data;
   end
   always_ff @(posedge clk) begin
-    if (last_time_reg_wr_en)
+    if (last_time_reg_wr_en && valid_in)
       last_time_reg_mem[last_time_reg_wr_addr] <= last_time_reg_wr_data;
   end
 

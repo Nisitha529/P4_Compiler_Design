@@ -1,4 +1,4 @@
-module smprobe_top #(
+module lmprobe_top #(
     parameter int AXI_DATA_W  = 256,
     parameter int AXIL_ADDR_W = 16
 ) (
@@ -30,6 +30,12 @@ module smprobe_top #(
     output logic [1:0]                s_axil_bresp,
     output logic                      s_axil_bvalid,
     input  logic                      s_axil_bready,
+
+    // Physical port the frame arrived on. Sampled at SOP into the
+    // packet's slot and delivered as standard_metadata.ingress_port.
+    // One stream in means one port here: an integrator with several
+    // ports instantiates this core per port (or drives it from tuser).
+    input  logic [8:0]              ingress_port,
     input  logic [AXIL_ADDR_W-1:0]   s_axil_araddr,
     input  logic                      s_axil_arvalid,
     output logic                      s_axil_arready,
@@ -39,8 +45,9 @@ module smprobe_top #(
     input  logic                      s_axil_rready,
 
     // Metadata sideband (valid while m_axis_tvalid for the packet)
-    output logic [63:0] out_meta_ts,
-    output logic [15:0] out_meta_nbytes
+    output logic [31:0] out_meta_byte_total,
+    output logic [8:0] out_meta_port_seen,
+    output logic [8:0] out_std_meta_egress_port
 );
 
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
@@ -73,7 +80,9 @@ module smprobe_top #(
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
   logic [15:0] slot_byte_len [0:NSLOT-1];
-  logic [63:0] slot_sop_ingress_timestamp [0:NSLOT-1];   // sampled at SOP
+  logic [8:0] slot_sop_ingress_port [0:NSLOT-1];   // sampled at SOP
+  logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
+  logic [15:0] slot_std_meta_packet_length [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
@@ -85,6 +94,12 @@ module smprobe_top #(
   logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;
   wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];
+  // ig_ptr: slot whose packet is currently completing INGRESS (advances on
+  // u_proc.out_valid, when the PHV is handed to u_egress); sits between
+  // iss_ptr and cmp_ptr. The slot ring is the queueing point between the
+  // two controls, so the packet's standard metadata rides in the slot.
+  logic [SLOT_AW:0] ig_ptr;
+  wire  [SLOT_AW-1:0] ig_slot = ig_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
@@ -129,7 +144,6 @@ module smprobe_top #(
   //   proc_out_valid: u_proc's data-ALIGNED valid (out_valid port) -- the
   //                  cycle out_*/drop belong to slot cmp_slot
   //   tx_hdr_row/tx_in_payload: TX progress through slot tx_slot
-  logic [63:0] ingress_ts_ctr;   // free-running, bit<64> per the architecture
   logic [8:0] tx_hdr_row;
   logic tx_in_payload;
   logic tx_out_valid;
@@ -153,9 +167,6 @@ module smprobe_top #(
   // ── Header validity (derived from extracted fields) ──────────────────────
   wire w_eth_valid = 1'b1;
 
-  // ── standard_metadata.parser_error (from parser verify()) ────────────────
-  wire [3:0] w_parser_error = ((1'b1) && !(w_eth_etype != 16'hFFFF)) ? 4'd8 : 4'd0;
-
   // ── Header-region cutoff ──────────────────────────────────────────────────
   wire [13:0] w_eth_cutoff_term = 0 + 14;
   wire [13:0] cutoff_byte = w_eth_cutoff_term;
@@ -171,16 +182,150 @@ module smprobe_top #(
   wire proc_out_valid;
   wire proc_drop;
   logic iss_fire;
-  wire [63:0] proc_out_meta_ts;
-  wire [15:0] proc_out_meta_nbytes;
+  wire [31:0] proc_out_meta_byte_total;
+  wire [8:0] proc_out_meta_port_seen;
+  wire [8:0] ig_out_std_meta_egress_port;
+  // egress_processing_generated outputs (the FINAL PHV the shell captures)
+  wire eg_out_eth_valid;
+  wire [47:0] eg_out_eth_dst;
+  wire [47:0] eg_out_eth_src;
+  wire [15:0] eg_out_eth_etype;
+  wire eg_valid_out;
+  wire eg_out_valid;
+  wire eg_drop;
+  wire [31:0] eg_out_meta_byte_total;
+  wire [8:0] eg_out_meta_port_seen;
+
+  wire port_fwd_cp_query_busy;
+  wire port_fwd_cp_query_hit;
+  wire [0:0] port_fwd_cp_query_action_id;
+  wire [8:0] port_fwd_cp_query_p_port;
 
 
+  // ── AXI4-Lite staging registers ─────────────────────────────────────────
+  logic [3:0] r_port_fwd_cp_wr_idx;
+  logic [0:0] r_port_fwd_cp_wr_action;
+  logic [8:0] r_port_fwd_cp_wr_key_ingress_port;
+  logic [8:0] r_port_fwd_cp_wr_p_port;
+  logic [8:0] r_port_fwd_cp_query_key_ingress_port;
+  logic r_port_fwd_cp_query_del;
+  logic r_port_fwd_cp_wr_en;
+  logic r_port_fwd_cp_query_en;
 
-  // ── ingress_timestamp source ───────────────────────────────────────────
-  always_ff @(posedge clk) begin
-    if (!rst_n) ingress_ts_ctr <= '0;
-    else        ingress_ts_ctr <= ingress_ts_ctr + 1'b1;
+  // AXI4-Lite write channel state machine
+  typedef enum logic [1:0] {
+    AXIL_IDLE  = 2'd0,
+    AXIL_WDATA = 2'd1,
+    AXIL_BRESP = 2'd2
+  } axil_st_t;
+
+  axil_st_t               axil_st;
+  logic [AXIL_ADDR_W-1:0] axil_awaddr_r;
+
+  assign s_axil_awready = (axil_st == AXIL_IDLE);
+  assign s_axil_bvalid  = (axil_st == AXIL_BRESP);
+  assign s_axil_bresp   = 2'b00;
+
+  // Commit-type words for a busy table stall wready instead of silently
+  // dropping the write (see cp_query_busy on the query/delete pipeline).
+  logic pending_commit_busy;
+  always @(*) begin
+    pending_commit_busy = 1'b0;
+    case (axil_awaddr_r[AXIL_ADDR_W-1:2])
+      14'd4: pending_commit_busy = port_fwd_cp_query_busy;
+      14'd6: pending_commit_busy = port_fwd_cp_query_busy;
+      14'd7: pending_commit_busy = port_fwd_cp_query_busy;
+      default: pending_commit_busy = 1'b0;
+    endcase
   end
+  assign s_axil_wready = (axil_st == AXIL_WDATA) && !pending_commit_busy;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      axil_st <= AXIL_IDLE;
+      r_port_fwd_cp_wr_en <= 1'b0;
+      r_port_fwd_cp_query_en <= 1'b0;
+    end else begin
+      r_port_fwd_cp_wr_en <= 1'b0;
+      r_port_fwd_cp_query_en <= 1'b0;
+      case (axil_st)
+        AXIL_IDLE: begin
+          if (s_axil_awvalid) begin
+            axil_awaddr_r <= s_axil_awaddr;
+            axil_st       <= AXIL_WDATA;
+          end
+        end
+        AXIL_WDATA: begin
+          if (s_axil_wvalid && s_axil_wready) begin
+            case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
+              14'd0: r_port_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
+              14'd1: r_port_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
+              14'd2: r_port_fwd_cp_wr_key_ingress_port <= s_axil_wdata[8:0]; // key_ingress_port
+              14'd3: r_port_fwd_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
+              14'd4: r_port_fwd_cp_wr_en <= 1'b1; // port_fwd commit
+              14'd5: r_port_fwd_cp_query_key_ingress_port <= s_axil_wdata[8:0]; // query_key_ingress_port
+              14'd6: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b0; end // port_fwd query
+              14'd7: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b1; end // port_fwd delete
+              default: ; // ignore unknown address
+            endcase
+            axil_st <= AXIL_BRESP;
+          end
+        end
+        AXIL_BRESP: begin
+          if (s_axil_bready) axil_st <= AXIL_IDLE;
+        end
+        default: axil_st <= AXIL_IDLE;
+      endcase
+    end
+  end
+
+  // AXI4-Lite read channel
+  typedef enum logic {
+    AXIL_R_IDLE = 1'd0,
+    AXIL_R_DATA = 1'd1
+  } axil_rst_t;
+
+  axil_rst_t   axil_rst;
+  logic [31:0] r_rdata;
+
+  assign s_axil_arready = (axil_rst == AXIL_R_IDLE);
+  assign s_axil_rdata   = r_rdata;
+  assign s_axil_rresp   = 2'b00;
+  assign s_axil_rvalid  = (axil_rst == AXIL_R_DATA);
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      axil_rst <= AXIL_R_IDLE;
+    end else begin
+      case (axil_rst)
+        AXIL_R_IDLE: begin
+          if (s_axil_arvalid) begin
+            case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
+              14'd8: r_rdata <= {30'd0, port_fwd_cp_query_hit, port_fwd_cp_query_busy}; // port_fwd query_status
+              14'd9: r_rdata <= {31'd0, port_fwd_cp_query_action_id}; // port_fwd query_action_id
+              14'd10: r_rdata <= {23'd0, port_fwd_cp_query_p_port}; // port_fwd query_p_port
+              default: r_rdata <= 32'd0;
+            endcase
+            axil_rst <= AXIL_R_DATA;
+          end
+        end
+        AXIL_R_DATA: begin
+          if (s_axil_rready) axil_rst <= AXIL_R_IDLE;
+        end
+        default: axil_rst <= AXIL_R_IDLE;
+      endcase
+    end
+  end
+
+  wire [3:0] port_fwd_cp_wr_idx = r_port_fwd_cp_wr_idx;
+  wire [0:0] port_fwd_cp_wr_action = r_port_fwd_cp_wr_action;
+  wire [8:0] port_fwd_cp_wr_key_ingress_port = r_port_fwd_cp_wr_key_ingress_port;
+  wire [8:0] port_fwd_cp_wr_p_port = r_port_fwd_cp_wr_p_port;
+  wire port_fwd_cp_wr_en = r_port_fwd_cp_wr_en;
+  wire [8:0] port_fwd_cp_query_key_ingress_port = r_port_fwd_cp_query_key_ingress_port;
+  wire port_fwd_cp_query_en  = r_port_fwd_cp_query_en;
+  wire port_fwd_cp_query_del = r_port_fwd_cp_query_del;
+  wire port_fwd_hit_out;
 
   processing_generated u_proc (
     .clk       (clk),
@@ -190,20 +335,63 @@ module smprobe_top #(
     .eth_dst  (w_eth_dst),
     .eth_src  (w_eth_src),
     .eth_etype  (w_eth_etype),
-    .meta_ts  (64'b0),
-    .meta_nbytes  (16'b0),
-    .std_meta_ingress_timestamp  (slot_sop_ingress_timestamp[iss_slot]),  // sampled at SOP
-    .std_meta_parsed_bytes  (16'(cutoff_byte)),  // bytes consumed by extract()
-    .std_meta_parser_error  (w_parser_error),
+    .meta_byte_total  (32'b0),
+    .meta_port_seen  (9'b0),
+    .std_meta_ingress_port  (slot_sop_ingress_port[iss_slot]),  // sampled at SOP
     .out_eth_valid     (out_eth_valid),
     .out_eth_dst  (out_eth_dst),
     .out_eth_src  (out_eth_src),
     .out_eth_etype  (out_eth_etype),
-    .out_meta_ts  (proc_out_meta_ts),
-    .out_meta_nbytes  (proc_out_meta_nbytes),
+    .out_meta_byte_total  (proc_out_meta_byte_total),
+    .out_meta_port_seen  (proc_out_meta_port_seen),
+    .out_std_meta_egress_port  (ig_out_std_meta_egress_port),
+    .port_fwd_cp_wr_en  (port_fwd_cp_wr_en),
+    .port_fwd_cp_wr_idx (port_fwd_cp_wr_idx),
+    .port_fwd_cp_wr_action (port_fwd_cp_wr_action),
+    .port_fwd_cp_wr_key_ingress_port (port_fwd_cp_wr_key_ingress_port),
+    .port_fwd_cp_wr_p_port (port_fwd_cp_wr_p_port),
+    .port_fwd_cp_query_key_ingress_port (port_fwd_cp_query_key_ingress_port),
+    .port_fwd_cp_query_en  (port_fwd_cp_query_en),
+    .port_fwd_cp_query_del (port_fwd_cp_query_del),
+    .port_fwd_cp_query_busy (port_fwd_cp_query_busy),
+    .port_fwd_cp_query_hit  (port_fwd_cp_query_hit),
+    .port_fwd_cp_query_action_id (port_fwd_cp_query_action_id),
+    .port_fwd_cp_query_p_port (port_fwd_cp_query_p_port),
+    .port_fwd_hit_out  (port_fwd_hit_out),
     .out_valid (proc_out_valid),   // aligned with out_*/drop
     .valid_out (proc_valid_out),   // legacy registered-late valid, unused here
     .drop      (proc_drop)
+  );
+
+  // ── egress_processing_generated: PHV pass-through ────────────────────────
+  // Fed directly from u_proc's outputs on u_proc.out_valid: the header
+  // vector, user metadata and standard metadata exactly as ingress left
+  // them -- the packet is never re-parsed. Shell-sourced standard metadata
+  // egress reads comes from the slot (sampled at issue for THIS packet).
+  // drop is sticky: ingress's decision enters as drop_in and egress can
+  // only add to it (its counters are gated on drop_in inside the module).
+  egress_processing_generated u_egress (
+    .clk       (clk),
+    .rst_n     (rst_n),
+    .valid_in  (proc_out_valid),
+    .drop_in   (proc_drop),
+    .eth_valid     (out_eth_valid),
+    .eth_dst  (out_eth_dst),
+    .eth_src  (out_eth_src),
+    .eth_etype  (out_eth_etype),
+    .meta_byte_total  (proc_out_meta_byte_total),
+    .meta_port_seen  (proc_out_meta_port_seen),
+    .std_meta_egress_port  (ig_out_std_meta_egress_port),   // written by ingress
+    .std_meta_packet_length  (slot_std_meta_packet_length[ig_slot]),   // shell-sourced, sampled at issue
+    .out_eth_valid     (eg_out_eth_valid),
+    .out_eth_dst  (eg_out_eth_dst),
+    .out_eth_src  (eg_out_eth_src),
+    .out_eth_etype  (eg_out_eth_etype),
+    .out_meta_byte_total  (eg_out_meta_byte_total),
+    .out_meta_port_seen  (eg_out_meta_port_seen),
+    .out_valid (eg_out_valid),   // aligned with out_*/drop
+    .valid_out (eg_valid_out),
+    .drop      (eg_drop)
   );
 
   // ── Per-slot pipeline results ────────────────────────────────────────────
@@ -215,8 +403,8 @@ module smprobe_top #(
   logic [47:0] slot_phv_eth_dst [0:NSLOT-1];
   logic [47:0] slot_phv_eth_src [0:NSLOT-1];
   logic [15:0] slot_phv_eth_etype [0:NSLOT-1];
-  logic [63:0] slot_meta_ts [0:NSLOT-1];
-  logic [15:0] slot_meta_nbytes [0:NSLOT-1];
+  logic [31:0] slot_meta_byte_total [0:NSLOT-1];
+  logic [8:0] slot_meta_port_seen [0:NSLOT-1];
 
   // ── RX (ingest) ──────────────────────────────────────────────────────────
   // Accept whenever the next slot is free and the payload FIFO has room.
@@ -242,7 +430,7 @@ module smprobe_top #(
     end else begin
       if (accept_beat) begin
         if (!rx_active) begin   // start of packet
-          slot_sop_ingress_timestamp[wr_slot] <= ingress_ts_ctr;
+          slot_sop_ingress_port[wr_slot] <= ingress_port;
         end
         slot_byte_len[wr_slot] <= slot_byte_len[wr_slot] + ({15'd0, s_axis_tkeep[0]} + {15'd0, s_axis_tkeep[1]} + {15'd0, s_axis_tkeep[2]} + {15'd0, s_axis_tkeep[3]} + {15'd0, s_axis_tkeep[4]} + {15'd0, s_axis_tkeep[5]} + {15'd0, s_axis_tkeep[6]} + {15'd0, s_axis_tkeep[7]} + {15'd0, s_axis_tkeep[8]} + {15'd0, s_axis_tkeep[9]} + {15'd0, s_axis_tkeep[10]} + {15'd0, s_axis_tkeep[11]} + {15'd0, s_axis_tkeep[12]} + {15'd0, s_axis_tkeep[13]} + {15'd0, s_axis_tkeep[14]} + {15'd0, s_axis_tkeep[15]} + {15'd0, s_axis_tkeep[16]} + {15'd0, s_axis_tkeep[17]} + {15'd0, s_axis_tkeep[18]} + {15'd0, s_axis_tkeep[19]} + {15'd0, s_axis_tkeep[20]} + {15'd0, s_axis_tkeep[21]} + {15'd0, s_axis_tkeep[22]} + {15'd0, s_axis_tkeep[23]} + {15'd0, s_axis_tkeep[24]} + {15'd0, s_axis_tkeep[25]} + {15'd0, s_axis_tkeep[26]} + {15'd0, s_axis_tkeep[27]} + {15'd0, s_axis_tkeep[28]} + {15'd0, s_axis_tkeep[29]} + {15'd0, s_axis_tkeep[30]} + {15'd0, s_axis_tkeep[31]});
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
@@ -286,27 +474,44 @@ module smprobe_top #(
   // next slot still holds an older packet awaiting TX, and that packet's
   // beat count is nonzero too -- inferring from it re-issued a stale slot.
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
-  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
+  // This program reads standard_metadata.packet_length, which is the
+  // whole frame's byte count and is therefore not known until tlast.
+  // Issue waits for the complete packet: STORE-AND-FORWARD for this
+  // app, cut-through for every app that does not read it.
+  wire iss_hdr_ready = slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_std_meta_packet_length[iss_slot] <= 16'({slot_byte_len[iss_slot]});   // for egress
     end
   end
 
-  // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────
+  // ── Ingress completion (u_proc.out_valid -> slot ig_slot) ────────────────
+  // The PHV itself goes straight into u_egress; what the slot keeps from
+  // ingress is what egress does not carry: its counter requests and the
+  // standard metadata it wrote (the sideband value if egress leaves it).
+  always_ff @(posedge clk) begin
+    if (!rst_n) ig_ptr <= '0;
+    else if (proc_out_valid) begin
+      ig_ptr <= ig_ptr + 1'b1;
+      slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
+    end
+  end
+
+  // ── Capture (u_egress.out_valid -> slot cmp_slot) ──────────────────────────
   always_ff @(posedge clk) begin
     if (!rst_n) cmp_ptr <= '0;
-    else if (proc_out_valid) begin
+    else if (eg_out_valid) begin
       cmp_ptr <= cmp_ptr + 1'b1;
-      slot_drop[cmp_slot] <= proc_drop;
-      slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
-      slot_phv_eth_dst[cmp_slot] <= out_eth_dst;
-      slot_phv_eth_src[cmp_slot] <= out_eth_src;
-      slot_phv_eth_etype[cmp_slot] <= out_eth_etype;
-      slot_meta_ts[cmp_slot] <= proc_out_meta_ts;
-      slot_meta_nbytes[cmp_slot] <= proc_out_meta_nbytes;
+      slot_drop[cmp_slot] <= eg_drop;
+      slot_phv_eth_valid[cmp_slot] <= eg_out_eth_valid;
+      slot_phv_eth_dst[cmp_slot] <= eg_out_eth_dst;
+      slot_phv_eth_src[cmp_slot] <= eg_out_eth_src;
+      slot_phv_eth_etype[cmp_slot] <= eg_out_eth_etype;
+      slot_meta_byte_total[cmp_slot] <= eg_out_meta_byte_total;
+      slot_meta_port_seen[cmp_slot] <= eg_out_meta_port_seen;
     end
   end
 
@@ -382,8 +587,9 @@ module smprobe_top #(
       tx_out_data   <= '0;
       tx_out_keep   <= '0;
       tx_out_last   <= 1'b0;
-      out_meta_ts <= '0;
-      out_meta_nbytes <= '0;
+      out_meta_byte_total <= '0;
+      out_meta_port_seen <= '0;
+      out_std_meta_egress_port <= '0;
     end else begin
       if (tx_consumed) tx_out_valid <= 1'b0;
       if (emit_hdr) begin
@@ -394,15 +600,17 @@ module smprobe_top #(
         tx_out_last  <= hdr_row_is_last;
         tx_hdr_row   <= tx_hdr_row + 9'd1;
         if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1'b1;
-        out_meta_ts <= slot_meta_ts[tx_slot];
-        out_meta_nbytes <= slot_meta_nbytes[tx_slot];
+        out_meta_byte_total <= slot_meta_byte_total[tx_slot];
+        out_meta_port_seen <= slot_meta_port_seen[tx_slot];
+        out_std_meta_egress_port <= slot_std_meta_egress_port[tx_slot];
       end else if (emit_pl) begin
         tx_out_valid <= 1'b1;
         tx_out_data  <= pfifo_head_data;
         tx_out_keep  <= pfifo_head_keep;
         tx_out_last  <= pfifo_head_last;
-        out_meta_ts <= slot_meta_ts[tx_slot];
-        out_meta_nbytes <= slot_meta_nbytes[tx_slot];
+        out_meta_byte_total <= slot_meta_byte_total[tx_slot];
+        out_meta_port_seen <= slot_meta_port_seen[tx_slot];
+        out_std_meta_egress_port <= slot_std_meta_egress_port[tx_slot];
       end
       if (tx_finish) begin
         tx_in_payload <= 1'b0;

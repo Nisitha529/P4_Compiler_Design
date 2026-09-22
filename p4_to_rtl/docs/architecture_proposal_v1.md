@@ -131,10 +131,10 @@ Honest sizing. "Works" means verified end-to-end today on the XSA path.
 | `ingress_timestamp`, `parsed_bytes`, `parser_error` | works | none |
 | `drop` | works | none |
 | Metadata sideband (basis for `egress_port`/`mcast_group`) | works | rename/standardise the shell ports |
-| `ingress_port` | — | one top-level input + one std-meta source (like `ingress_timestamp`) |
-| `packet_length` | — | ungate `pkt_byte_len`, connect it: ~10 lines |
+| `ingress_port` | **done 2026-09-22** | top-level input, sampled at SOP into the packet's slot |
+| `packet_length` | **done 2026-09-22** | connected; reading it makes the app store-and-forward (§5.2) |
 | `UserExtern`, `Counter`, `Checksum`, `InternetChecksum` | works | none |
-| `Register` | works via `xsa_ext.p4` overlay + `--register-ram` | make `--register-ram` the default for this arch; emit the RAW distance |
+| `Register` | **done 2026-09-22** — `Register<T,S>` is ingested natively; was declared-but-uncompilable | still optional: make `--register-ram` the default for this arch |
 | `Meter` | — | new `emit_meter.py`, modelled on `emit_counters.py` (registered RMW + AXI4-Lite programming) |
 | `Digest` | — | FIFO + AXI4-Lite read port in the shell; call site is a one-line push |
 | Package/arch detection (`P4RtlPipeline`) | — | `main.py::_detect_p4_arch`, `ingest_p4ir::_detect_arch`/`_extract_control_names`: a few lines each |

@@ -194,11 +194,18 @@ class LocalVar:
 
 
 class RegisterDecl:
-    """A register<bit<N>>(size) name; extern declaration."""
-    def __init__(self, name, data_width, size):
-        self.name       = name
-        self.data_width = data_width
-        self.size       = size
+    """A stateful array extern declaration, from either spelling:
+      * `register<bit<N>>(size) name;`          -- v1model / xsa_ext.p4 overlay
+      * `Register<bit<N>, bit<S>>(size) name;`  -- p4rtl.p4
+    index_width is the DECLARED index type's width (p4rtl's S), or None for
+    the overlay spelling, which has no index type of its own. The emitted
+    address port is always sized from `size`, not from S -- see
+    emit_processing.py's register block for why."""
+    def __init__(self, name, data_width, size, index_width=None):
+        self.name        = name
+        self.data_width  = data_width
+        self.size        = size
+        self.index_width = index_width
 
 
 class CounterDecl:

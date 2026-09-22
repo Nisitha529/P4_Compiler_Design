@@ -822,6 +822,40 @@ def _parse_control_body(body_text, ctrl_name):
         canon = name_map.get(local_name, canon)
         registers.append(RegisterDecl(canon, dw, sz))
 
+    # ── Register externs, p4rtl.p4 spelling ──────────────────────────────────
+    # Match: @ann Register<bit<N>, bit<S>>(SIZE) name;
+    # Same call-site shape as the lowercase overlay spelling above
+    # (`read(dest, index)` / `write(index, value)`), so ONLY the declaration
+    # differs -- which is exactly why missing it was so quiet: the call sites
+    # still parsed and emitted `<name>_rd_*` / `<name>_wr_*` references to
+    # signals that were never declared, and the compiler exited 0.
+    # The extra type parameter is the INDEX type; its width is recorded but
+    # the emitted address port is sized from SIZE (see RegisterDecl).
+    for m in re.finditer(
+        r'(' + _ANN + r')\bRegister\s*<\s*bit<(\d+)>\s*,\s*bit<(\d+)>\s*>\s*'
+        r'\(\s*(?:\d+w)?(\d+)\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text   = m.group(1)
+        dw         = int(m.group(2))
+        iw         = int(m.group(3))
+        sz         = int(m.group(4))
+        local_name = m.group(5)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        registers.append(RegisterDecl(canon, dw, sz, index_width=iw))
+
+    # A Register<T, S> whose T is not a bit<N> (a struct, a bool, a typedef the
+    # MidEnd did not resolve) matches neither pattern. Report it rather than
+    # let the call sites emit references to signals nothing declares.
+    for m in re.finditer(r'\bRegister\s*<([^>]*(?:<[^>]*>)?[^>]*)>\s*\([^)]*\)\s+(\w+)\s*;', text):
+        local = m.group(2)
+        rname = name_map.get(local, local)
+        if not any(r.name in (local, rname) for r in registers):
+            print(f"[WARN]  Register '{rname}': declared as Register<{m.group(1).strip()}> "
+                  f"-- only Register<bit<N>, bit<S>> is supported, so no storage "
+                  f"will be emitted for it and any read/write of it will not "
+                  f"elaborate. Use bit<N> for both type arguments.")
+
     # ── Counter externs ──────────────────────────────────────────────────────
     # Match: @ann Counter<bit<W>, bit<S>>(N_COUNTERS, CounterType_t.TYPE) name;
     # By the time p4test's MidEnd dump reaches here, typedef'd index types and

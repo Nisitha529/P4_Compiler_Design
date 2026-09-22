@@ -2047,7 +2047,17 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
 
         # ── Register memory arrays + write-staging signals ─────────────
         for reg in registers:
+            # Address width comes from SIZE, never from a p4rtl Register<T,S>'s
+            # declared index type S: the memory has `size` entries, and sizing
+            # the port from S would either leave high address bits driving
+            # nothing (S wider) or make part of the array unreachable (S
+            # narrower). An index >= size therefore wraps, which is what bmv2
+            # does for an out-of-range register index too.
             addr_w = max(1, math.ceil(math.log2(reg.size))) if reg.size > 1 else 1
+            iw = getattr(reg, 'index_width', None)
+            if iw is not None and iw != addr_w:
+                f.write(f'  // {reg.name}: declared index type is bit<{iw}> but the array has '
+                        f'{reg.size} entries -- indices wrap mod {reg.size}\n')
             f.write(f'  // {reg.name}: register<bit<{reg.data_width}>>({reg.size})\n')
             f.write(f'  logic [{reg.data_width-1}:0] {reg.name}_mem [0:{reg.size-1}];\n')
             f.write(f'  logic        {reg.name}_wr_en;\n')
@@ -2389,9 +2399,19 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 f.write('  // flip-flops, which does not scale past small arrays.\n')
             else:
                 f.write('  // Register write-back (initialized via initial block above)\n')
+            f.write('  // The write is qualified with the pipeline valid of the stage the\n')
+            f.write('  // write statement lives in. `<reg>_wr_en` alone only says "the\n')
+            f.write('  // program reaches a .write() here": it is combinational from that\n')
+            f.write('  // stage\'s registers, which HOLD after a packet drains, so without\n')
+            f.write('  // the valid it stays asserted and rewrites the same address every\n')
+            f.write('  // idle cycle. Invisible for a write of a constant (a Bloom filter\n')
+            f.write('  // setting a bit to 1 is idempotent), corrupting for any\n')
+            f.write('  // read-modify-write: the value is re-accumulated once per cycle.\n')
             for reg in registers:
+                wstage = reg_write_stage.get(reg.name, 0)
+                wvalid = 'valid_in' if wstage == 0 else f'valid_s{wstage}'
                 f.write(f'  always_ff @(posedge clk) begin\n')
-                f.write(f'    if ({reg.name}_wr_en)\n')
+                f.write(f'    if ({reg.name}_wr_en && {wvalid})\n')
                 f.write(f'      {reg.name}_mem[{reg.name}_wr_addr] <= {reg.name}_wr_data;\n')
                 if register_ram:
                     for reg_name, dest_id, addr_expr in reg_read_ports:

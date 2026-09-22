@@ -72,6 +72,7 @@ module load_balance_p4rtl_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
+  logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   `ifndef SYNTHESIS
   // synthesis translate_off
@@ -724,7 +725,6 @@ module load_balance_p4rtl_top #(
   logic [15:0] slot_phv_tcp_checksum [0:NSLOT-1];
   logic [15:0] slot_phv_tcp_urgentPtr [0:NSLOT-1];
   logic [13:0] slot_meta_ecmp_select [0:NSLOT-1];
-  logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
 
   // ── RX (ingest) ──────────────────────────────────────────────────────────
   // Accept whenever the next slot is free and the payload FIFO has room.

@@ -1165,7 +1165,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     eg_std_ins   = _collect_std_meta_inputs(ectrl) if ectrl else {}
     eg_std_outs  = _collect_std_meta_outputs(ectrl) if ectrl else {}
     eg_shell_std = {k: w for k, w in eg_std_ins.items() if k not in ig_std_outs}
-    slot_std     = dict(ig_std_outs); slot_std.update(eg_std_outs); slot_std.update(eg_shell_std)
     sideband_std = dict(ig_std_outs); sideband_std.update(eg_std_outs)
     # shell-sourced fields SOME control reads (drives ingress_ts_ctr/byte_len)
     shell_std_used = dict(std_meta_ins); shell_std_used.update(eg_shell_std)
@@ -1175,12 +1174,39 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     if 'parsed_bytes' in shell_std_used:
         needs_byte_len = True
 
+    # Shell-written standard metadata that has to be sampled per packet at
+    # START OF PACKET, not read live at issue: issue is cut-through and can
+    # land while RX is already receiving a LATER packet, so a live read would
+    # hand the pipeline the wrong packet's value.
+    SOP_SAMPLED = ('ingress_timestamp', 'ingress_port')
+    sop_std = {f: w for f, w in shell_std_used.items() if f in SOP_SAMPLED}
+    # packet_length is the whole frame, so it is final only at tlast --
+    # a program that reads it cannot be issued cut-through (see iss_hdr_ready).
+    needs_pkt_len = 'packet_length' in shell_std_used
+    if needs_pkt_len:
+        needs_byte_len = True
+    # Fields egress reads that the shell must record per packet. SOP-sampled
+    # ones already have their own slot array (slot_sop_*), so only the
+    # issue-time ones (parsed_bytes, parser_error, packet_length) need a
+    # second copy taken at issue.
+    eg_issue_std = {k: w for k, w in eg_shell_std.items() if k not in sop_std}
+    slot_std = dict(ig_std_outs); slot_std.update(eg_std_outs); slot_std.update(eg_issue_std)
+
     def _shell_std_src(fname, fw):
         """The shell's source expression for a shell-written std-meta field at
-        ISSUE time (what ingress's std_meta_* input is connected to)."""
-        if fname == 'ingress_timestamp':
-            return 'ingress_ts_ctr'
+        ISSUE time (what ingress's std_meta_* input is connected to, and what
+        the slot records for egress to read later)."""
+        if fname in sop_std:
+            return f'slot_sop_{fname}[iss_slot]'
         if fname == 'parsed_bytes':
+            # Bytes consumed by extract(), which is exactly what cutoff_byte
+            # is: the byte position at which every header this packet's parse
+            # path extracts has landed. NOT slot_byte_len -- that is a running
+            # count of bytes RECEIVED, so at a cut-through issue it reports the
+            # beats that happen to have arrived, not the parsed header length.
+            return f"{fw}'(cutoff_byte)"
+        if fname == 'packet_length':
+            # Final because issue waits for slot_done when this is read.
             return f"{fw}'({{slot_byte_len[iss_slot]}})"
         if fname == 'parser_error':
             return 'w_parser_error' if verify_terms else f"{fw}'d0"
@@ -1216,6 +1242,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    output logic [1:0]                s_axil_bresp,\n')
     f.write('    output logic                      s_axil_bvalid,\n')
     f.write('    input  logic                      s_axil_bready,\n')
+    if 'ingress_port' in shell_std_used:
+        ipw = shell_std_used['ingress_port']
+        f.write('\n    // Physical port the frame arrived on. Sampled at SOP into the\n')
+        f.write('    // packet\'s slot and delivered as standard_metadata.ingress_port.\n')
+        f.write('    // One stream in means one port here: an integrator with several\n')
+        f.write('    // ports instantiates this core per port (or drives it from tuser).\n')
+        f.write(f'    input  logic [{ipw-1}:0]{" " * max(1, 15 - len(str(ipw-1)))}ingress_port,\n')
     f.write('    input  logic [AXIL_ADDR_W-1:0]   s_axil_araddr,\n')
     f.write('    input  logic                      s_axil_arvalid,\n')
     f.write('    output logic                      s_axil_arready,\n')
@@ -1301,6 +1334,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic slot_overflow [0:NSLOT-1];\n')
     if needs_byte_len:
         f.write('  logic [15:0] slot_byte_len [0:NSLOT-1];\n')
+    # Per-packet standard metadata. Declared here, with the rest of the slot
+    # ring, because the processing instantiation below reads them -- this file
+    # keeps every declaration ahead of its first use (Vivado's xvlog rejects a
+    # forward reference that iverilog accepts; see the extraction section).
+    for fn, fw in sorted(sop_std.items()):
+        f.write(f'  logic [{fw-1}:0] slot_sop_{fn} [0:NSLOT-1];   // sampled at SOP\n')
+    for fn, fw in sorted(slot_std.items()):
+        f.write(f'  logic [{fw-1}:0] slot_std_meta_{fn} [0:NSLOT-1];\n')
     f.write('  logic slot_drop     [0:NSLOT-1];\n')
     f.write('  `ifndef SYNTHESIS\n')
     f.write('  // synthesis translate_off\n')
@@ -1634,7 +1675,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             # No verify() in this program, so there is nothing that could
             # ever set it: NoError by construction.
             note = '  // NoError -- program has no verify()'
-        elif fname not in ('ingress_timestamp', 'parsed_bytes', 'parser_error'):
+        elif fname in sop_std:
+            note = '  // sampled at SOP'
+        elif fname == 'packet_length':
+            note = '  // final: issue waits for tlast'
+        elif fname == 'parsed_bytes':
+            note = '  // bytes consumed by extract()'
+        elif fname != 'parser_error':
             note = '  // no shell source for this field'
         f.write(f'    .std_meta_{fname}  ({src}),{note}\n')
     # valid flag outputs
@@ -1708,6 +1755,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fname in sorted(eg_std_ins):
             if fname in ig_std_outs:
                 f.write(f'    .std_meta_{fname}  (ig_out_std_meta_{fname}),   // written by ingress\n')
+            elif fname in sop_std:
+                f.write(f'    .std_meta_{fname}  (slot_sop_{fname}[ig_slot]),   // shell-sourced, sampled at SOP\n')
             else:
                 f.write(f'    .std_meta_{fname}  (slot_std_meta_{fname}[ig_slot]),   // shell-sourced, sampled at issue\n')
         for hname in all_hdr_names:
@@ -1774,8 +1823,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  logic [{w-1}:0] slot_phv_{hname}_{fname} [0:NSLOT-1];\n')
     for mf in ir.metadata_fields:
         f.write(f'  logic [{mf.width-1}:0] slot_meta_{mf.name} [0:NSLOT-1];\n')
-    for fn, fw in sorted(slot_std.items()):
-        f.write(f'  logic [{fw-1}:0] slot_std_meta_{fn} [0:NSLOT-1];\n')
     for cnt in all_counters:
         f.write(f'  logic slot_cnt_{cnt.name}_en [0:NSLOT-1];\n')
         f.write(f'  logic [{_counter_idx_w(cnt)-1}:0] slot_cnt_{cnt.name}_idx [0:NSLOT-1];\n')
@@ -1806,6 +1853,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      end\n')
     f.write('    end else begin\n')
     f.write('      if (accept_beat) begin\n')
+    if sop_std:
+        f.write('        if (!rx_active) begin   // start of packet\n')
+        for fn in sorted(sop_std):
+            src = 'ingress_ts_ctr' if fn == 'ingress_timestamp' else fn
+            f.write(f'          slot_sop_{fn}[wr_slot] <= {src};\n')
+        f.write('        end\n')
     if needs_byte_len:
         popcount_terms = ' + '.join(f"{{15'd0, s_axis_tkeep[{i}]}}" for i in range(KEEP_W))
         f.write(f'        slot_byte_len[wr_slot] <= slot_byte_len[wr_slot] + ({popcount_terms});\n')
@@ -1852,13 +1905,20 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // next slot still holds an older packet awaiting TX, and that packet\'s\n')
     f.write('  // beat count is nonzero too -- inferring from it re-issued a stale slot.\n')
     f.write('  wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);\n')
-    f.write('  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];\n')
+    if needs_pkt_len:
+        f.write('  // This program reads standard_metadata.packet_length, which is the\n')
+        f.write('  // whole frame\'s byte count and is therefore not known until tlast.\n')
+        f.write('  // Issue waits for the complete packet: STORE-AND-FORWARD for this\n')
+        f.write('  // app, cut-through for every app that does not read it.\n')
+        f.write('  wire iss_hdr_ready = slot_done[iss_slot];\n')
+    else:
+        f.write('  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];\n')
     f.write('  assign iss_fire = iss_allocated && iss_hdr_ready;\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')
     f.write('      iss_ptr <= iss_ptr + 1\'b1;\n')
-    for fn, fw in sorted(eg_shell_std.items()):
+    for fn, fw in sorted(eg_issue_std.items()):
         f.write(f'      slot_std_meta_{fn}[iss_slot] <= {_shell_std_src(fn, fw)};   // for egress\n')
     f.write('    end\n')
     f.write('  end\n\n')
