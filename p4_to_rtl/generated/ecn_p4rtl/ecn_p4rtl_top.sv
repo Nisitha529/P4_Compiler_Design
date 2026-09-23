@@ -1,4 +1,4 @@
-module lmprobe_top #(
+module ecn_p4rtl_top #(
     parameter int AXI_DATA_W  = 256,
     parameter int AXIL_ADDR_W = 16
 ) (
@@ -30,12 +30,6 @@ module lmprobe_top #(
     output logic [1:0]                s_axil_bresp,
     output logic                      s_axil_bvalid,
     input  logic                      s_axil_bready,
-
-    // Physical port the frame arrived on. Sampled at SOP into the
-    // packet's slot and delivered as standard_metadata.ingress_port.
-    // One stream in means one port here: an integrator with several
-    // ports instantiates this core per port (or drives it from tuser).
-    input  logic [8:0]              ingress_port,
     input  logic [AXIL_ADDR_W-1:0]   s_axil_araddr,
     input  logic                      s_axil_arvalid,
     output logic                      s_axil_arready,
@@ -45,18 +39,16 @@ module lmprobe_top #(
     input  logic                      s_axil_rready,
 
     // Metadata sideband (valid while m_axis_tvalid for the packet)
-    output logic [31:0] out_meta_byte_total,
-    output logic [8:0] out_meta_port_seen,
     output logic [8:0] out_std_meta_egress_port
 );
 
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BEATS = 256;
   localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 8192
-  localparam int HDR_MAX_BYTES = 32;
-  localparam int HDR_MAX_BEATS = 1;
-  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8160
-  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 255
+  localparam int HDR_MAX_BYTES = 64;
+  localparam int HDR_MAX_BEATS = 2;
+  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8128
+  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 254
 
   // ── Header slot ring ─────────────────────────────────────────────────────
   // NSLOT packets can be in flight at once. Each slot holds one packet's
@@ -79,10 +71,8 @@ module lmprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
-  logic [15:0] slot_byte_len [0:NSLOT-1];
-  logic [8:0] slot_sop_ingress_port [0:NSLOT-1];   // sampled at SOP
+  logic [18:0] slot_enq_qdepth [0:NSLOT-1];   // depth at enqueue
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
-  logic [15:0] slot_std_meta_packet_length [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -161,9 +151,11 @@ module lmprobe_top #(
   end
   logic [SLOT_AW-1:0] deq_slot;
   logic [SLOT_AW:0]   deq_qdepth_now;
+  logic [18:0] enq_qdepth_of_deq;
   always_comb begin
     deq_slot       = tmq_mem[sched_q*NSLOT + tmq_rd[sched_q][SLOT_AW-1:0]];
     deq_qdepth_now = tmq_depth[sched_q];
+    enq_qdepth_of_deq = slot_enq_qdepth[deq_slot];
   end
   // A queue only means something if packets WAIT in it. Dequeue is
   // therefore gated on how many packets are already past the scheduler
@@ -256,63 +248,115 @@ module lmprobe_top #(
   // ── Header field extraction from pkt_buf ────────────────────────────────
   //    Fields extracted using big-endian (network byte order) bit mapping.
 
-  // eth — base: 0
-  logic [47:0] w_eth_dst;
-  logic [47:0] w_eth_src;
-  logic [15:0] w_eth_etype;
+  // ethernet — base: 0
+  logic [47:0] w_ethernet_dstAddr;
+  logic [47:0] w_ethernet_srcAddr;
+  logic [15:0] w_ethernet_etherType;
   always_comb begin
-    w_eth_dst = {x_hdr[0], x_hdr[1], x_hdr[2], x_hdr[3], x_hdr[4], x_hdr[5]};
-    w_eth_src = {x_hdr[6], x_hdr[7], x_hdr[8], x_hdr[9], x_hdr[10], x_hdr[11]};
-    w_eth_etype = {x_hdr[12], x_hdr[13]};
+    w_ethernet_dstAddr = {x_hdr[0], x_hdr[1], x_hdr[2], x_hdr[3], x_hdr[4], x_hdr[5]};
+    w_ethernet_srcAddr = {x_hdr[6], x_hdr[7], x_hdr[8], x_hdr[9], x_hdr[10], x_hdr[11]};
+    w_ethernet_etherType = {x_hdr[12], x_hdr[13]};
+  end
+
+  // ipv4 — base: 14
+  logic [3:0] w_ipv4_version;
+  logic [3:0] w_ipv4_ihl;
+  logic [5:0] w_ipv4_diffserv;
+  logic [1:0] w_ipv4_ecn;
+  logic [15:0] w_ipv4_totalLen;
+  logic [15:0] w_ipv4_identification;
+  logic [2:0] w_ipv4_flags;
+  logic [12:0] w_ipv4_fragOffset;
+  logic [7:0] w_ipv4_ttl;
+  logic [7:0] w_ipv4_protocol;
+  logic [15:0] w_ipv4_hdrChecksum;
+  logic [31:0] w_ipv4_srcAddr;
+  logic [31:0] w_ipv4_dstAddr;
+  always_comb begin
+    w_ipv4_version = x_hdr[14][7:4];
+    w_ipv4_ihl = x_hdr[14][3:0];
+    w_ipv4_diffserv = x_hdr[14+1][7:2];
+    w_ipv4_ecn = x_hdr[14+1][1:0];
+    w_ipv4_totalLen = {x_hdr[14+2], x_hdr[14+3]};
+    w_ipv4_identification = {x_hdr[14+4], x_hdr[14+5]};
+    w_ipv4_flags = x_hdr[14+6][7:5];
+    w_ipv4_fragOffset = {x_hdr[14+6][4:0], x_hdr[14+7]};
+    w_ipv4_ttl = x_hdr[14+8];
+    w_ipv4_protocol = x_hdr[14+9];
+    w_ipv4_hdrChecksum = {x_hdr[14+10], x_hdr[14+11]};
+    w_ipv4_srcAddr = {x_hdr[14+12], x_hdr[14+13], x_hdr[14+14], x_hdr[14+15]};
+    w_ipv4_dstAddr = {x_hdr[14+16], x_hdr[14+17], x_hdr[14+18], x_hdr[14+19]};
   end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
-  wire w_eth_valid = 1'b1;
+  wire w_ethernet_valid = 1'b1;
+  wire w_ipv4_valid = (w_ethernet_etherType == 16'h0800);
 
   // ── Header-region cutoff ──────────────────────────────────────────────────
-  wire [13:0] w_eth_cutoff_term = 0 + 14;
-  wire [13:0] cutoff_byte = w_eth_cutoff_term;
+  wire [13:0] w_ethernet_cutoff_term = 0 + 14;
+  wire [13:0] w_ipv4_cutoff_term = (w_ethernet_etherType == 16'h0800) ? (14 + 20) : 14'd0;
+  wire [13:0] w_cutoff_max_1 = (w_ethernet_cutoff_term > w_ipv4_cutoff_term) ? w_ethernet_cutoff_term : w_ipv4_cutoff_term;
+  wire [13:0] cutoff_byte = w_cutoff_max_1;
 
   // ── processing_generated ─────────────────────────────────────────────────
   //    Signals prefixed proc_out_* are the match-action outputs.
 
-  wire out_eth_valid;
-  wire [47:0] out_eth_dst;
-  wire [47:0] out_eth_src;
-  wire [15:0] out_eth_etype;
+  wire out_ethernet_valid;
+  wire [47:0] out_ethernet_dstAddr;
+  wire [47:0] out_ethernet_srcAddr;
+  wire [15:0] out_ethernet_etherType;
+  wire out_ipv4_valid;
+  wire [3:0] out_ipv4_version;
+  wire [3:0] out_ipv4_ihl;
+  wire [5:0] out_ipv4_diffserv;
+  wire [1:0] out_ipv4_ecn;
+  wire [15:0] out_ipv4_totalLen;
+  wire [15:0] out_ipv4_identification;
+  wire [2:0] out_ipv4_flags;
+  wire [12:0] out_ipv4_fragOffset;
+  wire [7:0] out_ipv4_ttl;
+  wire [7:0] out_ipv4_protocol;
+  wire [15:0] out_ipv4_hdrChecksum;
+  wire [31:0] out_ipv4_srcAddr;
+  wire [31:0] out_ipv4_dstAddr;
   wire proc_valid_out;
   wire proc_out_valid;
   wire proc_drop;
   logic iss_fire;
-  wire [31:0] proc_out_meta_byte_total;
-  wire [8:0] proc_out_meta_port_seen;
   wire [8:0] ig_out_std_meta_egress_port;
   // egress_processing_generated outputs (the FINAL PHV the shell captures)
-  wire eg_out_eth_valid;
-  wire [47:0] eg_out_eth_dst;
-  wire [47:0] eg_out_eth_src;
-  wire [15:0] eg_out_eth_etype;
+  wire eg_out_ethernet_valid;
+  wire [47:0] eg_out_ethernet_dstAddr;
+  wire [47:0] eg_out_ethernet_srcAddr;
+  wire [15:0] eg_out_ethernet_etherType;
+  wire eg_out_ipv4_valid;
+  wire [3:0] eg_out_ipv4_version;
+  wire [3:0] eg_out_ipv4_ihl;
+  wire [5:0] eg_out_ipv4_diffserv;
+  wire [1:0] eg_out_ipv4_ecn;
+  wire [15:0] eg_out_ipv4_totalLen;
+  wire [15:0] eg_out_ipv4_identification;
+  wire [2:0] eg_out_ipv4_flags;
+  wire [12:0] eg_out_ipv4_fragOffset;
+  wire [7:0] eg_out_ipv4_ttl;
+  wire [7:0] eg_out_ipv4_protocol;
+  wire [15:0] eg_out_ipv4_hdrChecksum;
+  wire [31:0] eg_out_ipv4_srcAddr;
+  wire [31:0] eg_out_ipv4_dstAddr;
   wire eg_valid_out;
   wire eg_out_valid;
   wire eg_drop;
-  wire [31:0] eg_out_meta_byte_total;
-  wire [8:0] eg_out_meta_port_seen;
 
-  wire port_fwd_cp_query_busy;
-  wire port_fwd_cp_query_hit;
-  wire [0:0] port_fwd_cp_query_action_id;
-  wire [8:0] port_fwd_cp_query_p_port;
 
 
   // ── AXI4-Lite staging registers ─────────────────────────────────────────
-  logic [3:0] r_port_fwd_cp_wr_idx;
-  logic [0:0] r_port_fwd_cp_wr_action;
-  logic [8:0] r_port_fwd_cp_wr_key_ingress_port;
-  logic [8:0] r_port_fwd_cp_wr_p_port;
-  logic [8:0] r_port_fwd_cp_query_key_ingress_port;
-  logic r_port_fwd_cp_query_del;
-  logic r_port_fwd_cp_wr_en;
-  logic r_port_fwd_cp_query_en;
+  logic [5:0] r_ipv4_lpm_cp_wr_idx;
+  logic [1:0] r_ipv4_lpm_cp_wr_action;
+  logic [31:0] r_ipv4_lpm_cp_wr_key_dstAddr;
+  logic [5:0] r_ipv4_lpm_cp_wr_pfx_len;
+  logic [47:0] r_ipv4_lpm_cp_wr_p_dstAddr;
+  logic [8:0] r_ipv4_lpm_cp_wr_p_port;
+  logic r_ipv4_lpm_cp_wr_en;
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -334,9 +378,6 @@ module lmprobe_top #(
   always @(*) begin
     pending_commit_busy = 1'b0;
     case (axil_awaddr_r[AXIL_ADDR_W-1:2])
-      14'd4: pending_commit_busy = port_fwd_cp_query_busy;
-      14'd6: pending_commit_busy = port_fwd_cp_query_busy;
-      14'd7: pending_commit_busy = port_fwd_cp_query_busy;
       default: pending_commit_busy = 1'b0;
     endcase
   end
@@ -345,11 +386,9 @@ module lmprobe_top #(
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       axil_st <= AXIL_IDLE;
-      r_port_fwd_cp_wr_en <= 1'b0;
-      r_port_fwd_cp_query_en <= 1'b0;
+      r_ipv4_lpm_cp_wr_en <= 1'b0;
     end else begin
-      r_port_fwd_cp_wr_en <= 1'b0;
-      r_port_fwd_cp_query_en <= 1'b0;
+      r_ipv4_lpm_cp_wr_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -360,14 +399,14 @@ module lmprobe_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_port_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd1: r_port_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd2: r_port_fwd_cp_wr_key_ingress_port <= s_axil_wdata[8:0]; // key_ingress_port
-              14'd3: r_port_fwd_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd4: r_port_fwd_cp_wr_en <= 1'b1; // port_fwd commit
-              14'd5: r_port_fwd_cp_query_key_ingress_port <= s_axil_wdata[8:0]; // query_key_ingress_port
-              14'd6: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b0; end // port_fwd query
-              14'd7: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b1; end // port_fwd delete
+              14'd0: r_ipv4_lpm_cp_wr_idx <= s_axil_wdata[5:0]; // wr_idx
+              14'd1: r_ipv4_lpm_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
+              14'd2: r_ipv4_lpm_cp_wr_key_dstAddr <= s_axil_wdata[31:0]; // key_dstAddr
+              14'd3: r_ipv4_lpm_cp_wr_pfx_len <= s_axil_wdata[5:0]; // wr_pfx_len
+              14'd4: r_ipv4_lpm_cp_wr_p_dstAddr <= s_axil_wdata[31:0]; // p_dstAddr_w0
+              14'd5: r_ipv4_lpm_cp_wr_p_dstAddr[47:32] <= s_axil_wdata[15:0]; // p_dstAddr_w1
+              14'd6: r_ipv4_lpm_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
+              14'd7: r_ipv4_lpm_cp_wr_en <= 1'b1; // ipv4_lpm commit
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -403,9 +442,6 @@ module lmprobe_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd8: r_rdata <= {30'd0, port_fwd_cp_query_hit, port_fwd_cp_query_busy}; // port_fwd query_status
-              14'd9: r_rdata <= {31'd0, port_fwd_cp_query_action_id}; // port_fwd query_action_id
-              14'd10: r_rdata <= {23'd0, port_fwd_cp_query_p_port}; // port_fwd query_p_port
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;
@@ -419,47 +455,64 @@ module lmprobe_top #(
     end
   end
 
-  wire [3:0] port_fwd_cp_wr_idx = r_port_fwd_cp_wr_idx;
-  wire [0:0] port_fwd_cp_wr_action = r_port_fwd_cp_wr_action;
-  wire [8:0] port_fwd_cp_wr_key_ingress_port = r_port_fwd_cp_wr_key_ingress_port;
-  wire [8:0] port_fwd_cp_wr_p_port = r_port_fwd_cp_wr_p_port;
-  wire port_fwd_cp_wr_en = r_port_fwd_cp_wr_en;
-  wire [8:0] port_fwd_cp_query_key_ingress_port = r_port_fwd_cp_query_key_ingress_port;
-  wire port_fwd_cp_query_en  = r_port_fwd_cp_query_en;
-  wire port_fwd_cp_query_del = r_port_fwd_cp_query_del;
-  wire port_fwd_hit_out;
+  wire [5:0] ipv4_lpm_cp_wr_idx = r_ipv4_lpm_cp_wr_idx;
+  wire [1:0] ipv4_lpm_cp_wr_action = r_ipv4_lpm_cp_wr_action;
+  wire [31:0] ipv4_lpm_cp_wr_key_dstAddr = r_ipv4_lpm_cp_wr_key_dstAddr;
+  wire [5:0] ipv4_lpm_cp_wr_pfx_len = r_ipv4_lpm_cp_wr_pfx_len;
+  wire [47:0] ipv4_lpm_cp_wr_p_dstAddr = r_ipv4_lpm_cp_wr_p_dstAddr;
+  wire [8:0] ipv4_lpm_cp_wr_p_port = r_ipv4_lpm_cp_wr_p_port;
+  wire ipv4_lpm_cp_wr_en = r_ipv4_lpm_cp_wr_en;
+  wire ipv4_lpm_hit_out;
 
   processing_generated u_proc (
     .clk       (clk),
     .rst_n     (rst_n),
     .valid_in  (iss_fire),
-    .eth_valid     (w_eth_valid),
-    .eth_dst  (w_eth_dst),
-    .eth_src  (w_eth_src),
-    .eth_etype  (w_eth_etype),
-    .meta_byte_total  (32'b0),
-    .meta_port_seen  (9'b0),
-    .std_meta_ingress_port  (slot_sop_ingress_port[iss_slot]),  // sampled at SOP
-    .out_eth_valid     (out_eth_valid),
-    .out_eth_dst  (out_eth_dst),
-    .out_eth_src  (out_eth_src),
-    .out_eth_etype  (out_eth_etype),
-    .out_meta_byte_total  (proc_out_meta_byte_total),
-    .out_meta_port_seen  (proc_out_meta_port_seen),
+    .ethernet_valid     (w_ethernet_valid),
+    .ipv4_valid     (w_ipv4_valid),
+    .ethernet_dstAddr  (w_ethernet_dstAddr),
+    .ethernet_srcAddr  (w_ethernet_srcAddr),
+    .ethernet_etherType  (w_ethernet_etherType),
+    .ipv4_version  (w_ipv4_version),
+    .ipv4_ihl  (w_ipv4_ihl),
+    .ipv4_diffserv  (w_ipv4_diffserv),
+    .ipv4_ecn  (w_ipv4_ecn),
+    .ipv4_totalLen  (w_ipv4_totalLen),
+    .ipv4_identification  (w_ipv4_identification),
+    .ipv4_flags  (w_ipv4_flags),
+    .ipv4_fragOffset  (w_ipv4_fragOffset),
+    .ipv4_ttl  (w_ipv4_ttl),
+    .ipv4_protocol  (w_ipv4_protocol),
+    .ipv4_hdrChecksum  (w_ipv4_hdrChecksum),
+    .ipv4_srcAddr  (w_ipv4_srcAddr),
+    .ipv4_dstAddr  (w_ipv4_dstAddr),
+    .out_ethernet_valid     (out_ethernet_valid),
+    .out_ipv4_valid     (out_ipv4_valid),
+    .out_ethernet_dstAddr  (out_ethernet_dstAddr),
+    .out_ethernet_srcAddr  (out_ethernet_srcAddr),
+    .out_ethernet_etherType  (out_ethernet_etherType),
+    .out_ipv4_version  (out_ipv4_version),
+    .out_ipv4_ihl  (out_ipv4_ihl),
+    .out_ipv4_diffserv  (out_ipv4_diffserv),
+    .out_ipv4_ecn  (out_ipv4_ecn),
+    .out_ipv4_totalLen  (out_ipv4_totalLen),
+    .out_ipv4_identification  (out_ipv4_identification),
+    .out_ipv4_flags  (out_ipv4_flags),
+    .out_ipv4_fragOffset  (out_ipv4_fragOffset),
+    .out_ipv4_ttl  (out_ipv4_ttl),
+    .out_ipv4_protocol  (out_ipv4_protocol),
+    .out_ipv4_hdrChecksum  (out_ipv4_hdrChecksum),
+    .out_ipv4_srcAddr  (out_ipv4_srcAddr),
+    .out_ipv4_dstAddr  (out_ipv4_dstAddr),
     .out_std_meta_egress_port  (ig_out_std_meta_egress_port),
-    .port_fwd_cp_wr_en  (port_fwd_cp_wr_en),
-    .port_fwd_cp_wr_idx (port_fwd_cp_wr_idx),
-    .port_fwd_cp_wr_action (port_fwd_cp_wr_action),
-    .port_fwd_cp_wr_key_ingress_port (port_fwd_cp_wr_key_ingress_port),
-    .port_fwd_cp_wr_p_port (port_fwd_cp_wr_p_port),
-    .port_fwd_cp_query_key_ingress_port (port_fwd_cp_query_key_ingress_port),
-    .port_fwd_cp_query_en  (port_fwd_cp_query_en),
-    .port_fwd_cp_query_del (port_fwd_cp_query_del),
-    .port_fwd_cp_query_busy (port_fwd_cp_query_busy),
-    .port_fwd_cp_query_hit  (port_fwd_cp_query_hit),
-    .port_fwd_cp_query_action_id (port_fwd_cp_query_action_id),
-    .port_fwd_cp_query_p_port (port_fwd_cp_query_p_port),
-    .port_fwd_hit_out  (port_fwd_hit_out),
+    .ipv4_lpm_cp_wr_en  (ipv4_lpm_cp_wr_en),
+    .ipv4_lpm_cp_wr_idx (ipv4_lpm_cp_wr_idx),
+    .ipv4_lpm_cp_wr_action (ipv4_lpm_cp_wr_action),
+    .ipv4_lpm_cp_wr_key_dstAddr (ipv4_lpm_cp_wr_key_dstAddr),
+    .ipv4_lpm_cp_wr_pfx_len (ipv4_lpm_cp_wr_pfx_len),
+    .ipv4_lpm_cp_wr_p_dstAddr (ipv4_lpm_cp_wr_p_dstAddr),
+    .ipv4_lpm_cp_wr_p_port (ipv4_lpm_cp_wr_p_port),
+    .ipv4_lpm_hit_out  (ipv4_lpm_hit_out),
     .out_valid (proc_out_valid),   // aligned with out_*/drop
     .valid_out (proc_valid_out),   // legacy registered-late valid, unused here
     .drop      (proc_drop)
@@ -478,20 +531,43 @@ module lmprobe_top #(
     .rst_n     (rst_n),
     .valid_in  (deq_fire),
     .drop_in   (slot_drop[deq_slot]),
-    .eth_valid     (slot_phv_eth_valid[deq_slot]),
-    .eth_dst  (slot_phv_eth_dst[deq_slot]),
-    .eth_src  (slot_phv_eth_src[deq_slot]),
-    .eth_etype  (slot_phv_eth_etype[deq_slot]),
-    .meta_byte_total  (slot_meta_byte_total[deq_slot]),
-    .meta_port_seen  (slot_meta_port_seen[deq_slot]),
-    .std_meta_egress_port  (slot_std_meta_egress_port[deq_slot]),   // from the slot
-    .std_meta_packet_length  (slot_std_meta_packet_length[deq_slot]),   // from the slot
-    .out_eth_valid     (eg_out_eth_valid),
-    .out_eth_dst  (eg_out_eth_dst),
-    .out_eth_src  (eg_out_eth_src),
-    .out_eth_etype  (eg_out_eth_etype),
-    .out_meta_byte_total  (eg_out_meta_byte_total),
-    .out_meta_port_seen  (eg_out_meta_port_seen),
+    .ethernet_valid     (slot_phv_ethernet_valid[deq_slot]),
+    .ipv4_valid     (slot_phv_ipv4_valid[deq_slot]),
+    .ethernet_dstAddr  (slot_phv_ethernet_dstAddr[deq_slot]),
+    .ethernet_srcAddr  (slot_phv_ethernet_srcAddr[deq_slot]),
+    .ethernet_etherType  (slot_phv_ethernet_etherType[deq_slot]),
+    .ipv4_version  (slot_phv_ipv4_version[deq_slot]),
+    .ipv4_ihl  (slot_phv_ipv4_ihl[deq_slot]),
+    .ipv4_diffserv  (slot_phv_ipv4_diffserv[deq_slot]),
+    .ipv4_ecn  (slot_phv_ipv4_ecn[deq_slot]),
+    .ipv4_totalLen  (slot_phv_ipv4_totalLen[deq_slot]),
+    .ipv4_identification  (slot_phv_ipv4_identification[deq_slot]),
+    .ipv4_flags  (slot_phv_ipv4_flags[deq_slot]),
+    .ipv4_fragOffset  (slot_phv_ipv4_fragOffset[deq_slot]),
+    .ipv4_ttl  (slot_phv_ipv4_ttl[deq_slot]),
+    .ipv4_protocol  (slot_phv_ipv4_protocol[deq_slot]),
+    .ipv4_hdrChecksum  (slot_phv_ipv4_hdrChecksum[deq_slot]),
+    .ipv4_srcAddr  (slot_phv_ipv4_srcAddr[deq_slot]),
+    .ipv4_dstAddr  (slot_phv_ipv4_dstAddr[deq_slot]),
+    .std_meta_enq_qdepth  (enq_qdepth_of_deq),   // TM: depth when enqueued
+    .out_ethernet_valid     (eg_out_ethernet_valid),
+    .out_ipv4_valid     (eg_out_ipv4_valid),
+    .out_ethernet_dstAddr  (eg_out_ethernet_dstAddr),
+    .out_ethernet_srcAddr  (eg_out_ethernet_srcAddr),
+    .out_ethernet_etherType  (eg_out_ethernet_etherType),
+    .out_ipv4_version  (eg_out_ipv4_version),
+    .out_ipv4_ihl  (eg_out_ipv4_ihl),
+    .out_ipv4_diffserv  (eg_out_ipv4_diffserv),
+    .out_ipv4_ecn  (eg_out_ipv4_ecn),
+    .out_ipv4_totalLen  (eg_out_ipv4_totalLen),
+    .out_ipv4_identification  (eg_out_ipv4_identification),
+    .out_ipv4_flags  (eg_out_ipv4_flags),
+    .out_ipv4_fragOffset  (eg_out_ipv4_fragOffset),
+    .out_ipv4_ttl  (eg_out_ipv4_ttl),
+    .out_ipv4_protocol  (eg_out_ipv4_protocol),
+    .out_ipv4_hdrChecksum  (eg_out_ipv4_hdrChecksum),
+    .out_ipv4_srcAddr  (eg_out_ipv4_srcAddr),
+    .out_ipv4_dstAddr  (eg_out_ipv4_dstAddr),
     .out_valid (eg_out_valid),   // aligned with out_*/drop
     .valid_out (eg_valid_out),
     .drop      (eg_drop)
@@ -502,12 +578,24 @@ module lmprobe_top #(
   // The output PHV is stored, not an overlaid byte image, because at
   // completion the slot's later header rows may not have arrived yet
   // (cut-through): the overlay is done at TX time, when TX waits for them.
-  logic slot_phv_eth_valid [0:NSLOT-1];
-  logic [47:0] slot_phv_eth_dst [0:NSLOT-1];
-  logic [47:0] slot_phv_eth_src [0:NSLOT-1];
-  logic [15:0] slot_phv_eth_etype [0:NSLOT-1];
-  logic [31:0] slot_meta_byte_total [0:NSLOT-1];
-  logic [8:0] slot_meta_port_seen [0:NSLOT-1];
+  logic slot_phv_ethernet_valid [0:NSLOT-1];
+  logic slot_phv_ipv4_valid [0:NSLOT-1];
+  logic [47:0] slot_phv_ethernet_dstAddr [0:NSLOT-1];
+  logic [47:0] slot_phv_ethernet_srcAddr [0:NSLOT-1];
+  logic [15:0] slot_phv_ethernet_etherType [0:NSLOT-1];
+  logic [3:0] slot_phv_ipv4_version [0:NSLOT-1];
+  logic [3:0] slot_phv_ipv4_ihl [0:NSLOT-1];
+  logic [5:0] slot_phv_ipv4_diffserv [0:NSLOT-1];
+  logic [1:0] slot_phv_ipv4_ecn [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_totalLen [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_identification [0:NSLOT-1];
+  logic [2:0] slot_phv_ipv4_flags [0:NSLOT-1];
+  logic [12:0] slot_phv_ipv4_fragOffset [0:NSLOT-1];
+  logic [7:0] slot_phv_ipv4_ttl [0:NSLOT-1];
+  logic [7:0] slot_phv_ipv4_protocol [0:NSLOT-1];
+  logic [15:0] slot_phv_ipv4_hdrChecksum [0:NSLOT-1];
+  logic [31:0] slot_phv_ipv4_srcAddr [0:NSLOT-1];
+  logic [31:0] slot_phv_ipv4_dstAddr [0:NSLOT-1];
 
   // ── RX (ingest) ──────────────────────────────────────────────────────────
   // Accept whenever the next slot is free and the payload FIFO has room.
@@ -529,14 +617,9 @@ module lmprobe_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
-        slot_byte_len[sl] <= '0;
       end
     end else begin
       if (accept_beat) begin
-        if (!rx_active) begin   // start of packet
-          slot_sop_ingress_port[wr_slot] <= ingress_port;
-        end
-        slot_byte_len[wr_slot] <= slot_byte_len[wr_slot] + ({15'd0, s_axis_tkeep[0]} + {15'd0, s_axis_tkeep[1]} + {15'd0, s_axis_tkeep[2]} + {15'd0, s_axis_tkeep[3]} + {15'd0, s_axis_tkeep[4]} + {15'd0, s_axis_tkeep[5]} + {15'd0, s_axis_tkeep[6]} + {15'd0, s_axis_tkeep[7]} + {15'd0, s_axis_tkeep[8]} + {15'd0, s_axis_tkeep[9]} + {15'd0, s_axis_tkeep[10]} + {15'd0, s_axis_tkeep[11]} + {15'd0, s_axis_tkeep[12]} + {15'd0, s_axis_tkeep[13]} + {15'd0, s_axis_tkeep[14]} + {15'd0, s_axis_tkeep[15]} + {15'd0, s_axis_tkeep[16]} + {15'd0, s_axis_tkeep[17]} + {15'd0, s_axis_tkeep[18]} + {15'd0, s_axis_tkeep[19]} + {15'd0, s_axis_tkeep[20]} + {15'd0, s_axis_tkeep[21]} + {15'd0, s_axis_tkeep[22]} + {15'd0, s_axis_tkeep[23]} + {15'd0, s_axis_tkeep[24]} + {15'd0, s_axis_tkeep[25]} + {15'd0, s_axis_tkeep[26]} + {15'd0, s_axis_tkeep[27]} + {15'd0, s_axis_tkeep[28]} + {15'd0, s_axis_tkeep[29]} + {15'd0, s_axis_tkeep[30]} + {15'd0, s_axis_tkeep[31]});
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
           for (int i = 0; i < 32; i++)
             if (s_axis_tkeep[i])
@@ -562,7 +645,6 @@ module lmprobe_top #(
         rel_ptr <= rel_ptr + 1'b1;
         slot_txdone[rel_slot] <= 1'b0;
         slot_beat_cnt[rel_slot] <= '0; slot_done[rel_slot] <= 1'b0; slot_overflow[rel_slot] <= 1'b0;
-        slot_byte_len[rel_slot] <= '0;
       end
     end
   end
@@ -582,17 +664,12 @@ module lmprobe_top #(
   // next slot still holds an older packet awaiting TX, and that packet's
   // beat count is nonzero too -- inferring from it re-issued a stale slot.
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
-  // This program reads standard_metadata.packet_length, which is the
-  // whole frame's byte count and is therefore not known until tlast.
-  // Issue waits for the complete packet: STORE-AND-FORWARD for this
-  // app, cut-through for every app that does not read it.
-  wire iss_hdr_ready = slot_done[iss_slot];
+  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
-      slot_std_meta_packet_length[iss_slot] <= 16'({slot_byte_len[iss_slot]});   // for egress
     end
   end
 
@@ -609,23 +686,48 @@ module lmprobe_top #(
     end else begin
       if (proc_out_valid) begin
         ig_ptr <= ig_ptr + 1'b1;
+        slot_enq_qdepth[ig_slot] <= 19'(tmq_depth[enq_q]);
         slot_drop[ig_slot] <= proc_drop;
-        slot_phv_eth_valid[ig_slot] <= out_eth_valid;
-        slot_phv_eth_dst[ig_slot] <= out_eth_dst;
-        slot_phv_eth_src[ig_slot] <= out_eth_src;
-        slot_phv_eth_etype[ig_slot] <= out_eth_etype;
-        slot_meta_byte_total[ig_slot] <= proc_out_meta_byte_total;
-        slot_meta_port_seen[ig_slot] <= proc_out_meta_port_seen;
+        slot_phv_ethernet_valid[ig_slot] <= out_ethernet_valid;
+        slot_phv_ipv4_valid[ig_slot] <= out_ipv4_valid;
+        slot_phv_ethernet_dstAddr[ig_slot] <= out_ethernet_dstAddr;
+        slot_phv_ethernet_srcAddr[ig_slot] <= out_ethernet_srcAddr;
+        slot_phv_ethernet_etherType[ig_slot] <= out_ethernet_etherType;
+        slot_phv_ipv4_version[ig_slot] <= out_ipv4_version;
+        slot_phv_ipv4_ihl[ig_slot] <= out_ipv4_ihl;
+        slot_phv_ipv4_diffserv[ig_slot] <= out_ipv4_diffserv;
+        slot_phv_ipv4_ecn[ig_slot] <= out_ipv4_ecn;
+        slot_phv_ipv4_totalLen[ig_slot] <= out_ipv4_totalLen;
+        slot_phv_ipv4_identification[ig_slot] <= out_ipv4_identification;
+        slot_phv_ipv4_flags[ig_slot] <= out_ipv4_flags;
+        slot_phv_ipv4_fragOffset[ig_slot] <= out_ipv4_fragOffset;
+        slot_phv_ipv4_ttl[ig_slot] <= out_ipv4_ttl;
+        slot_phv_ipv4_protocol[ig_slot] <= out_ipv4_protocol;
+        slot_phv_ipv4_hdrChecksum[ig_slot] <= out_ipv4_hdrChecksum;
+        slot_phv_ipv4_srcAddr[ig_slot] <= out_ipv4_srcAddr;
+        slot_phv_ipv4_dstAddr[ig_slot] <= out_ipv4_dstAddr;
         slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
       end
       if (eg_out_valid) begin
         slot_drop[cmp_slot] <= eg_drop;
-        slot_phv_eth_valid[cmp_slot] <= eg_out_eth_valid;
-        slot_phv_eth_dst[cmp_slot] <= eg_out_eth_dst;
-        slot_phv_eth_src[cmp_slot] <= eg_out_eth_src;
-        slot_phv_eth_etype[cmp_slot] <= eg_out_eth_etype;
-        slot_meta_byte_total[cmp_slot] <= eg_out_meta_byte_total;
-        slot_meta_port_seen[cmp_slot] <= eg_out_meta_port_seen;
+        slot_phv_ethernet_valid[cmp_slot] <= eg_out_ethernet_valid;
+        slot_phv_ipv4_valid[cmp_slot] <= eg_out_ipv4_valid;
+        slot_phv_ethernet_dstAddr[cmp_slot] <= eg_out_ethernet_dstAddr;
+        slot_phv_ethernet_srcAddr[cmp_slot] <= eg_out_ethernet_srcAddr;
+        slot_phv_ethernet_etherType[cmp_slot] <= eg_out_ethernet_etherType;
+        slot_phv_ipv4_version[cmp_slot] <= eg_out_ipv4_version;
+        slot_phv_ipv4_ihl[cmp_slot] <= eg_out_ipv4_ihl;
+        slot_phv_ipv4_diffserv[cmp_slot] <= eg_out_ipv4_diffserv;
+        slot_phv_ipv4_ecn[cmp_slot] <= eg_out_ipv4_ecn;
+        slot_phv_ipv4_totalLen[cmp_slot] <= eg_out_ipv4_totalLen;
+        slot_phv_ipv4_identification[cmp_slot] <= eg_out_ipv4_identification;
+        slot_phv_ipv4_flags[cmp_slot] <= eg_out_ipv4_flags;
+        slot_phv_ipv4_fragOffset[cmp_slot] <= eg_out_ipv4_fragOffset;
+        slot_phv_ipv4_ttl[cmp_slot] <= eg_out_ipv4_ttl;
+        slot_phv_ipv4_protocol[cmp_slot] <= eg_out_ipv4_protocol;
+        slot_phv_ipv4_hdrChecksum[cmp_slot] <= eg_out_ipv4_hdrChecksum;
+        slot_phv_ipv4_srcAddr[cmp_slot] <= eg_out_ipv4_srcAddr;
+        slot_phv_ipv4_dstAddr[cmp_slot] <= eg_out_ipv4_dstAddr;
       end
     end
   end
@@ -661,10 +763,24 @@ module lmprobe_top #(
   // ── TX-side view of slot tx_slot ─────────────────────────────────────────
   logic [7:0] t_hdr [0:HDR_MAX_BYTES-1];
   always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) t_hdr[i] = slot_hdr[tx_slot*HDR_MAX_BYTES + i];
-  wire phv_eth_valid = slot_phv_eth_valid[tx_slot];
-  wire [47:0] phv_eth_dst = slot_phv_eth_dst[tx_slot];
-  wire [47:0] phv_eth_src = slot_phv_eth_src[tx_slot];
-  wire [15:0] phv_eth_etype = slot_phv_eth_etype[tx_slot];
+  wire phv_ethernet_valid = slot_phv_ethernet_valid[tx_slot];
+  wire phv_ipv4_valid = slot_phv_ipv4_valid[tx_slot];
+  wire [47:0] phv_ethernet_dstAddr = slot_phv_ethernet_dstAddr[tx_slot];
+  wire [47:0] phv_ethernet_srcAddr = slot_phv_ethernet_srcAddr[tx_slot];
+  wire [15:0] phv_ethernet_etherType = slot_phv_ethernet_etherType[tx_slot];
+  wire [3:0] phv_ipv4_version = slot_phv_ipv4_version[tx_slot];
+  wire [3:0] phv_ipv4_ihl = slot_phv_ipv4_ihl[tx_slot];
+  wire [5:0] phv_ipv4_diffserv = slot_phv_ipv4_diffserv[tx_slot];
+  wire [1:0] phv_ipv4_ecn = slot_phv_ipv4_ecn[tx_slot];
+  wire [15:0] phv_ipv4_totalLen = slot_phv_ipv4_totalLen[tx_slot];
+  wire [15:0] phv_ipv4_identification = slot_phv_ipv4_identification[tx_slot];
+  wire [2:0] phv_ipv4_flags = slot_phv_ipv4_flags[tx_slot];
+  wire [12:0] phv_ipv4_fragOffset = slot_phv_ipv4_fragOffset[tx_slot];
+  wire [7:0] phv_ipv4_ttl = slot_phv_ipv4_ttl[tx_slot];
+  wire [7:0] phv_ipv4_protocol = slot_phv_ipv4_protocol[tx_slot];
+  wire [15:0] phv_ipv4_hdrChecksum = slot_phv_ipv4_hdrChecksum[tx_slot];
+  wire [31:0] phv_ipv4_srcAddr = slot_phv_ipv4_srcAddr[tx_slot];
+  wire [31:0] phv_ipv4_dstAddr = slot_phv_ipv4_dstAddr[tx_slot];
 
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
@@ -672,20 +788,42 @@ module lmprobe_top #(
   logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   always_comb begin
     for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];
-    hdr_out[0] = phv_eth_dst[47:40];
-    hdr_out[1] = phv_eth_dst[39:32];
-    hdr_out[2] = phv_eth_dst[31:24];
-    hdr_out[3] = phv_eth_dst[23:16];
-    hdr_out[4] = phv_eth_dst[15:8];
-    hdr_out[5] = phv_eth_dst[7:0];
-    hdr_out[6] = phv_eth_src[47:40];
-    hdr_out[7] = phv_eth_src[39:32];
-    hdr_out[8] = phv_eth_src[31:24];
-    hdr_out[9] = phv_eth_src[23:16];
-    hdr_out[10] = phv_eth_src[15:8];
-    hdr_out[11] = phv_eth_src[7:0];
-    hdr_out[12] = phv_eth_etype[15:8];
-    hdr_out[13] = phv_eth_etype[7:0];
+    hdr_out[0] = phv_ethernet_dstAddr[47:40];
+    hdr_out[1] = phv_ethernet_dstAddr[39:32];
+    hdr_out[2] = phv_ethernet_dstAddr[31:24];
+    hdr_out[3] = phv_ethernet_dstAddr[23:16];
+    hdr_out[4] = phv_ethernet_dstAddr[15:8];
+    hdr_out[5] = phv_ethernet_dstAddr[7:0];
+    hdr_out[6] = phv_ethernet_srcAddr[47:40];
+    hdr_out[7] = phv_ethernet_srcAddr[39:32];
+    hdr_out[8] = phv_ethernet_srcAddr[31:24];
+    hdr_out[9] = phv_ethernet_srcAddr[23:16];
+    hdr_out[10] = phv_ethernet_srcAddr[15:8];
+    hdr_out[11] = phv_ethernet_srcAddr[7:0];
+    hdr_out[12] = phv_ethernet_etherType[15:8];
+    hdr_out[13] = phv_ethernet_etherType[7:0];
+    if (phv_ipv4_valid) begin
+        hdr_out[14] = {phv_ipv4_version, phv_ipv4_ihl};
+        hdr_out[14+1] = {phv_ipv4_diffserv, phv_ipv4_ecn};
+        hdr_out[14+2] = phv_ipv4_totalLen[15:8];
+        hdr_out[14+3] = phv_ipv4_totalLen[7:0];
+        hdr_out[14+4] = phv_ipv4_identification[15:8];
+        hdr_out[14+5] = phv_ipv4_identification[7:0];
+        hdr_out[14+6] = {phv_ipv4_flags, phv_ipv4_fragOffset[12:8]};
+        hdr_out[14+7] = phv_ipv4_fragOffset[7:0];
+        hdr_out[14+8] = phv_ipv4_ttl;
+        hdr_out[14+9] = phv_ipv4_protocol;
+        hdr_out[14+10] = phv_ipv4_hdrChecksum[15:8];
+        hdr_out[14+11] = phv_ipv4_hdrChecksum[7:0];
+        hdr_out[14+12] = phv_ipv4_srcAddr[31:24];
+        hdr_out[14+13] = phv_ipv4_srcAddr[23:16];
+        hdr_out[14+14] = phv_ipv4_srcAddr[15:8];
+        hdr_out[14+15] = phv_ipv4_srcAddr[7:0];
+        hdr_out[14+16] = phv_ipv4_dstAddr[31:24];
+        hdr_out[14+17] = phv_ipv4_dstAddr[23:16];
+        hdr_out[14+18] = phv_ipv4_dstAddr[15:8];
+        hdr_out[14+19] = phv_ipv4_dstAddr[7:0];
+    end
   end
 
   // ── TX (egress) ──────────────────────────────────────────────────────────
@@ -729,8 +867,6 @@ module lmprobe_top #(
       tx_out_data   <= '0;
       tx_out_keep   <= '0;
       tx_out_last   <= 1'b0;
-      out_meta_byte_total <= '0;
-      out_meta_port_seen <= '0;
       out_std_meta_egress_port <= '0;
     end else begin
       if (tx_consumed) tx_out_valid <= 1'b0;
@@ -742,16 +878,12 @@ module lmprobe_top #(
         tx_out_last  <= hdr_row_is_last;
         tx_hdr_row   <= tx_hdr_row + 9'd1;
         if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1'b1;
-        out_meta_byte_total <= slot_meta_byte_total[tx_slot];
-        out_meta_port_seen <= slot_meta_port_seen[tx_slot];
         out_std_meta_egress_port <= slot_std_meta_egress_port[tx_slot];
       end else if (emit_pl) begin
         tx_out_valid <= 1'b1;
         tx_out_data  <= pfifo_head_data;
         tx_out_keep  <= pfifo_head_keep;
         tx_out_last  <= pfifo_head_last;
-        out_meta_byte_total <= slot_meta_byte_total[tx_slot];
-        out_meta_port_seen <= slot_meta_port_seen[tx_slot];
         out_std_meta_egress_port <= slot_std_meta_egress_port[tx_slot];
       end
       if (tx_finish) begin

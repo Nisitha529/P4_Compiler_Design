@@ -306,7 +306,7 @@ def debug_ir(ir):
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
                   axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
-                  register_ram=False, nslot=4):
+                  register_ram=False, nslot=4, tm_qlimit=None):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -489,7 +489,8 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
-        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot)
+        emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot,
+                 tm_qlimit=tm_qlimit)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
         # The top's payload path is pkt_beat_fifo (emit_fifo.py); it is a
         # generic module emitted next to the top so every XSA app carries its
@@ -641,6 +642,13 @@ def main():
         ),
     )
     parser.add_argument(
+        "--tm-qlimit", type=int, default=None, metavar="N",
+        help=("traffic-manager per-queue limit, in packets. Enqueueing to a "
+              "queue already at this depth tail-drops the packet. Default: no "
+              "limit -- queue occupancy is already bounded by the slot count, "
+              "so a limit only bites when it is set below --nslot."),
+    )
+    parser.add_argument(
         "--nslot", type=int, default=4, metavar="N",
         help=("Streaming shell: number of packets that can be in flight (header "
               "slot ring depth, power of two). Default 4. More slots hide more "
@@ -753,6 +761,7 @@ def main():
         self_test=args.self_test,
         register_ram=args.register_ram,
         nslot=args.nslot,
+        tm_qlimit=args.tm_qlimit,
     )
 
 

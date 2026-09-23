@@ -35,6 +35,13 @@ struct standard_metadata_t {
     bit<16>      parsed_bytes;        // bytes consumed by extract()
     error        parser_error;        // NoError unless a verify() failed
 
+    // -- written by the TRAFFIC MANAGER, read by egress --
+    // Depth, in packets, of the queue this packet was put into: at the moment
+    // it was enqueued, and at the moment the scheduler took it out again.
+    // Both are zero in ingress, which runs before the packet is queued.
+    bit<19>      enq_qdepth;
+    bit<19>      deq_qdepth;
+
     // -- written by the pipeline, READ by the shell after it --
     bit<1>       drop;                // 1 = discard; nothing else below matters
     PortId_t     egress_port;         // unicast destination

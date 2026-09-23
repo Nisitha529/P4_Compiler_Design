@@ -72,6 +72,8 @@ module echo_top #(
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
+  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
+  logic tx_finish;    // driven in the TX section; read here to set slot_txdone
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
@@ -79,12 +81,23 @@ module echo_top #(
   end
   // synthesis translate_on
   `endif
-  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;
+  logic [SLOT_AW:0] wr_ptr, iss_ptr, rel_ptr;
+  logic [SLOT_AW:0] cmp_ptr;   // no egress stage: completion is issue order
   wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];
-  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];
-  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
+
+  // ── Traffic manager: per-queue slot FIFOs ────────────────────────────────
+  // (this program has no egress control, so the scheduler degenerates:
+  //  ingress completion feeds the transmit queue directly)
+  logic [SLOT_AW-1:0] txq_mem [0:NSLOT-1];
+  logic [SLOT_AW:0]   txq_wr, txq_rd;
+  logic [SLOT_AW-1:0] cmp_slot;   // slot leaving the pipeline this cycle
+  logic [SLOT_AW-1:0] tx_slot;    // slot TX is sending
+  always_comb begin
+    cmp_slot = cmp_ptr[SLOT_AW-1:0];
+    tx_slot  = txq_mem[txq_rd[SLOT_AW-1:0]];
+  end
   // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the
   // slot being reusable are different events: on an OVERSIZE packet the
   // FIFO entry marked last is pushed at MAX_PKT_BEATS while the link's real
@@ -104,19 +117,39 @@ module echo_top #(
   localparam int PFIFO_W  = AXI_DATA_W + AXI_DATA_W/8 + 1;  // {last, keep, data}
   localparam int PFIFO_AW = 8;
   localparam int PFIFO_DEPTH = 1 << PFIFO_AW;  // 256 >= PAYLOAD_MAX_BEATS
-  logic                pfifo_wr_en;
-  logic [PFIFO_W-1:0]  pfifo_wr_data;
+  logic [NSLOT-1:0]    pfifo_wr_en_v;
+  logic [PFIFO_W-1:0]  pfifo_wr_data;   // shared: only slot wr_slot is written
+  logic [NSLOT-1:0]    pfifo_full_v;
+  logic [NSLOT-1:0]    pfifo_rd_valid_v;
+  logic [PFIFO_W-1:0]  pfifo_rd_data_v [0:NSLOT-1];
+  logic [NSLOT-1:0]    pfifo_rd_en_v;
+  genvar gs;
+  generate for (gs = 0; gs < NSLOT; gs++) begin : g_pfifo
+    pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
+      .clk(clk), .rst_n(rst_n),
+      .wr_en(pfifo_wr_en_v[gs]), .wr_data(pfifo_wr_data), .full(pfifo_full_v[gs]),
+      .rd_valid(pfifo_rd_valid_v[gs]), .rd_data(pfifo_rd_data_v[gs]),
+      .rd_en(pfifo_rd_en_v[gs]),
+      .occupancy()
+    );
+  end endgenerate
+  // Views of the slot each side is working on. Unpacked-array elements are
+  // read in always_comb, never a continuous assign (iverilog 11 rejects the
+  // latter -- the same rule the header extraction section follows).
   logic                pfifo_full;
   logic                pfifo_rd_valid;
   logic [PFIFO_W-1:0]  pfifo_rd_data;
   logic                pfifo_rd_en;
-  logic [PFIFO_AW:0]   pfifo_occupancy;
-  pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
-    .clk(clk), .rst_n(rst_n),
-    .wr_en(pfifo_wr_en), .wr_data(pfifo_wr_data), .full(pfifo_full),
-    .rd_valid(pfifo_rd_valid), .rd_data(pfifo_rd_data), .rd_en(pfifo_rd_en),
-    .occupancy(pfifo_occupancy)
-  );
+  logic                pfifo_wr_en;
+  always_comb begin
+    pfifo_full     = pfifo_full_v[wr_slot];
+    pfifo_rd_valid = pfifo_rd_valid_v[tx_slot];
+    pfifo_rd_data  = pfifo_rd_data_v[tx_slot];
+    for (int sl = 0; sl < NSLOT; sl++) begin
+      pfifo_wr_en_v[sl] = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);
+      pfifo_rd_en_v[sl] = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);
+    end
+  end
   wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];
   wire [AXI_DATA_W/8-1:0] pfifo_head_keep = pfifo_rd_data[AXI_DATA_W +: AXI_DATA_W/8];
   wire [AXI_DATA_W-1:0]   pfifo_head_data = pfifo_rd_data[AXI_DATA_W-1:0];
@@ -429,6 +462,7 @@ module echo_top #(
       rx_active <= 1'b0;
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
+        slot_txdone[sl] <= 1'b0;
       end
     end else begin
       if (accept_beat) begin
@@ -450,8 +484,12 @@ module echo_top #(
         end
       end
       // slot release: TX has moved past rel_slot AND its tlast has arrived
+      // TX finished with a slot: mark it, so release (which happens in
+      // arrival order) can tell which slots are done under reordering.
+      if (tx_finish) slot_txdone[tx_slot] <= 1'b1;
       if (slot_release) begin
         rel_ptr <= rel_ptr + 1'b1;
+        slot_txdone[rel_slot] <= 1'b0;
         slot_beat_cnt[rel_slot] <= '0; slot_done[rel_slot] <= 1'b0; slot_overflow[rel_slot] <= 1'b0;
       end
     end
@@ -481,47 +519,63 @@ module echo_top #(
     end
   end
 
-  // ── Capture (u_proc.out_valid -> slot cmp_slot) ──────────────────────────
+  // ── Enqueue (ingress done) and capture (egress done) ─────────────────────
   always_ff @(posedge clk) begin
-    if (!rst_n) cmp_ptr <= '0;
-    else if (proc_out_valid) begin
-      cmp_ptr <= cmp_ptr + 1'b1;
-      slot_drop[cmp_slot] <= proc_drop;
-      slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
-      slot_phv_vlan_0_valid[cmp_slot] <= out_vlan_0_valid;
-      slot_phv_ipv4_valid[cmp_slot] <= out_ipv4_valid;
-      slot_phv_ipv4opt_valid[cmp_slot] <= out_ipv4opt_valid;
-      slot_phv_vlan_1_valid[cmp_slot] <= out_vlan_1_valid;
-      slot_phv_udp_valid[cmp_slot] <= out_udp_valid;
-      slot_phv_eth_dmac[cmp_slot] <= out_eth_dmac;
-      slot_phv_eth_smac[cmp_slot] <= out_eth_smac;
-      slot_phv_eth_type[cmp_slot] <= out_eth_type;
-      slot_phv_vlan_0_pcp[cmp_slot] <= out_vlan_0_pcp;
-      slot_phv_vlan_0_cfi[cmp_slot] <= out_vlan_0_cfi;
-      slot_phv_vlan_0_vid[cmp_slot] <= out_vlan_0_vid;
-      slot_phv_vlan_0_tpid[cmp_slot] <= out_vlan_0_tpid;
-      slot_phv_ipv4_version[cmp_slot] <= out_ipv4_version;
-      slot_phv_ipv4_hdr_len[cmp_slot] <= out_ipv4_hdr_len;
-      slot_phv_ipv4_tos[cmp_slot] <= out_ipv4_tos;
-      slot_phv_ipv4_length[cmp_slot] <= out_ipv4_length;
-      slot_phv_ipv4_id[cmp_slot] <= out_ipv4_id;
-      slot_phv_ipv4_flags[cmp_slot] <= out_ipv4_flags;
-      slot_phv_ipv4_offset[cmp_slot] <= out_ipv4_offset;
-      slot_phv_ipv4_ttl[cmp_slot] <= out_ipv4_ttl;
-      slot_phv_ipv4_protocol[cmp_slot] <= out_ipv4_protocol;
-      slot_phv_ipv4_hdr_chk[cmp_slot] <= out_ipv4_hdr_chk;
-      slot_phv_ipv4_src[cmp_slot] <= out_ipv4_src;
-      slot_phv_ipv4_dst[cmp_slot] <= out_ipv4_dst;
-      slot_phv_ipv4opt_options[cmp_slot] <= out_ipv4opt_options;
-      slot_phv_vlan_1_pcp[cmp_slot] <= out_vlan_1_pcp;
-      slot_phv_vlan_1_cfi[cmp_slot] <= out_vlan_1_cfi;
-      slot_phv_vlan_1_vid[cmp_slot] <= out_vlan_1_vid;
-      slot_phv_vlan_1_tpid[cmp_slot] <= out_vlan_1_tpid;
-      slot_phv_udp_src_port[cmp_slot] <= out_udp_src_port;
-      slot_phv_udp_dst_port[cmp_slot] <= out_udp_dst_port;
-      slot_phv_udp_length[cmp_slot] <= out_udp_length;
-      slot_phv_udp_checksum[cmp_slot] <= out_udp_checksum;
-      slot_meta_echo_port[cmp_slot] <= proc_out_meta_echo_port;
+    if (!rst_n) begin
+      cmp_ptr <= '0;
+    end else begin
+      if (proc_out_valid) begin
+        cmp_ptr <= cmp_ptr + 1'b1;
+        slot_drop[cmp_slot] <= proc_drop;
+        slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
+        slot_phv_vlan_0_valid[cmp_slot] <= out_vlan_0_valid;
+        slot_phv_ipv4_valid[cmp_slot] <= out_ipv4_valid;
+        slot_phv_ipv4opt_valid[cmp_slot] <= out_ipv4opt_valid;
+        slot_phv_vlan_1_valid[cmp_slot] <= out_vlan_1_valid;
+        slot_phv_udp_valid[cmp_slot] <= out_udp_valid;
+        slot_phv_eth_dmac[cmp_slot] <= out_eth_dmac;
+        slot_phv_eth_smac[cmp_slot] <= out_eth_smac;
+        slot_phv_eth_type[cmp_slot] <= out_eth_type;
+        slot_phv_vlan_0_pcp[cmp_slot] <= out_vlan_0_pcp;
+        slot_phv_vlan_0_cfi[cmp_slot] <= out_vlan_0_cfi;
+        slot_phv_vlan_0_vid[cmp_slot] <= out_vlan_0_vid;
+        slot_phv_vlan_0_tpid[cmp_slot] <= out_vlan_0_tpid;
+        slot_phv_ipv4_version[cmp_slot] <= out_ipv4_version;
+        slot_phv_ipv4_hdr_len[cmp_slot] <= out_ipv4_hdr_len;
+        slot_phv_ipv4_tos[cmp_slot] <= out_ipv4_tos;
+        slot_phv_ipv4_length[cmp_slot] <= out_ipv4_length;
+        slot_phv_ipv4_id[cmp_slot] <= out_ipv4_id;
+        slot_phv_ipv4_flags[cmp_slot] <= out_ipv4_flags;
+        slot_phv_ipv4_offset[cmp_slot] <= out_ipv4_offset;
+        slot_phv_ipv4_ttl[cmp_slot] <= out_ipv4_ttl;
+        slot_phv_ipv4_protocol[cmp_slot] <= out_ipv4_protocol;
+        slot_phv_ipv4_hdr_chk[cmp_slot] <= out_ipv4_hdr_chk;
+        slot_phv_ipv4_src[cmp_slot] <= out_ipv4_src;
+        slot_phv_ipv4_dst[cmp_slot] <= out_ipv4_dst;
+        slot_phv_ipv4opt_options[cmp_slot] <= out_ipv4opt_options;
+        slot_phv_vlan_1_pcp[cmp_slot] <= out_vlan_1_pcp;
+        slot_phv_vlan_1_cfi[cmp_slot] <= out_vlan_1_cfi;
+        slot_phv_vlan_1_vid[cmp_slot] <= out_vlan_1_vid;
+        slot_phv_vlan_1_tpid[cmp_slot] <= out_vlan_1_tpid;
+        slot_phv_udp_src_port[cmp_slot] <= out_udp_src_port;
+        slot_phv_udp_dst_port[cmp_slot] <= out_udp_dst_port;
+        slot_phv_udp_length[cmp_slot] <= out_udp_length;
+        slot_phv_udp_checksum[cmp_slot] <= out_udp_checksum;
+        slot_meta_echo_port[cmp_slot] <= proc_out_meta_echo_port;
+      end
+    end
+  end
+
+  // ── Transmit queue (no egress stage: completion is issue order) ─────────
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      txq_wr <= '0; txq_rd <= '0;
+    end else begin
+      if (proc_out_valid) begin
+        txq_mem[txq_wr[SLOT_AW-1:0]] <= cmp_slot;
+        txq_wr <= txq_wr + 1'b1;
+      end
+      if (tx_finish) txq_rd <= txq_rd + 1'b1;
     end
   end
 
@@ -694,7 +748,7 @@ module echo_top #(
   // beat of the next packet is presented.
   wire tx_consumed  = tx_out_valid && m_axis_tready;
   wire tx_slot_free = !tx_out_valid || tx_consumed;
-  wire slot_live    = (cmp_ptr != tx_ptr);
+  wire slot_live    = (txq_wr != txq_rd);
   wire cur_discard  = slot_drop[tx_slot];
   wire [8:0] tx_beat_cnt_s = slot_beat_cnt[tx_slot];
   wire tx_done_s        = slot_done[tx_slot];
@@ -707,12 +761,11 @@ module echo_top #(
   assign pfifo_rd_en = emit_pl || discard_pop;
   wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);
   wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));
-  wire tx_finish    = last_loaded || discard_done;
-  wire slot_release = (rel_ptr != tx_ptr) && slot_done[rel_slot];
+  assign tx_finish  = last_loaded || discard_done;
+  wire slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      tx_ptr        <= '0;
       tx_in_payload <= 1'b0;
       tx_hdr_row    <= '0;
       tx_out_valid  <= 1'b0;
@@ -741,7 +794,6 @@ module echo_top #(
       if (tx_finish) begin
         tx_in_payload <= 1'b0;
         tx_hdr_row    <= '0;
-        tx_ptr        <= tx_ptr + 1'b1;
       end
     end
   end

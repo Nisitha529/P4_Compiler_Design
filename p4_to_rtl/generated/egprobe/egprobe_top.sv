@@ -75,6 +75,8 @@ module egprobe_top #(
   logic [63:0] slot_sop_ingress_timestamp [0:NSLOT-1];   // sampled at SOP
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
+  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
+  logic tx_finish;    // driven in the TX section; read here to set slot_txdone
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
@@ -82,7 +84,7 @@ module egprobe_top #(
   end
   // synthesis translate_on
   `endif
-  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;
+  logic [SLOT_AW:0] wr_ptr, iss_ptr, rel_ptr;
   wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];
   wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];
   // ig_ptr: slot whose packet is currently completing INGRESS (advances on
@@ -91,9 +93,89 @@ module egprobe_top #(
   // two controls, so the packet's standard metadata rides in the slot.
   logic [SLOT_AW:0] ig_ptr;
   wire  [SLOT_AW-1:0] ig_slot = ig_ptr[SLOT_AW-1:0];
-  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];
-  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];
+  // deq_ptr: the QUEUEING POINT (TM step 2). Ingress writes its result
+  // into the slot and enqueues it here; egress is fed FROM the slot when
+  // this pointer selects it, not combinationally from ingress. With one
+  // in-order queue that is the ring itself, so order is unchanged -- but
+  // egress now reads stored state, which is what lets a scheduler pick
+  // the order later, and lets one packet be run through egress more than
+  // once for multicast replication.
   wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
+
+  // ── Traffic manager: per-queue slot FIFOs ────────────────────────────────
+  localparam int QCOUNT = 4;
+  localparam int QSEL_W = 2;
+  logic [SLOT_AW-1:0] tmq_mem [0:QCOUNT*NSLOT-1];
+  logic [SLOT_AW:0]   tmq_wr  [0:QCOUNT-1];
+  logic [SLOT_AW:0]   tmq_rd  [0:QCOUNT-1];
+  logic [QCOUNT-1:0]  tmq_nonempty;
+  // depth of each queue, in packets -- this is what enq/deq_qdepth report
+  logic [SLOT_AW:0]   tmq_depth [0:QCOUNT-1];
+  always_comb
+    for (int q = 0; q < QCOUNT; q++) begin
+      tmq_depth[q]    = tmq_wr[q] - tmq_rd[q];
+      tmq_nonempty[q] = (tmq_wr[q] != tmq_rd[q]);
+    end
+  // egress in-flight and transmit queues
+  logic [SLOT_AW-1:0] egq_mem [0:NSLOT-1];
+  logic [SLOT_AW:0]   egq_wr, egq_rd;
+  logic [SLOT_AW-1:0] txq_mem [0:NSLOT-1];
+  logic [SLOT_AW:0]   txq_wr, txq_rd;
+  logic [SLOT_AW-1:0] cmp_slot;   // slot leaving the pipeline this cycle
+  logic [SLOT_AW-1:0] tx_slot;    // slot TX is sending
+  // ── Scheduler: round robin over non-empty queues ────────────────────────
+  // One dequeue per cycle (u_egress accepts one packet per cycle). The
+  // rotating priority means a busy queue cannot starve the others; with a
+  // single queue this degenerates to "take the oldest", as before.
+  logic [QSEL_W-1:0] rr_ptr;
+  logic [QSEL_W-1:0] sched_q;
+  logic              sched_valid;
+  always_comb begin
+    sched_valid = 1'b0;
+    sched_q     = '0;
+    if (tmq_nonempty[(rr_ptr + 2'd3)]) begin
+      sched_valid = 1'b1;
+      sched_q     = (rr_ptr + 2'd3);
+    end
+    if (tmq_nonempty[(rr_ptr + 2'd2)]) begin
+      sched_valid = 1'b1;
+      sched_q     = (rr_ptr + 2'd2);
+    end
+    if (tmq_nonempty[(rr_ptr + 2'd1)]) begin
+      sched_valid = 1'b1;
+      sched_q     = (rr_ptr + 2'd1);
+    end
+    if (tmq_nonempty[rr_ptr]) begin
+      sched_valid = 1'b1;
+      sched_q     = rr_ptr;
+    end
+  end
+  logic [SLOT_AW-1:0] deq_slot;
+  logic [SLOT_AW:0]   deq_qdepth_now;
+  always_comb begin
+    deq_slot       = tmq_mem[sched_q*NSLOT + tmq_rd[sched_q][SLOT_AW-1:0]];
+    deq_qdepth_now = tmq_depth[sched_q];
+  end
+  // A queue only means something if packets WAIT in it. Dequeue is
+  // therefore gated on how many packets are already past the scheduler
+  // (in the egress pipeline or waiting for the wire): while TX is busy
+  // sending one packet, the rest accumulate in their queues and the
+  // scheduler gets a real choice. Ungated, everything would drain
+  // straight through in arrival order and the scheduler would never
+  // see two non-empty queues at once.
+  localparam int TM_INFLIGHT = 2;
+  wire [SLOT_AW+1:0] tm_inflight = (egq_wr - egq_rd) + (txq_wr - txq_rd);
+  wire               deq_fire = sched_valid && (tm_inflight < TM_INFLIGHT);
+  always_comb begin
+    // Bypass: an egress control with NO pipeline boundary (no table, no
+    // split) has out_valid = valid_in, so a slot is pushed to this FIFO
+    // and popped from it on the SAME edge. The pop would then read an
+    // entry that has not landed yet -- X, which propagates into tx_slot
+    // and wedges TX. When the FIFO is empty the packet completing egress
+    // can only be the one being dequeued this cycle.
+    cmp_slot = (egq_wr == egq_rd) ? deq_slot : egq_mem[egq_rd[SLOT_AW-1:0]];
+    tx_slot  = txq_mem[txq_rd[SLOT_AW-1:0]];
+  end
   // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the
   // slot being reusable are different events: on an OVERSIZE packet the
   // FIFO entry marked last is pushed at MAX_PKT_BEATS while the link's real
@@ -113,19 +195,39 @@ module egprobe_top #(
   localparam int PFIFO_W  = AXI_DATA_W + AXI_DATA_W/8 + 1;  // {last, keep, data}
   localparam int PFIFO_AW = 8;
   localparam int PFIFO_DEPTH = 1 << PFIFO_AW;  // 256 >= PAYLOAD_MAX_BEATS
-  logic                pfifo_wr_en;
-  logic [PFIFO_W-1:0]  pfifo_wr_data;
+  logic [NSLOT-1:0]    pfifo_wr_en_v;
+  logic [PFIFO_W-1:0]  pfifo_wr_data;   // shared: only slot wr_slot is written
+  logic [NSLOT-1:0]    pfifo_full_v;
+  logic [NSLOT-1:0]    pfifo_rd_valid_v;
+  logic [PFIFO_W-1:0]  pfifo_rd_data_v [0:NSLOT-1];
+  logic [NSLOT-1:0]    pfifo_rd_en_v;
+  genvar gs;
+  generate for (gs = 0; gs < NSLOT; gs++) begin : g_pfifo
+    pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
+      .clk(clk), .rst_n(rst_n),
+      .wr_en(pfifo_wr_en_v[gs]), .wr_data(pfifo_wr_data), .full(pfifo_full_v[gs]),
+      .rd_valid(pfifo_rd_valid_v[gs]), .rd_data(pfifo_rd_data_v[gs]),
+      .rd_en(pfifo_rd_en_v[gs]),
+      .occupancy()
+    );
+  end endgenerate
+  // Views of the slot each side is working on. Unpacked-array elements are
+  // read in always_comb, never a continuous assign (iverilog 11 rejects the
+  // latter -- the same rule the header extraction section follows).
   logic                pfifo_full;
   logic                pfifo_rd_valid;
   logic [PFIFO_W-1:0]  pfifo_rd_data;
   logic                pfifo_rd_en;
-  logic [PFIFO_AW:0]   pfifo_occupancy;
-  pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
-    .clk(clk), .rst_n(rst_n),
-    .wr_en(pfifo_wr_en), .wr_data(pfifo_wr_data), .full(pfifo_full),
-    .rd_valid(pfifo_rd_valid), .rd_data(pfifo_rd_data), .rd_en(pfifo_rd_en),
-    .occupancy(pfifo_occupancy)
-  );
+  logic                pfifo_wr_en;
+  always_comb begin
+    pfifo_full     = pfifo_full_v[wr_slot];
+    pfifo_rd_valid = pfifo_rd_valid_v[tx_slot];
+    pfifo_rd_data  = pfifo_rd_data_v[tx_slot];
+    for (int sl = 0; sl < NSLOT; sl++) begin
+      pfifo_wr_en_v[sl] = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);
+      pfifo_rd_en_v[sl] = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);
+    end
+  end
   wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];
   wire [AXI_DATA_W/8-1:0] pfifo_head_keep = pfifo_rd_data[AXI_DATA_W +: AXI_DATA_W/8];
   wire [AXI_DATA_W-1:0]   pfifo_head_data = pfifo_rd_data[AXI_DATA_W-1:0];
@@ -416,25 +518,26 @@ module egprobe_top #(
     .drop      (proc_drop)
   );
 
-  // ── egress_processing_generated: PHV pass-through ────────────────────────
-  // Fed directly from u_proc's outputs on u_proc.out_valid: the header
-  // vector, user metadata and standard metadata exactly as ingress left
-  // them -- the packet is never re-parsed. Shell-sourced standard metadata
-  // egress reads comes from the slot (sampled at issue for THIS packet).
+  // ── egress_processing_generated: PHV pass-through, fed at DEQUEUE ────────
+  // Every input comes from the packet's SLOT, written when ingress
+  // finished: the header vector, user metadata and standard metadata
+  // exactly as ingress left them -- the packet is never re-parsed.
   // drop is sticky: ingress's decision enters as drop_in and egress can
   // only add to it (its counters are gated on drop_in inside the module).
+  // Reading from the slot rather than from u_proc's outputs is what makes
+  // the queueing point real -- see deq_ptr above.
   egress_processing_generated u_egress (
     .clk       (clk),
     .rst_n     (rst_n),
-    .valid_in  (proc_out_valid),
-    .drop_in   (proc_drop),
-    .eth_valid     (out_eth_valid),
-    .eth_dst  (out_eth_dst),
-    .eth_src  (out_eth_src),
-    .eth_etype  (out_eth_etype),
-    .meta_ts  (proc_out_meta_ts),
-    .std_meta_egress_port  (ig_out_std_meta_egress_port),   // written by ingress
-    .std_meta_ingress_timestamp  (slot_sop_ingress_timestamp[ig_slot]),   // shell-sourced, sampled at SOP
+    .valid_in  (deq_fire),
+    .drop_in   (slot_drop[deq_slot]),
+    .eth_valid     (slot_phv_eth_valid[deq_slot]),
+    .eth_dst  (slot_phv_eth_dst[deq_slot]),
+    .eth_src  (slot_phv_eth_src[deq_slot]),
+    .eth_etype  (slot_phv_eth_etype[deq_slot]),
+    .meta_ts  (slot_meta_ts[deq_slot]),
+    .std_meta_egress_port  (slot_std_meta_egress_port[deq_slot]),   // from the slot
+    .std_meta_ingress_timestamp  (slot_sop_ingress_timestamp[deq_slot]),   // shell-sourced, sampled at SOP
     .out_eth_valid     (eg_out_eth_valid),
     .out_eth_dst  (eg_out_eth_dst),
     .out_eth_src  (eg_out_eth_src),
@@ -492,6 +595,7 @@ module egprobe_top #(
       rx_active <= 1'b0;
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
+        slot_txdone[sl] <= 1'b0;
       end
     end else begin
       if (accept_beat) begin
@@ -516,8 +620,12 @@ module egprobe_top #(
         end
       end
       // slot release: TX has moved past rel_slot AND its tlast has arrived
+      // TX finished with a slot: mark it, so release (which happens in
+      // arrival order) can tell which slots are done under reordering.
+      if (tx_finish) slot_txdone[tx_slot] <= 1'b1;
       if (slot_release) begin
         rel_ptr <= rel_ptr + 1'b1;
+        slot_txdone[rel_slot] <= 1'b0;
         slot_beat_cnt[rel_slot] <= '0; slot_done[rel_slot] <= 1'b0; slot_overflow[rel_slot] <= 1'b0;
       end
     end
@@ -547,31 +655,65 @@ module egprobe_top #(
     end
   end
 
-  // ── Ingress completion (u_proc.out_valid -> slot ig_slot) ────────────────
-  // The PHV itself goes straight into u_egress; what the slot keeps from
-  // ingress is what egress does not carry: its counter requests and the
-  // standard metadata it wrote (the sideband value if egress leaves it).
+  // Queue selection and the tail-drop test, declared ahead of the block
+  // below that reads them (this file keeps declarations before uses).
+  wire [QSEL_W-1:0] enq_q = ig_out_std_meta_egress_port[QSEL_W-1:0];
+  // ── Enqueue (ingress done) and capture (egress done) ─────────────────────
+  // Ingress writes its WHOLE result into the slot -- that store is the
+  // queueing point's packet state, which u_egress reads back at dequeue.
+  // Egress then overwrites the same slot with the final PHV.
   always_ff @(posedge clk) begin
-    if (!rst_n) ig_ptr <= '0;
-    else if (proc_out_valid) begin
-      ig_ptr <= ig_ptr + 1'b1;
-      slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
+    if (!rst_n) begin
+      ig_ptr  <= '0;
+    end else begin
+      if (proc_out_valid) begin
+        ig_ptr <= ig_ptr + 1'b1;
+        slot_drop[ig_slot] <= proc_drop;
+        slot_phv_eth_valid[ig_slot] <= out_eth_valid;
+        slot_phv_eth_dst[ig_slot] <= out_eth_dst;
+        slot_phv_eth_src[ig_slot] <= out_eth_src;
+        slot_phv_eth_etype[ig_slot] <= out_eth_etype;
+        slot_meta_ts[ig_slot] <= proc_out_meta_ts;
+        slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
+      end
+      if (eg_out_valid) begin
+        slot_drop[cmp_slot] <= eg_drop;
+        slot_phv_eth_valid[cmp_slot] <= eg_out_eth_valid;
+        slot_phv_eth_dst[cmp_slot] <= eg_out_eth_dst;
+        slot_phv_eth_src[cmp_slot] <= eg_out_eth_src;
+        slot_phv_eth_etype[cmp_slot] <= eg_out_eth_etype;
+        slot_meta_ts[cmp_slot] <= eg_out_meta_ts;
+        slot_cnt_tx_pkts_en[cmp_slot]  <= tx_pkts_incr_en;
+        slot_cnt_tx_pkts_idx[cmp_slot] <= tx_pkts_incr_idx;
+      end
     end
   end
 
-  // ── Capture (u_egress.out_valid -> slot cmp_slot) ──────────────────────────
+  // ── Queue bookkeeping: enqueue, schedule, egress in-flight, transmit ─────
   always_ff @(posedge clk) begin
-    if (!rst_n) cmp_ptr <= '0;
-    else if (eg_out_valid) begin
-      cmp_ptr <= cmp_ptr + 1'b1;
-      slot_drop[cmp_slot] <= eg_drop;
-      slot_phv_eth_valid[cmp_slot] <= eg_out_eth_valid;
-      slot_phv_eth_dst[cmp_slot] <= eg_out_eth_dst;
-      slot_phv_eth_src[cmp_slot] <= eg_out_eth_src;
-      slot_phv_eth_etype[cmp_slot] <= eg_out_eth_etype;
-      slot_meta_ts[cmp_slot] <= eg_out_meta_ts;
-      slot_cnt_tx_pkts_en[cmp_slot]  <= tx_pkts_incr_en;
-      slot_cnt_tx_pkts_idx[cmp_slot] <= tx_pkts_incr_idx;
+    if (!rst_n) begin
+      for (int q = 0; q < QCOUNT; q++) begin tmq_wr[q] <= '0; tmq_rd[q] <= '0; end
+      egq_wr <= '0; egq_rd <= '0; txq_wr <= '0; txq_rd <= '0; rr_ptr <= '0;
+    end else begin
+      // enqueue: ingress finished, pick the queue from egress_port
+      if (proc_out_valid) begin
+        tmq_mem[enq_q*NSLOT + tmq_wr[enq_q][SLOT_AW-1:0]] <= ig_slot;
+        tmq_wr[enq_q] <= tmq_wr[enq_q] + 1'b1;
+      end
+      // dequeue: hand the scheduled slot to u_egress and remember it
+      if (deq_fire) begin
+        tmq_rd[sched_q] <= tmq_rd[sched_q] + 1'b1;
+        rr_ptr <= (sched_q == QCOUNT-1) ? '0: sched_q + 1'b1;
+        egq_mem[egq_wr[SLOT_AW-1:0]] <= deq_slot;
+        egq_wr <= egq_wr + 1'b1;
+      end
+      // egress finished: that slot is ready for the wire
+      if (eg_out_valid) begin
+        egq_rd <= egq_rd + 1'b1;
+        txq_mem[txq_wr[SLOT_AW-1:0]] <= cmp_slot;
+        txq_wr <= txq_wr + 1'b1;
+      end
+      if (tx_finish) txq_rd <= txq_rd + 1'b1;
     end
   end
 
@@ -622,7 +764,7 @@ module egprobe_top #(
   // beat of the next packet is presented.
   wire tx_consumed  = tx_out_valid && m_axis_tready;
   wire tx_slot_free = !tx_out_valid || tx_consumed;
-  wire slot_live    = (cmp_ptr != tx_ptr);
+  wire slot_live    = (txq_wr != txq_rd);
   wire cur_discard  = slot_drop[tx_slot];
   wire [8:0] tx_beat_cnt_s = slot_beat_cnt[tx_slot];
   wire tx_done_s        = slot_done[tx_slot];
@@ -635,12 +777,11 @@ module egprobe_top #(
   assign pfifo_rd_en = emit_pl || discard_pop;
   wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);
   wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));
-  wire tx_finish    = last_loaded || discard_done;
-  wire slot_release = (rel_ptr != tx_ptr) && slot_done[rel_slot];
+  assign tx_finish  = last_loaded || discard_done;
+  wire slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      tx_ptr        <= '0;
       tx_in_payload <= 1'b0;
       tx_hdr_row    <= '0;
       tx_out_valid  <= 1'b0;
@@ -672,7 +813,6 @@ module egprobe_top #(
       if (tx_finish) begin
         tx_in_payload <= 1'b0;
         tx_hdr_row    <= '0;
-        tx_ptr        <= tx_ptr + 1'b1;
       end
     end
   end

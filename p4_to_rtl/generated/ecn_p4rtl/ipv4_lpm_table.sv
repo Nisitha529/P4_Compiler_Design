@@ -1,0 +1,244 @@
+module ipv4_lpm_table #(
+  parameter int DEPTH = 64
+) (
+  input  logic clk,
+  input  logic rst_n,
+
+  // Lookup key (combinational)
+  input  logic [31:0] lkp_dstAddr,
+
+  // Lookup result
+  output logic        hit,
+  output logic [1:0] action_id,
+  output logic [47:0] p_dstAddr,
+  output logic [8:0] p_port,
+
+  // Control-plane write port (synchronous)
+  input  logic        cp_wr_en,
+  input  logic [5:0] cp_wr_idx,
+  input  logic [31:0] cp_wr_key_dstAddr,
+  input  logic [5:0] cp_wr_pfx_len,
+  input  logic [1:0] cp_wr_action,
+  input  logic [47:0] cp_wr_p_dstAddr,
+  input  logic [8:0] cp_wr_p_port
+);
+
+  // Entry storage
+  logic        mem_valid  [0:DEPTH-1];
+  logic [31:0] mem_key_dstAddr[0:DEPTH-1];
+  logic [31:0] mem_pfx_mask_dstAddr[0:DEPTH-1];
+  logic [1:0] mem_action[0:DEPTH-1];
+  logic [47:0] mem_p_dstAddr[0:DEPTH-1];
+  logic [8:0] mem_p_port[0:DEPTH-1];
+
+  integer _i;
+  `ifndef SYNTHESIS
+  // synthesis translate_off
+  initial begin
+    for (_i = 0; _i < DEPTH; _i = _i + 1)
+      mem_valid[_i] = 1'b0;
+  end
+  // synthesis translate_on
+  `endif
+
+  always_ff @(posedge clk) begin
+    if (cp_wr_en) begin
+      mem_valid[cp_wr_idx]  <= 1'b1;
+      mem_key_dstAddr[cp_wr_idx] <= cp_wr_key_dstAddr;
+      mem_pfx_mask_dstAddr[cp_wr_idx] <= (cp_wr_pfx_len == 6'd0) ? 32'd0 : ({32{1'b1}} << (32 - cp_wr_pfx_len));
+      mem_action[cp_wr_idx] <= cp_wr_action;
+      mem_p_dstAddr[cp_wr_idx] <= cp_wr_p_dstAddr;
+      mem_p_port[cp_wr_idx] <= cp_wr_p_port;
+    end
+  end
+
+  // Priority-match reduction: balanced binary tree (log2(DEPTH) levels)
+  // instead of a serial DEPTH-deep priority chain. Lowest index still wins.
+  logic        hit_l0_c[0:63];
+  logic [1:0] act_l0_c[0:63];
+  logic [47:0] p_dstAddr_l0_c[0:63];
+  logic [8:0] p_port_l0_c[0:63];
+
+  integer _cj;
+  always_comb begin
+    for (_cj = 0; _cj < DEPTH; _cj = _cj + 1) begin
+      hit_l0_c[_cj] = mem_valid[_cj] && ((lkp_dstAddr & mem_pfx_mask_dstAddr[_cj]) == (mem_key_dstAddr[_cj] & mem_pfx_mask_dstAddr[_cj]));
+      act_l0_c[_cj] = mem_action[_cj];
+      p_dstAddr_l0_c[_cj] = mem_p_dstAddr[_cj];
+      p_port_l0_c[_cj] = mem_p_port[_cj];
+    end
+  end
+
+  logic        hit_l0[0:63];
+  logic [1:0] act_l0[0:63];
+  logic [47:0] p_dstAddr_l0[0:63];
+  logic [8:0] p_port_l0[0:63];
+  integer _rj;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      for (_rj = 0; _rj < DEPTH; _rj = _rj + 1)
+        hit_l0[_rj] <= 1'b0;
+    end else begin
+      for (_rj = 0; _rj < DEPTH; _rj = _rj + 1) begin
+        hit_l0[_rj] <= hit_l0_c[_rj];
+        act_l0[_rj] <= act_l0_c[_rj];
+        p_dstAddr_l0[_rj] <= p_dstAddr_l0_c[_rj];
+        p_port_l0[_rj] <= p_port_l0_c[_rj];
+      end
+    end
+  end
+
+  logic        hit_l1[0:31];
+  logic [1:0] act_l1[0:31];
+  logic [47:0] p_dstAddr_l1[0:31];
+  logic [8:0] p_port_l1[0:31];
+  integer _tj_l1;
+  always_comb begin
+    for (_tj_l1 = 0; _tj_l1 < 32; _tj_l1 = _tj_l1 + 1) begin
+      if (2*_tj_l1+1 < 64) begin
+        hit_l1[_tj_l1] = hit_l0[2*_tj_l1] || hit_l0[2*_tj_l1+1];
+        act_l1[_tj_l1] = hit_l0[2*_tj_l1] ? act_l0[2*_tj_l1] : act_l0[2*_tj_l1+1];
+        p_dstAddr_l1[_tj_l1] = hit_l0[2*_tj_l1] ? p_dstAddr_l0[2*_tj_l1] : p_dstAddr_l0[2*_tj_l1+1];
+        p_port_l1[_tj_l1] = hit_l0[2*_tj_l1] ? p_port_l0[2*_tj_l1] : p_port_l0[2*_tj_l1+1];
+      end else begin
+        hit_l1[_tj_l1] = hit_l0[2*_tj_l1];
+        act_l1[_tj_l1] = act_l0[2*_tj_l1];
+        p_dstAddr_l1[_tj_l1] = p_dstAddr_l0[2*_tj_l1];
+        p_port_l1[_tj_l1] = p_port_l0[2*_tj_l1];
+      end
+    end
+  end
+
+  logic        hit_l2[0:15];
+  logic [1:0] act_l2[0:15];
+  logic [47:0] p_dstAddr_l2[0:15];
+  logic [8:0] p_port_l2[0:15];
+  integer _tj_l2;
+  always_comb begin
+    for (_tj_l2 = 0; _tj_l2 < 16; _tj_l2 = _tj_l2 + 1) begin
+      if (2*_tj_l2+1 < 32) begin
+        hit_l2[_tj_l2] = hit_l1[2*_tj_l2] || hit_l1[2*_tj_l2+1];
+        act_l2[_tj_l2] = hit_l1[2*_tj_l2] ? act_l1[2*_tj_l2] : act_l1[2*_tj_l2+1];
+        p_dstAddr_l2[_tj_l2] = hit_l1[2*_tj_l2] ? p_dstAddr_l1[2*_tj_l2] : p_dstAddr_l1[2*_tj_l2+1];
+        p_port_l2[_tj_l2] = hit_l1[2*_tj_l2] ? p_port_l1[2*_tj_l2] : p_port_l1[2*_tj_l2+1];
+      end else begin
+        hit_l2[_tj_l2] = hit_l1[2*_tj_l2];
+        act_l2[_tj_l2] = act_l1[2*_tj_l2];
+        p_dstAddr_l2[_tj_l2] = p_dstAddr_l1[2*_tj_l2];
+        p_port_l2[_tj_l2] = p_port_l1[2*_tj_l2];
+      end
+    end
+  end
+
+  logic        hit_l3[0:7];
+  logic [1:0] act_l3[0:7];
+  logic [47:0] p_dstAddr_l3[0:7];
+  logic [8:0] p_port_l3[0:7];
+  integer _tj_l3;
+  always_comb begin
+    for (_tj_l3 = 0; _tj_l3 < 8; _tj_l3 = _tj_l3 + 1) begin
+      if (2*_tj_l3+1 < 16) begin
+        hit_l3[_tj_l3] = hit_l2[2*_tj_l3] || hit_l2[2*_tj_l3+1];
+        act_l3[_tj_l3] = hit_l2[2*_tj_l3] ? act_l2[2*_tj_l3] : act_l2[2*_tj_l3+1];
+        p_dstAddr_l3[_tj_l3] = hit_l2[2*_tj_l3] ? p_dstAddr_l2[2*_tj_l3] : p_dstAddr_l2[2*_tj_l3+1];
+        p_port_l3[_tj_l3] = hit_l2[2*_tj_l3] ? p_port_l2[2*_tj_l3] : p_port_l2[2*_tj_l3+1];
+      end else begin
+        hit_l3[_tj_l3] = hit_l2[2*_tj_l3];
+        act_l3[_tj_l3] = act_l2[2*_tj_l3];
+        p_dstAddr_l3[_tj_l3] = p_dstAddr_l2[2*_tj_l3];
+        p_port_l3[_tj_l3] = p_port_l2[2*_tj_l3];
+      end
+    end
+  end
+
+  logic        hit_l4[0:3];
+  logic [1:0] act_l4[0:3];
+  logic [47:0] p_dstAddr_l4[0:3];
+  logic [8:0] p_port_l4[0:3];
+  integer _tj_l4;
+  always_comb begin
+    for (_tj_l4 = 0; _tj_l4 < 4; _tj_l4 = _tj_l4 + 1) begin
+      if (2*_tj_l4+1 < 8) begin
+        hit_l4[_tj_l4] = hit_l3[2*_tj_l4] || hit_l3[2*_tj_l4+1];
+        act_l4[_tj_l4] = hit_l3[2*_tj_l4] ? act_l3[2*_tj_l4] : act_l3[2*_tj_l4+1];
+        p_dstAddr_l4[_tj_l4] = hit_l3[2*_tj_l4] ? p_dstAddr_l3[2*_tj_l4] : p_dstAddr_l3[2*_tj_l4+1];
+        p_port_l4[_tj_l4] = hit_l3[2*_tj_l4] ? p_port_l3[2*_tj_l4] : p_port_l3[2*_tj_l4+1];
+      end else begin
+        hit_l4[_tj_l4] = hit_l3[2*_tj_l4];
+        act_l4[_tj_l4] = act_l3[2*_tj_l4];
+        p_dstAddr_l4[_tj_l4] = p_dstAddr_l3[2*_tj_l4];
+        p_port_l4[_tj_l4] = p_port_l3[2*_tj_l4];
+      end
+    end
+  end
+
+  logic        hit_l5[0:1];
+  logic [1:0] act_l5[0:1];
+  logic [47:0] p_dstAddr_l5[0:1];
+  logic [8:0] p_port_l5[0:1];
+  integer _tj_l5;
+  always_comb begin
+    for (_tj_l5 = 0; _tj_l5 < 2; _tj_l5 = _tj_l5 + 1) begin
+      if (2*_tj_l5+1 < 4) begin
+        hit_l5[_tj_l5] = hit_l4[2*_tj_l5] || hit_l4[2*_tj_l5+1];
+        act_l5[_tj_l5] = hit_l4[2*_tj_l5] ? act_l4[2*_tj_l5] : act_l4[2*_tj_l5+1];
+        p_dstAddr_l5[_tj_l5] = hit_l4[2*_tj_l5] ? p_dstAddr_l4[2*_tj_l5] : p_dstAddr_l4[2*_tj_l5+1];
+        p_port_l5[_tj_l5] = hit_l4[2*_tj_l5] ? p_port_l4[2*_tj_l5] : p_port_l4[2*_tj_l5+1];
+      end else begin
+        hit_l5[_tj_l5] = hit_l4[2*_tj_l5];
+        act_l5[_tj_l5] = act_l4[2*_tj_l5];
+        p_dstAddr_l5[_tj_l5] = p_dstAddr_l4[2*_tj_l5];
+        p_port_l5[_tj_l5] = p_port_l4[2*_tj_l5];
+      end
+    end
+  end
+
+  logic        hit_l6[0:0];
+  logic [1:0] act_l6[0:0];
+  logic [47:0] p_dstAddr_l6[0:0];
+  logic [8:0] p_port_l6[0:0];
+  integer _tj_l6;
+  always_comb begin
+    for (_tj_l6 = 0; _tj_l6 < 1; _tj_l6 = _tj_l6 + 1) begin
+      if (2*_tj_l6+1 < 2) begin
+        hit_l6[_tj_l6] = hit_l5[2*_tj_l6] || hit_l5[2*_tj_l6+1];
+        act_l6[_tj_l6] = hit_l5[2*_tj_l6] ? act_l5[2*_tj_l6] : act_l5[2*_tj_l6+1];
+        p_dstAddr_l6[_tj_l6] = hit_l5[2*_tj_l6] ? p_dstAddr_l5[2*_tj_l6] : p_dstAddr_l5[2*_tj_l6+1];
+        p_port_l6[_tj_l6] = hit_l5[2*_tj_l6] ? p_port_l5[2*_tj_l6] : p_port_l5[2*_tj_l6+1];
+      end else begin
+        hit_l6[_tj_l6] = hit_l5[2*_tj_l6];
+        act_l6[_tj_l6] = act_l5[2*_tj_l6];
+        p_dstAddr_l6[_tj_l6] = p_dstAddr_l5[2*_tj_l6];
+        p_port_l6[_tj_l6] = p_port_l5[2*_tj_l6];
+      end
+    end
+  end
+
+  logic hit_c;
+  logic [1:0] action_id_c;
+  logic [47:0] p_dstAddr_c;
+  logic [8:0] p_port_c;
+  always_comb begin
+    hit_c = hit_l6[0];
+    action_id_c = hit_l6[0] ? act_l6[0] : 2'd0;
+    p_dstAddr_c = hit_l6[0] ? p_dstAddr_l6[0] : 48'b0;
+    p_port_c = hit_l6[0] ? p_port_l6[0] : 9'b0;
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hit <= 1'b0;
+    end else begin
+      hit <= hit_c;
+      action_id <= action_id_c;
+      p_dstAddr <= p_dstAddr_c;
+      p_port <= p_port_c;
+    end
+  end
+
+  // Action ID encoding:
+  //   0 = NoAction
+  //   1 = ipv4_forward
+  //   2 = drop_pkt
+
+endmodule

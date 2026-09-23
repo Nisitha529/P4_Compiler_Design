@@ -70,6 +70,23 @@ from emit_processing import (
 DEFAULT_AXI_DATA_W = 256
 MAX_AXI_DATA_W     = 512
 
+# Traffic-manager queue count for a program that selects an output port. The
+# queue index is the low bits of egress_port, so this is a power of two; the
+# round-robin scheduler is a flat priority encoder over it, and each queue
+# costs NSLOT entries of SLOT_AW bits, which is negligible. A program with no
+# egress_port gets a single queue and the pre-TM behaviour.
+TM_QUEUES = 4
+
+# How many packets may be past the scheduler at once -- inside the egress
+# pipeline or waiting for the wire. Small enough that packets actually queue
+# (otherwise the scheduler never sees a choice and the TM is decorative),
+# large enough to cover the egress pipeline's latency so TX never bubbles.
+# Measured on the load_balance_p4rtl stream harness (cycles/packet, 64 B):
+#   1 -> 5.50   2 -> 3.69   3 -> 3.62   4 -> 3.62
+# so 2 is the smallest window that keeps throughput, which is also the one
+# that leaves the most packets queued for the scheduler to choose between.
+TM_INFLIGHT = 2
+
 MAX_PKT_BEATS = 256     # max packet size in AXI4-Stream beats (beat count is
                         # independent of datapath width; MAX_PKT_BYTES below
                         # scales with whichever width a given run selects)
@@ -991,7 +1008,8 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
-def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4):
+def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4,
+             tm_qlimit=None):
     """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
 
     axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
@@ -1010,6 +1028,18 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
     if axi_data_width < 8 or (axi_data_width & (axi_data_width - 1)) != 0:
         raise ValueError(
             f'axi_data_width must be a power of 2, >=8 (got {axi_data_width})'
+        )
+    # The slot-ring pointers are SLOT_AW+1 bits with a wrap bit, so they count
+    # modulo 2**(SLOT_AW+1) while the slot arrays have NSLOT entries. Those two
+    # agree only when NSLOT is a power of two; at NSLOT=6 the slot index reaches
+    # 6 and 7, which index past the arrays, and the design hangs. Documented as
+    # a constraint since the ring landed, but nothing enforced it -- so the
+    # failure mode was a silent hang in simulation, not a compiler error.
+    if nslot < 1 or (nslot & (nslot - 1)) != 0:
+        raise ValueError(
+            f'nslot must be a power of 2 (got {nslot}) -- the slot-ring pointers '
+            f'carry a wrap bit and count modulo a power of two, so any other '
+            f'value indexes past the slot arrays and deadlocks'
         )
     if axi_data_width > MAX_AXI_DATA_W:
         raise ValueError(
@@ -1062,7 +1092,7 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       emit_insts, total_hdr_bytes,
                       axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
                       board, verify_terms=verify_terms, nslot=nslot,
-                      ectrl=ectrl)
+                      ectrl=ectrl, tm_qlimit=tm_qlimit)
 
 
 def _build_fwmap(ir):
@@ -1102,7 +1132,7 @@ def _write_ram_style_pragma(f, board):
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
                   axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                  board=None, verify_terms=None, nslot=4, ectrl=None):
+                  board=None, verify_terms=None, nslot=4, ectrl=None, tm_qlimit=None):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -1178,8 +1208,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # START OF PACKET, not read live at issue: issue is cut-through and can
     # land while RX is already receiving a LATER packet, so a live read would
     # hand the pipeline the wrong packet's value.
+    # Written by the traffic manager, not at issue: enq_qdepth is recorded into
+    # the slot when the packet is enqueued, deq_qdepth is valid combinationally
+    # on the dequeue cycle (which is exactly when egress samples its inputs).
+    TM_WRITTEN  = ('enq_qdepth', 'deq_qdepth')
     SOP_SAMPLED = ('ingress_timestamp', 'ingress_port')
     sop_std = {f: w for f, w in shell_std_used.items() if f in SOP_SAMPLED}
+    tm_std  = {f: w for f, w in shell_std_used.items() if f in TM_WRITTEN}
     # packet_length is the whole frame, so it is final only at tlast --
     # a program that reads it cannot be issued cut-through (see iss_hdr_ready).
     needs_pkt_len = 'packet_length' in shell_std_used
@@ -1189,13 +1224,19 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # ones already have their own slot array (slot_sop_*), so only the
     # issue-time ones (parsed_bytes, parser_error, packet_length) need a
     # second copy taken at issue.
-    eg_issue_std = {k: w for k, w in eg_shell_std.items() if k not in sop_std}
+    eg_issue_std = {k: w for k, w in eg_shell_std.items()
+                    if k not in sop_std and k not in tm_std}
+    eg_tm_std    = {k: w for k, w in eg_shell_std.items() if k in tm_std}
     slot_std = dict(ig_std_outs); slot_std.update(eg_std_outs); slot_std.update(eg_issue_std)
 
     def _shell_std_src(fname, fw):
         """The shell's source expression for a shell-written std-meta field at
         ISSUE time (what ingress's std_meta_* input is connected to, and what
         the slot records for egress to read later)."""
+        if fname in TM_WRITTEN:
+            # Ingress runs BEFORE the traffic manager, so the packet has not
+            # been queued yet and neither depth exists for it.
+            return f"{fw}'d0"
         if fname in sop_std:
             return f'slot_sop_{fname}[iss_slot]'
         if fname == 'parsed_bytes':
@@ -1287,6 +1328,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     PFIFO_AW = max(1, math.ceil(math.log2(max(2, _payload_beats))))
     NSLOT    = nslot
     SLOT_AW  = max(1, math.ceil(math.log2(NSLOT)))
+    # ── Traffic-manager queues (TM step 3) ────────────────────────────────
+    # One queue per output port the program can actually select, capped so the
+    # round-robin scheduler stays a flat priority encoder. The queue index is
+    # the low bits of the egress_port ingress wrote; a program with no
+    # egress_port has a single queue and behaves exactly as before.
+    QCOUNT = TM_QUEUES if 'egress_port' in ig_std_outs else 1
+    QSEL_W = max(1, math.ceil(math.log2(QCOUNT)))
 
     # ── Packet buffer ──────────────────────────────────────────────────────────
     # pkt_buf_hdr is INTENTIONALLY left a plain register array, no ramstyle
@@ -1340,9 +1388,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # forward reference that iverilog accepts; see the extraction section).
     for fn, fw in sorted(sop_std.items()):
         f.write(f'  logic [{fw-1}:0] slot_sop_{fn} [0:NSLOT-1];   // sampled at SOP\n')
+    if 'enq_qdepth' in tm_std:
+        f.write(f'  logic [{tm_std["enq_qdepth"]-1}:0] slot_enq_qdepth [0:NSLOT-1];   // depth at enqueue\n')
     for fn, fw in sorted(slot_std.items()):
         f.write(f'  logic [{fw-1}:0] slot_std_meta_{fn} [0:NSLOT-1];\n')
     f.write('  logic slot_drop     [0:NSLOT-1];\n')
+    f.write('  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot\n')
+    f.write('  logic tx_finish;    // driven in the TX section; read here to set slot_txdone\n')
     f.write('  `ifndef SYNTHESIS\n')
     f.write('  // synthesis translate_off\n')
     f.write('  initial begin\n')
@@ -1350,7 +1402,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  end\n')
     f.write('  // synthesis translate_on\n')
     f.write('  `endif\n')
-    f.write('  logic [SLOT_AW:0] wr_ptr, iss_ptr, cmp_ptr, tx_ptr, rel_ptr;\n')
+    f.write('  logic [SLOT_AW:0] wr_ptr, iss_ptr, rel_ptr;\n')
+    if not ectrl:
+        f.write('  logic [SLOT_AW:0] cmp_ptr;   // no egress stage: completion is issue order\n')
     f.write('  wire  [SLOT_AW-1:0] wr_slot  = wr_ptr[SLOT_AW-1:0];\n')
     f.write('  wire  [SLOT_AW-1:0] iss_slot = iss_ptr[SLOT_AW-1:0];\n')
     if ectrl:
@@ -1360,9 +1414,109 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('  // two controls, so the packet\'s standard metadata rides in the slot.\n')
         f.write('  logic [SLOT_AW:0] ig_ptr;\n')
         f.write('  wire  [SLOT_AW-1:0] ig_slot = ig_ptr[SLOT_AW-1:0];\n')
-    f.write('  wire  [SLOT_AW-1:0] cmp_slot = cmp_ptr[SLOT_AW-1:0];\n')
-    f.write('  wire  [SLOT_AW-1:0] tx_slot  = tx_ptr[SLOT_AW-1:0];\n')
+        f.write('  // deq_ptr: the QUEUEING POINT (TM step 2). Ingress writes its result\n')
+        f.write('  // into the slot and enqueues it here; egress is fed FROM the slot when\n')
+        f.write('  // this pointer selects it, not combinationally from ingress. With one\n')
+        f.write('  // in-order queue that is the ring itself, so order is unchanged -- but\n')
+        f.write('  // egress now reads stored state, which is what lets a scheduler pick\n')
+        f.write('  // the order later, and lets one packet be run through egress more than\n')
+        f.write('  // once for multicast replication.\n')
     f.write('  wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];\n')
+    # ── Queues (TM step 3) ────────────────────────────────────────────────
+    # Everything between "ingress finished" and "TX finished" is now carried by
+    # FIFOs of SLOT IDS rather than by ring pointers, because the scheduler may
+    # serve queues in an order that is not arrival order:
+    #   tmq[q]  : slots waiting for egress, one FIFO per output queue
+    #   egq     : slots inside the egress pipeline, in dequeue order
+    #   txq     : slots that finished egress, waiting for the wire
+    # Each holds at most NSLOT entries, since that is how many packets exist.
+    f.write('\n  // ── Traffic manager: per-queue slot FIFOs ────────────────────────────────\n')
+    if not ectrl:
+        f.write('  // (this program has no egress control, so the scheduler degenerates:\n')
+        f.write('  //  ingress completion feeds the transmit queue directly)\n')
+    if ectrl:
+        f.write(f'  localparam int QCOUNT = {QCOUNT};\n')
+        f.write(f'  localparam int QSEL_W = {QSEL_W};\n')
+        f.write('  logic [SLOT_AW-1:0] tmq_mem [0:QCOUNT*NSLOT-1];\n')
+        f.write('  logic [SLOT_AW:0]   tmq_wr  [0:QCOUNT-1];\n')
+        f.write('  logic [SLOT_AW:0]   tmq_rd  [0:QCOUNT-1];\n')
+        f.write('  logic [QCOUNT-1:0]  tmq_nonempty;\n')
+        f.write('  // depth of each queue, in packets -- this is what enq/deq_qdepth report\n')
+        f.write('  logic [SLOT_AW:0]   tmq_depth [0:QCOUNT-1];\n')
+        f.write('  always_comb\n')
+        f.write('    for (int q = 0; q < QCOUNT; q++) begin\n')
+        f.write('      tmq_depth[q]    = tmq_wr[q] - tmq_rd[q];\n')
+        f.write('      tmq_nonempty[q] = (tmq_wr[q] != tmq_rd[q]);\n')
+        f.write('    end\n')
+        f.write('  // egress in-flight and transmit queues\n')
+        f.write('  logic [SLOT_AW-1:0] egq_mem [0:NSLOT-1];\n')
+        f.write('  logic [SLOT_AW:0]   egq_wr, egq_rd;\n')
+    f.write('  logic [SLOT_AW-1:0] txq_mem [0:NSLOT-1];\n')
+    f.write('  logic [SLOT_AW:0]   txq_wr, txq_rd;\n')
+    f.write('  logic [SLOT_AW-1:0] cmp_slot;   // slot leaving the pipeline this cycle\n')
+    f.write('  logic [SLOT_AW-1:0] tx_slot;    // slot TX is sending\n')
+    if ectrl:
+        f.write('  // ── Scheduler: round robin over non-empty queues ────────────────────────\n')
+        f.write('  // One dequeue per cycle (u_egress accepts one packet per cycle). The\n')
+        f.write('  // rotating priority means a busy queue cannot starve the others; with a\n')
+        f.write('  // single queue this degenerates to "take the oldest", as before.\n')
+        f.write('  logic [QSEL_W-1:0] rr_ptr;\n')
+        f.write('  logic [QSEL_W-1:0] sched_q;\n')
+        f.write('  logic              sched_valid;\n')
+        # Unrolled at emit time: QCOUNT is a compile-time constant, and a
+        # rotated priority encoder written as a loop needs either `automatic`
+        # (unsupported by iverilog 11) or a bit-select of an int loop
+        # variable (also unsupported). Offsets wrap for free because QCOUNT is
+        # a power of two, so rr_ptr + k IS (rr_ptr + k) mod QCOUNT.
+        # Lowest priority is emitted first so the highest-priority match, the
+        # last assignment, wins.
+        f.write('  always_comb begin\n')
+        f.write('    sched_valid = 1\'b0;\n')
+        f.write('    sched_q     = \'0;\n')
+        for k in range(QCOUNT - 1, -1, -1):
+            idx = 'rr_ptr' if k == 0 else f"(rr_ptr + {QSEL_W}'d{k})"
+            f.write(f'    if (tmq_nonempty[{idx}]) begin\n')
+            f.write(f'      sched_valid = 1\'b1;\n')
+            f.write(f'      sched_q     = {idx};\n')
+            f.write(f'    end\n')
+        f.write('  end\n')
+        # tmq_mem / tmq_rd are UNPACKED arrays, and iverilog 11 will not read an
+        # unpacked-array element from a continuous assign -- the same rule the
+        # header-extraction section follows. These have to be always_comb.
+        f.write('  logic [SLOT_AW-1:0] deq_slot;\n')
+        f.write('  logic [SLOT_AW:0]   deq_qdepth_now;\n')
+        if 'enq_qdepth' in tm_std:
+            f.write(f'  logic [{tm_std["enq_qdepth"]-1}:0] enq_qdepth_of_deq;\n')
+        f.write('  always_comb begin\n')
+        f.write('    deq_slot       = tmq_mem[sched_q*NSLOT + tmq_rd[sched_q][SLOT_AW-1:0]];\n')
+        f.write('    deq_qdepth_now = tmq_depth[sched_q];\n')
+        if 'enq_qdepth' in tm_std:
+            f.write('    enq_qdepth_of_deq = slot_enq_qdepth[deq_slot];\n')
+        f.write('  end\n')
+        f.write('  // A queue only means something if packets WAIT in it. Dequeue is\n')
+        f.write('  // therefore gated on how many packets are already past the scheduler\n')
+        f.write('  // (in the egress pipeline or waiting for the wire): while TX is busy\n')
+        f.write('  // sending one packet, the rest accumulate in their queues and the\n')
+        f.write('  // scheduler gets a real choice. Ungated, everything would drain\n')
+        f.write('  // straight through in arrival order and the scheduler would never\n')
+        f.write('  // see two non-empty queues at once.\n')
+        f.write(f'  localparam int TM_INFLIGHT = {TM_INFLIGHT};\n')
+        f.write('  wire [SLOT_AW+1:0] tm_inflight = (egq_wr - egq_rd) + (txq_wr - txq_rd);\n')
+        f.write('  wire               deq_fire = sched_valid && (tm_inflight < TM_INFLIGHT);\n')
+    f.write('  always_comb begin\n')
+    if ectrl:
+        f.write('    // Bypass: an egress control with NO pipeline boundary (no table, no\n')
+        f.write('    // split) has out_valid = valid_in, so a slot is pushed to this FIFO\n')
+        f.write('    // and popped from it on the SAME edge. The pop would then read an\n')
+        f.write('    // entry that has not landed yet -- X, which propagates into tx_slot\n')
+        f.write('    // and wedges TX. When the FIFO is empty the packet completing egress\n')
+        f.write('    // can only be the one being dequeued this cycle.\n')
+        f.write('    cmp_slot = (egq_wr == egq_rd) ? deq_slot : egq_mem[egq_rd[SLOT_AW-1:0]];\n')
+    else:
+        f.write('    cmp_slot = cmp_ptr[SLOT_AW-1:0];\n')
+    f.write('    tx_slot  = txq_mem[txq_rd[SLOT_AW-1:0]];\n')
+    f.write('  end\n')
+
     f.write('  // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the\n')
     f.write('  // slot being reusable are different events: on an OVERSIZE packet the\n')
     f.write('  // FIFO entry marked last is pushed at MAX_PKT_BEATS while the link\'s real\n')
@@ -1380,23 +1534,59 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic [7:0] x_hdr [0:HDR_MAX_BYTES-1];\n')
     f.write('  always_comb for (int i = 0; i < HDR_MAX_BYTES; i++) x_hdr[i] = slot_hdr[iss_slot*HDR_MAX_BYTES + i];\n\n')
 
-    # payload FIFO
+    # ── payload storage: one FWFT FIFO PER SLOT (TM step 1) ───────────────
+    # Payload bytes used to stream through ONE shared FIFO in arrival order,
+    # which made the transmit order the arrival order by construction -- a
+    # scheduler that serves one queue before another cannot express itself in
+    # that structure. Giving each slot its own FIFO makes payload storage
+    # addressable by slot, which is what lets a later step transmit slots in
+    # an order the scheduler picks (docs/traffic_manager_plan.md).
+    #
+    # Each FIFO is sized to hold a WHOLE maximum-length packet
+    # (PFIFO_DEPTH >= PAYLOAD_MAX_BEATS, and RX stops accepting payload beats
+    # at MAX_PKT_BEATS), so a packet can never be blocked by its own FIFO --
+    # and no longer by another packet's payload either. Input backpressure is
+    # now purely slot availability. The cost is NSLOT x the payload memory.
+    #
+    # pkt_beat_fifo is reused unchanged: it already provides the first-word
+    # fall-through behaviour the TX path is written against, and it has its
+    # own unit test, so this step does not re-derive any of that.
     f.write(f'  localparam int PFIFO_W  = AXI_DATA_W + AXI_DATA_W/8 + 1;  // {{last, keep, data}}\n')
     f.write(f'  localparam int PFIFO_AW = {PFIFO_AW};\n')
     f.write(f'  localparam int PFIFO_DEPTH = 1 << PFIFO_AW;  // {1 << PFIFO_AW} >= PAYLOAD_MAX_BEATS\n')
-    f.write('  logic                pfifo_wr_en;\n')
-    f.write('  logic [PFIFO_W-1:0]  pfifo_wr_data;\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_wr_en_v;\n')
+    f.write('  logic [PFIFO_W-1:0]  pfifo_wr_data;   // shared: only slot wr_slot is written\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_full_v;\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_rd_valid_v;\n')
+    f.write('  logic [PFIFO_W-1:0]  pfifo_rd_data_v [0:NSLOT-1];\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_rd_en_v;\n')
+    f.write('  genvar gs;\n')
+    f.write('  generate for (gs = 0; gs < NSLOT; gs++) begin : g_pfifo\n')
+    f.write('    pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (\n')
+    f.write('      .clk(clk), .rst_n(rst_n),\n')
+    f.write('      .wr_en(pfifo_wr_en_v[gs]), .wr_data(pfifo_wr_data), .full(pfifo_full_v[gs]),\n')
+    f.write('      .rd_valid(pfifo_rd_valid_v[gs]), .rd_data(pfifo_rd_data_v[gs]),\n')
+    f.write('      .rd_en(pfifo_rd_en_v[gs]),\n')
+    f.write('      .occupancy()\n')
+    f.write('    );\n')
+    f.write('  end endgenerate\n')
+    f.write('  // Views of the slot each side is working on. Unpacked-array elements are\n')
+    f.write('  // read in always_comb, never a continuous assign (iverilog 11 rejects the\n')
+    f.write('  // latter -- the same rule the header extraction section follows).\n')
     f.write('  logic                pfifo_full;\n')
     f.write('  logic                pfifo_rd_valid;\n')
     f.write('  logic [PFIFO_W-1:0]  pfifo_rd_data;\n')
     f.write('  logic                pfifo_rd_en;\n')
-    f.write('  logic [PFIFO_AW:0]   pfifo_occupancy;\n')
-    f.write('  pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (\n')
-    f.write('    .clk(clk), .rst_n(rst_n),\n')
-    f.write('    .wr_en(pfifo_wr_en), .wr_data(pfifo_wr_data), .full(pfifo_full),\n')
-    f.write('    .rd_valid(pfifo_rd_valid), .rd_data(pfifo_rd_data), .rd_en(pfifo_rd_en),\n')
-    f.write('    .occupancy(pfifo_occupancy)\n')
-    f.write('  );\n')
+    f.write('  logic                pfifo_wr_en;\n')
+    f.write('  always_comb begin\n')
+    f.write('    pfifo_full     = pfifo_full_v[wr_slot];\n')
+    f.write('    pfifo_rd_valid = pfifo_rd_valid_v[tx_slot];\n')
+    f.write('    pfifo_rd_data  = pfifo_rd_data_v[tx_slot];\n')
+    f.write('    for (int sl = 0; sl < NSLOT; sl++) begin\n')
+    f.write('      pfifo_wr_en_v[sl] = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);\n')
+    f.write('      pfifo_rd_en_v[sl] = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);\n')
+    f.write('    end\n')
+    f.write('  end\n')
     f.write('  wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];\n')
     f.write('  wire [AXI_DATA_W/8-1:0] pfifo_head_keep = pfifo_rd_data[AXI_DATA_W +: AXI_DATA_W/8];\n')
     f.write('  wire [AXI_DATA_W-1:0]   pfifo_head_data = pfifo_rd_data[AXI_DATA_W-1:0];\n\n')
@@ -1675,6 +1865,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             # No verify() in this program, so there is nothing that could
             # ever set it: NoError by construction.
             note = '  // NoError -- program has no verify()'
+        elif fname in TM_WRITTEN:
+            note = '  // 0 in ingress: the packet is not queued yet'
         elif fname in sop_std:
             note = '  // sampled at SOP'
         elif fname == 'packet_length':
@@ -1729,36 +1921,42 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
     # ── Egress processing module (P4RtlPipeline): PHV pass-through ──────────
     if ectrl:
-        f.write('  // ── egress_processing_generated: PHV pass-through ────────────────────────\n')
-        f.write('  // Fed directly from u_proc\'s outputs on u_proc.out_valid: the header\n')
-        f.write('  // vector, user metadata and standard metadata exactly as ingress left\n')
-        f.write('  // them -- the packet is never re-parsed. Shell-sourced standard metadata\n')
-        f.write('  // egress reads comes from the slot (sampled at issue for THIS packet).\n')
+        f.write('  // ── egress_processing_generated: PHV pass-through, fed at DEQUEUE ────────\n')
+        f.write('  // Every input comes from the packet\'s SLOT, written when ingress\n')
+        f.write('  // finished: the header vector, user metadata and standard metadata\n')
+        f.write('  // exactly as ingress left them -- the packet is never re-parsed.\n')
         f.write('  // drop is sticky: ingress\'s decision enters as drop_in and egress can\n')
         f.write('  // only add to it (its counters are gated on drop_in inside the module).\n')
+        f.write('  // Reading from the slot rather than from u_proc\'s outputs is what makes\n')
+        f.write('  // the queueing point real -- see deq_ptr above.\n')
         f.write('  egress_processing_generated u_egress (\n')
         f.write('    .clk       (clk),\n')
         f.write('    .rst_n     (rst_n),\n')
-        f.write('    .valid_in  (proc_out_valid),\n')
-        f.write('    .drop_in   (proc_drop),\n')
+        f.write('    .valid_in  (deq_fire),\n')
+        f.write('    .drop_in   (slot_drop[deq_slot]),\n')
         for hname in all_hdr_names:
-            f.write(f'    .{hname}_valid     (out_{hname}_valid),\n')
+            if inst_map.get(hname):
+                f.write(f'    .{hname}_valid     (slot_phv_{hname}_valid[deq_slot]),\n')
+            else:
+                f.write(f'    .{hname}_valid     (1\'b0),\n')
         for hname in all_hdr_names:
             inst = inst_map.get(hname)
             if not inst:
                 continue
             for fld in inst.header_type.fields:
                 if fld.width:
-                    f.write(f'    .{hname}_{fld.name}  (out_{hname}_{fld.name}),\n')
+                    f.write(f'    .{hname}_{fld.name}  (slot_phv_{hname}_{fld.name}[deq_slot]),\n')
         for mf in ir.metadata_fields:
-            f.write(f'    .meta_{mf.name}  (proc_out_meta_{mf.name}),\n')
+            f.write(f'    .meta_{mf.name}  (slot_meta_{mf.name}[deq_slot]),\n')
         for fname in sorted(eg_std_ins):
-            if fname in ig_std_outs:
-                f.write(f'    .std_meta_{fname}  (ig_out_std_meta_{fname}),   // written by ingress\n')
+            if fname == 'enq_qdepth':
+                f.write(f'    .std_meta_{fname}  (enq_qdepth_of_deq),   // TM: depth when enqueued\n')
+            elif fname == 'deq_qdepth':
+                f.write(f'    .std_meta_{fname}  ({eg_std_ins[fname]}\'(deq_qdepth_now)),   // TM: depth right now\n')
             elif fname in sop_std:
-                f.write(f'    .std_meta_{fname}  (slot_sop_{fname}[ig_slot]),   // shell-sourced, sampled at SOP\n')
+                f.write(f'    .std_meta_{fname}  (slot_sop_{fname}[deq_slot]),   // shell-sourced, sampled at SOP\n')
             else:
-                f.write(f'    .std_meta_{fname}  (slot_std_meta_{fname}[ig_slot]),   // shell-sourced, sampled at issue\n')
+                f.write(f'    .std_meta_{fname}  (slot_std_meta_{fname}[deq_slot]),   // from the slot\n')
         for hname in all_hdr_names:
             f.write(f'    .out_{hname}_valid     (eg_out_{hname}_valid),\n')
         for hname in all_hdr_names:
@@ -1848,6 +2046,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      rx_active <= 1\'b0;\n')
     f.write('      for (int sl = 0; sl < NSLOT; sl++) begin\n')
     f.write('        slot_beat_cnt[sl] <= \'0; slot_done[sl] <= 1\'b0; slot_overflow[sl] <= 1\'b0;\n')
+    f.write('        slot_txdone[sl] <= 1\'b0;\n')
     if needs_byte_len:
         f.write('        slot_byte_len[sl] <= \'0;\n')
     f.write('      end\n')
@@ -1880,8 +2079,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('        end\n')
     f.write('      end\n')
     f.write('      // slot release: TX has moved past rel_slot AND its tlast has arrived\n')
+    f.write('      // TX finished with a slot: mark it, so release (which happens in\n')
+    f.write('      // arrival order) can tell which slots are done under reordering.\n')
+    f.write('      if (tx_finish) slot_txdone[tx_slot] <= 1\'b1;\n')
     f.write('      if (slot_release) begin\n')
     f.write('        rel_ptr <= rel_ptr + 1\'b1;\n')
+    f.write('        slot_txdone[rel_slot] <= 1\'b0;\n')
     f.write('        slot_beat_cnt[rel_slot] <= \'0; slot_done[rel_slot] <= 1\'b0; slot_overflow[rel_slot] <= 1\'b0;\n')
     if needs_byte_len:
         f.write('        slot_byte_len[rel_slot] <= \'0;\n')
@@ -1922,53 +2125,141 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'      slot_std_meta_{fn}[iss_slot] <= {_shell_std_src(fn, fw)};   // for egress\n')
     f.write('    end\n')
     f.write('  end\n\n')
-    # ── Ingress completion (only with an egress stage) ────────────────────────
+    # ── Ingress completion (enqueue) and egress completion (capture) ──────────
+    # ONE always_ff, not two. Both events write the same per-slot arrays
+    # (slot_drop, slot_phv_*, slot_meta_*, ...), and two procedural blocks
+    # driving one array is a multi-driver: iverilog tolerates it, Quartus
+    # rejects it outright ("Can't resolve multiple constant drivers"). They
+    # can fire in the same cycle -- on different slots, since a slot cannot be
+    # completing ingress and egress at once -- so the two if-bodies are
+    # independent and the array simply has one driver.
     if ectrl:
-        f.write('  // ── Ingress completion (u_proc.out_valid -> slot ig_slot) ────────────────\n')
-        f.write('  // The PHV itself goes straight into u_egress; what the slot keeps from\n')
-        f.write('  // ingress is what egress does not carry: its counter requests and the\n')
-        f.write('  // standard metadata it wrote (the sideband value if egress leaves it).\n')
-        f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (!rst_n) ig_ptr <= \'0;\n')
-        f.write('    else if (proc_out_valid) begin\n')
-        f.write('      ig_ptr <= ig_ptr + 1\'b1;\n')
-        for fn in sorted(ig_std_outs):
-            f.write(f'      slot_std_meta_{fn}[ig_slot] <= ig_out_std_meta_{fn};\n')
-        for cnt in ig_counters:
-            f.write(f'      slot_cnt_{cnt.name}_en[ig_slot]  <= {cnt.name}_incr_en;\n')
-            f.write(f'      slot_cnt_{cnt.name}_idx[ig_slot] <= {cnt.name}_incr_idx;\n')
-        f.write('    end\n')
-        f.write('  end\n\n')
-
-    # ── Capture ───────────────────────────────────────────────────────────────
-    fin_mod = 'u_egress' if ectrl else 'u_proc'
-    f.write(f'  // ── Capture ({fin_mod}.out_valid -> slot cmp_slot) ──────────────────────────\n')
+        f.write('  // Queue selection and the tail-drop test, declared ahead of the block\n')
+        f.write('  // below that reads them (this file keeps declarations before uses).\n')
+        if QCOUNT > 1:
+            f.write(f'  wire [QSEL_W-1:0] enq_q = ig_out_std_meta_egress_port[QSEL_W-1:0];\n')
+        else:
+            f.write('  wire [QSEL_W-1:0] enq_q = \'0;\n')
+        if tm_qlimit is not None:
+            f.write(f'  localparam int TM_QLIMIT = {tm_qlimit};\n')
+            f.write('  logic tail_drop;\n')
+            f.write('  always_comb tail_drop = (tmq_depth[enq_q] >= TM_QLIMIT);\n')
+            f.write('  logic [31:0] tm_tail_drops;   // observable via the shell, not the CP\n')
+    f.write('  // ── Enqueue (ingress done) and capture (egress done) ─────────────────────\n')
+    if ectrl:
+        f.write('  // Ingress writes its WHOLE result into the slot -- that store is the\n')
+        f.write('  // queueing point\'s packet state, which u_egress reads back at dequeue.\n')
+        f.write('  // Egress then overwrites the same slot with the final PHV.\n')
     f.write('  always_ff @(posedge clk) begin\n')
-    f.write('    if (!rst_n) cmp_ptr <= \'0;\n')
-    f.write(f'    else if ({fin_valid}) begin\n')
-    f.write('      cmp_ptr <= cmp_ptr + 1\'b1;\n')
-    f.write(f'      slot_drop[cmp_slot] <= {fin_drop};\n')
+    f.write('    if (!rst_n) begin\n')
+    if ectrl:
+        f.write('      ig_ptr  <= \'0;\n')
+    else:
+        f.write('      cmp_ptr <= \'0;\n')
+    f.write('    end else begin\n')
+    if ectrl:
+        f.write('      if (proc_out_valid) begin\n')
+        f.write('        ig_ptr <= ig_ptr + 1\'b1;\n')
+        if 'enq_qdepth' in tm_std:
+            f.write(f'        slot_enq_qdepth[ig_slot] <= {tm_std["enq_qdepth"]}\'(tmq_depth[enq_q]);\n')
+        if tm_qlimit is not None:
+            f.write('        // Tail drop: the target queue is at its limit, so the traffic\n')
+            f.write('        // manager discards this packet. It still walks the rest of the\n')
+            f.write('        // pipeline as a dropped packet (egress side effects suppressed,\n')
+            f.write('        // TX discards the bytes), which is how its slot gets released.\n')
+            f.write('        slot_drop[ig_slot] <= proc_drop || tail_drop;\n')
+        else:
+            f.write('        slot_drop[ig_slot] <= proc_drop;\n')
+        for hname in all_hdr_names:
+            if inst_map.get(hname):
+                f.write(f'        slot_phv_{hname}_valid[ig_slot] <= out_{hname}_valid;\n')
+        for hname, fname, w in hdr_fields:
+            f.write(f'        slot_phv_{hname}_{fname}[ig_slot] <= out_{hname}_{fname};\n')
+        for mf in ir.metadata_fields:
+            f.write(f'        slot_meta_{mf.name}[ig_slot] <= proc_out_meta_{mf.name};\n')
+        for fn in sorted(ig_std_outs):
+            f.write(f'        slot_std_meta_{fn}[ig_slot] <= ig_out_std_meta_{fn};\n')
+        for cnt in ig_counters:
+            f.write(f'        slot_cnt_{cnt.name}_en[ig_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'        slot_cnt_{cnt.name}_idx[ig_slot] <= {cnt.name}_incr_idx;\n')
+        f.write('      end\n')
+    f.write(f'      if ({fin_valid}) begin\n')
+    if not ectrl:
+        # No egress stage: completion order is issue order, so the ring pointer
+        # still names the completing slot. With egress it comes off egq.
+        f.write('        cmp_ptr <= cmp_ptr + 1\'b1;\n')
+    f.write(f'        slot_drop[cmp_slot] <= {fin_drop};\n')
     for hname in all_hdr_names:
         if inst_map.get(hname):
-            f.write(f'      slot_phv_{hname}_valid[cmp_slot] <= {fin_hdr}{hname}_valid;\n')
+            f.write(f'        slot_phv_{hname}_valid[cmp_slot] <= {fin_hdr}{hname}_valid;\n')
     for hname, fname, w in hdr_fields:
-        f.write(f'      slot_phv_{hname}_{fname}[cmp_slot] <= {fin_hdr}{hname}_{fname};\n')
+        f.write(f'        slot_phv_{hname}_{fname}[cmp_slot] <= {fin_hdr}{hname}_{fname};\n')
     for mf in ir.metadata_fields:
-        f.write(f'      slot_meta_{mf.name}[cmp_slot] <= {fin_meta}{mf.name};\n')
+        f.write(f'        slot_meta_{mf.name}[cmp_slot] <= {fin_meta}{mf.name};\n')
     if ectrl:
         for fn in sorted(eg_std_outs):
-            f.write(f'      slot_std_meta_{fn}[cmp_slot] <= eg_out_std_meta_{fn};\n')
+            f.write(f'        slot_std_meta_{fn}[cmp_slot] <= eg_out_std_meta_{fn};\n')
         for cnt in eg_counters:
-            f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
-            f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+            f.write(f'        slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'        slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
     else:
         for fn in sorted(ig_std_outs):
-            f.write(f'      slot_std_meta_{fn}[cmp_slot] <= ig_out_std_meta_{fn};\n')
+            f.write(f'        slot_std_meta_{fn}[cmp_slot] <= ig_out_std_meta_{fn};\n')
         for cnt in ig_counters:
-            f.write(f'      slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
-            f.write(f'      slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+            f.write(f'        slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
+            f.write(f'        slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
+    f.write('      end\n')
     f.write('    end\n')
     f.write('  end\n\n')
+
+    if ectrl:
+        f.write('  // ── Queue bookkeeping: enqueue, schedule, egress in-flight, transmit ─────\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write('      for (int q = 0; q < QCOUNT; q++) begin tmq_wr[q] <= \'0; tmq_rd[q] <= \'0; end\n')
+        f.write('      egq_wr <= \'0; egq_rd <= \'0; txq_wr <= \'0; txq_rd <= \'0; rr_ptr <= \'0;\n')
+        f.write('    end else begin\n')
+        f.write('      // enqueue: ingress finished, pick the queue from egress_port\n')
+        f.write('      if (proc_out_valid) begin\n')
+        f.write('        tmq_mem[enq_q*NSLOT + tmq_wr[enq_q][SLOT_AW-1:0]] <= ig_slot;\n')
+        f.write('        tmq_wr[enq_q] <= tmq_wr[enq_q] + 1\'b1;\n')
+        f.write('      end\n')
+        f.write('      // dequeue: hand the scheduled slot to u_egress and remember it\n')
+        f.write('      if (deq_fire) begin\n')
+        f.write('        tmq_rd[sched_q] <= tmq_rd[sched_q] + 1\'b1;\n')
+        f.write('        rr_ptr <= (sched_q == QCOUNT-1) ? \'0: sched_q + 1\'b1;\n')
+        f.write('        egq_mem[egq_wr[SLOT_AW-1:0]] <= deq_slot;\n')
+        f.write('        egq_wr <= egq_wr + 1\'b1;\n')
+        f.write('      end\n')
+        f.write('      // egress finished: that slot is ready for the wire\n')
+        f.write('      if (eg_out_valid) begin\n')
+        f.write('        egq_rd <= egq_rd + 1\'b1;\n')
+        f.write('        txq_mem[txq_wr[SLOT_AW-1:0]] <= cmp_slot;\n')
+        f.write('        txq_wr <= txq_wr + 1\'b1;\n')
+        f.write('      end\n')
+        f.write('      if (tx_finish) txq_rd <= txq_rd + 1\'b1;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+        if tm_qlimit is not None:
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (!rst_n) tm_tail_drops <= \'0;\n')
+            f.write('    else if (proc_out_valid && tail_drop) tm_tail_drops <= tm_tail_drops + 1\'b1;\n')
+            f.write('  end\n\n')
+    else:
+        # No egress control: ingress completion feeds the transmit queue
+        # directly, so there is nothing to schedule -- one queue, in order.
+        f.write('  // ── Transmit queue (no egress stage: completion is issue order) ─────────\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write('      txq_wr <= \'0; txq_rd <= \'0;\n')
+        f.write('    end else begin\n')
+        f.write('      if (proc_out_valid) begin\n')
+        f.write('        txq_mem[txq_wr[SLOT_AW-1:0]] <= cmp_slot;\n')
+        f.write('        txq_wr <= txq_wr + 1\'b1;\n')
+        f.write('      end\n')
+        f.write('      if (tx_finish) txq_rd <= txq_rd + 1\'b1;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
     # ── TX-side views of slot tx_slot ─────────────────────────────────────────
     f.write('  // ── TX-side view of slot tx_slot ─────────────────────────────────────────\n')
@@ -2022,7 +2313,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // beat of the next packet is presented.\n')
     f.write('  wire tx_consumed  = tx_out_valid && m_axis_tready;\n')
     f.write('  wire tx_slot_free = !tx_out_valid || tx_consumed;\n')
-    f.write('  wire slot_live    = (cmp_ptr != tx_ptr);\n')
+    f.write('  wire slot_live    = (txq_wr != txq_rd);\n')
     f.write('  wire cur_discard  = slot_drop[tx_slot];\n')
     f.write(f'  wire [{BEAT_CNT_W-1}:0] tx_beat_cnt_s = slot_beat_cnt[tx_slot];\n')
     f.write('  wire tx_done_s        = slot_done[tx_slot];\n')
@@ -2035,15 +2326,22 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  assign pfifo_rd_en = emit_pl || discard_pop;\n')
     f.write('  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);\n')
     f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
-    f.write('  wire tx_finish    = last_loaded || discard_done;\n')
-    f.write('  wire slot_release = (rel_ptr != tx_ptr) && slot_done[rel_slot];\n')
+    f.write('  assign tx_finish  = last_loaded || discard_done;\n')
+    # Release: a slot is reusable once TX has finished it AND its reception is
+    # complete. Transmission order is now the scheduler's, so "TX has finished
+    # it" is a per-slot flag rather than a pointer comparison. Slots are still
+    # RELEASED in arrival order (rel_ptr), which keeps the allocator a ring:
+    # a slot transmitted early waits for older slots to be freed. With a
+    # round-robin scheduler every queue drains, so the wait is bounded; a free
+    # list would remove it at the cost of an allocator.
+    f.write('  wire slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];\n')
 
     f.write('\n')
 
 
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) begin\n')
-    f.write('      tx_ptr        <= \'0;\n')
+
     f.write('      tx_in_payload <= 1\'b0;\n')
     f.write('      tx_hdr_row    <= \'0;\n')
     f.write('      tx_out_valid  <= 1\'b0;\n')
@@ -2083,7 +2381,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      if (tx_finish) begin\n')
     f.write('        tx_in_payload <= 1\'b0;\n')
     f.write('        tx_hdr_row    <= \'0;\n')
-    f.write('        tx_ptr        <= tx_ptr + 1\'b1;\n')
+
     f.write('      end\n')
     f.write('    end\n')
     f.write('  end\n\n')
