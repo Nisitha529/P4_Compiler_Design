@@ -17,7 +17,7 @@ module parser_generated(
     ACCEPT
   } state_t;
 
-  (* fsm_encoding = "one_hot" *)
+  // fsm_encoding: board 'de2-115' (altera) has no reliable inline attribute for this -- set state-machine encoding via your toolchain's Assignment/Settings UI instead
   state_t state, next_state;
 
   always_comb begin

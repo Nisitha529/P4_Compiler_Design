@@ -1,3 +1,4 @@
+(* altera_attribute = "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF" *)
 module egress_processing_generated (
   input  logic        clk,
   input  logic        rst_n,
