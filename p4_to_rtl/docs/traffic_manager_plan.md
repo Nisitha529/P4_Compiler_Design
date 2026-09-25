@@ -79,7 +79,7 @@ not change — only what drives its inputs. Sticky drop still rides in
 | 2 | Egress fed from the slot at a dequeue pointer instead of combinationally from ingress | the structural move, with order still trivially preserved | **done** — all tests pass; costs 1 cycle of latency |
 | 3 | N queues + round-robin scheduler, queue from `egress_port` | reordering — the real risk | **done** — `tb_egprobe_tm`, reordering demonstrated |
 | 4 | `enq_qdepth`/`deq_qdepth`, tail drop; port `ecn` | qdepth semantics under congestion | **done** — `ecn_p4rtl` marks under real congestion |
-| 5 | `mcast_group` replication, copy-counted slot release | replication, slot lifetime | **attempted, not landed** — see below |
+| 5 | `mcast_group` replication, copy-counted slot release | replication, slot lifetime | **blocked** — needs a re-readable payload store; see below |
 
 Step 1 is pure restructuring and left every number identical. Step 2 preserves
 *order and content* but is not free: it inserts a real register stage, so it
@@ -274,25 +274,63 @@ The queues and scheduler are essentially free on top of step 2 — they are a fe
 small FIFOs of slot indices — so the whole traffic manager costs about
 +16 % logic, +6 points of memory and −6 % Fmax against the pre-TM shell.
 
-## Step 5 — attempted, not landed (2026-09-23)
+## Step 5 — blocked on a step-1 decision (2026-09-25)
 
-Replication was implemented end to end — a CP-programmable member table in the
-AXI map, a per-slot pending-copy bitmap, serialised copies (the next copy is
-enqueued only once the previous has left the wire), copy-counted release, and
-a per-copy `egress_port` — plus an `mcprobe.p4` fixture and testbench.
+Rebuilt incrementally this time — each sub-step verified before the next, which
+is what the first attempt should have done. Four of the five pieces work:
 
-**Serialising the copies is the design decision to revisit.** The output PHV
-lives per *slot*, not per copy: egress rewrites the slot, so two copies in
-flight at once would have the second overwrite the first's header before TX had
-sent it. Serialising avoids that without touching storage; per-copy PHV would
-be a packet-descriptor rewrite of the whole shell.
+| piece | state |
+|---|---|
+| 5a member table + AXI4-Lite programming | works |
+| 5b first copy routed to the lowest member queue | works |
+| 5d per-copy `egress_port` (and a truthful sideband) | works |
+| 5c re-enqueue of copies 2..N, copy-counted release | enqueues and dequeues correctly, but **the copy cannot be transmitted** |
 
-It is **not** in the tree. The build elaborated and unicast still worked
-(`tb_mcprobe_top` T1 passed), but the first multicast packet stalled simulation
-time — a zero-delay loop somewhere in the new combinational logic. One
-self-triggering `always_comb` was found and fixed (a block that wrote
-`ig_members` and then read it back), which was not the whole cause. Rather than
-leave RTL in the tree that hangs, `emit_top.py` was restored to the verified
-step-4 state and the fixture removed. The work is reproducible from this
-description; the next attempt should build the replication logic up in smaller
-pieces, checking after each that simulation time still advances.
+### The blocker: the payload store is destructive
+
+The event trace is unambiguous — copy 2 is enqueued, scheduled, runs egress and
+reaches TX, and then TX simply never finishes it:
+
+```
+cyc=469  q2w=1 q2r=0 sv=1 schq=2 deqf=1     <- copy 2 dequeued
+cyc=472  txslot=1 pend=1000 live=1 txf=0    <- TX has it, and stays here forever
+```
+
+Each slot's payload lives in a **FIFO**. A FIFO can be read once: the first copy
+pops every beat, so the second copy finds nothing to send, `emit_pl` never
+fires and `tx_finish` never asserts. The slot is then never released and the
+shell wedges.
+
+This traces straight back to step 1. That step was framed as "payload storage
+addressed by **slot**", and per-slot `pkt_beat_fifo` instances satisfied that
+while reusing a proven, unit-tested module — which is why steps 1–4 went in so
+cleanly. But addressable per slot is not the same as **re-readable**, and
+replication needs the latter.
+
+**What step 5 actually needs:** payload storage as a slot-addressed RAM with an
+explicit per-transmission read pointer that is rewound at the start of each
+copy, instead of a FIFO whose read pointer only moves forward. The write side is
+unchanged. The cost is that a RAM read is registered, whereas the whole TX path
+is written against `pkt_beat_fifo`'s first-word fall-through contract, so the
+emit/finish logic has to be re-timed with it — which is the part worth doing
+carefully rather than at the end of a long session.
+
+Nothing from this attempt is in the tree; `emit_top.py` is the verified step-4
+state and all 39 testbenches pass. The design above is what to build from.
+
+### Two iverilog traps found on the way (both cost real time)
+
+- **A dynamically-indexed read of a value that comes combinationally from
+  `processing_generated`'s output, inside `always_comb`, stops simulation time
+  dead.** No error, no output — the clock simply stops advancing. Indexing the
+  replication table straight from `u_proc`'s `out_std_meta_mcast_group` did it;
+  registering the index (a pipelined enqueue stage, which is how one would
+  pipeline a table read in hardware anyway) fixes it. A constant index or a
+  registered index both work, which is how it was isolated.
+- **An `always_comb` that writes a variable and then reads it back** is
+  sensitive to its own output and re-triggers forever. Splitting the member
+  lookup and the priority encode into two blocks fixes it.
+
+Both belong with the existing iverilog rules (no unpacked-array reads in
+continuous assigns, no `automatic` in `always_comb`, no bit-select of an `int`
+loop variable).
