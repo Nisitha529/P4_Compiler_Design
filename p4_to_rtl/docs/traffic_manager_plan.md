@@ -75,11 +75,11 @@ not change — only what drives its inputs. Sticky drop still rides in
 
 | # | Change | Risk isolated | Green check |
 |---|--------|---------------|-------------|
-| 1 | Payload storage becomes per-slot; the single shared FWFT FIFO goes | TX reassembly, backpressure, oversize | **done** — every test and every cycle count unchanged |
+| 1 | Payload storage becomes per-slot, and (2026-09-26) re-readable | TX reassembly, backpressure, oversize | **done** — see step 1 revisited |
 | 2 | Egress fed from the slot at a dequeue pointer instead of combinationally from ingress | the structural move, with order still trivially preserved | **done** — all tests pass; costs 1 cycle of latency |
 | 3 | N queues + round-robin scheduler, queue from `egress_port` | reordering — the real risk | **done** — `tb_egprobe_tm`, reordering demonstrated |
 | 4 | `enq_qdepth`/`deq_qdepth`, tail drop; port `ecn` | qdepth semantics under congestion | **done** — `ecn_p4rtl` marks under real congestion |
-| 5 | `mcast_group` replication, copy-counted slot release | replication, slot lifetime | **blocked** — needs a re-readable payload store; see below |
+| 5 | `mcast_group` replication, copy-counted slot release | replication, slot lifetime | **done** — `mcprobe`, 3 copies from 1 packet |
 
 Step 1 is pure restructuring and left every number identical. Step 2 preserves
 *order and content* but is not free: it inserts a real register stage, so it
@@ -274,63 +274,99 @@ The queues and scheduler are essentially free on top of step 2 — they are a fe
 small FIFOs of slot indices — so the whole traffic manager costs about
 +16 % logic, +6 points of memory and −6 % Fmax against the pre-TM shell.
 
-## Step 5 — blocked on a step-1 decision (2026-09-25)
+## Step 1 revisited — the payload store is re-readable (2026-09-26)
 
-Rebuilt incrementally this time — each sub-step verified before the next, which
-is what the first attempt should have done. Four of the five pieces work:
+Step 1 was framed as "payload storage addressed by **slot**", and per-slot
+`pkt_beat_fifo` instances satisfied that while reusing a proven module. But
+addressable per slot is not **re-readable**: a FIFO is consume-on-read, so a
+replicated packet's first copy popped every beat and the second found nothing.
 
-| piece | state |
-|---|---|
-| 5a member table + AXI4-Lite programming | works |
-| 5b first copy routed to the lowest member queue | works |
-| 5d per-copy `egress_port` (and a truthful sideband) | works |
-| 5c re-enqueue of copies 2..N, copy-counted release | enqueues and dequeues correctly, but **the copy cannot be transmitted** |
+`pkt_beat_fifo` is therefore now `pkt_beat_buf`: the same BRAM and the same
+2-entry skid that gives the TX path its first-word fall-through contract, but
+reads advance a read pointer without destroying anything, and two new inputs
+recycle it:
 
-### The blocker: the payload store is destructive
+- **`rewind`** — read pointer back to beat 0, so the packet can be sent again.
+- **`clear`** — drop the packet; the slot is being released.
 
-The event trace is unambiguous — copy 2 is enqueued, scheduled, runs egress and
-reaches TX, and then TX simply never finishes it:
+`wr_ptr` is now "how many beats this packet has" and only `clear` moves it.
+`tb_pkt_beat_buf` (21 assertions) covers order, a full re-read after rewind
+producing byte-identical beats, rewinding mid-pass, clear-and-reuse, and random
+read stalls. One measured property worth stating: a pointer reset costs a
+bounded **startup** of ≤2 cycles (the skid is flushed and the RAM read is
+registered) and **zero** bubbles thereafter, so a re-read still streams at line
+rate.
 
-```
-cyc=469  q2w=1 q2r=0 sv=1 schq=2 deqf=1     <- copy 2 dequeued
-cyc=472  txslot=1 pend=1000 live=1 txf=0    <- TX has it, and stays here forever
-```
+All 39 testbenches stayed green and the stream harness numbers were unchanged
+(T1 3.69, T4 3.36 cycles/packet), so this was a pure capability addition.
 
-Each slot's payload lives in a **FIFO**. A FIFO can be read once: the first copy
-pops every beat, so the second copy finds nothing to send, `emit_pl` never
-fires and `tx_finish` never asserts. The slot is then never released and the
-shell wedges.
+## Step 5 — done (2026-09-26)
 
-This traces straight back to step 1. That step was framed as "payload storage
-addressed by **slot**", and per-slot `pkt_beat_fifo` instances satisfied that
-while reusing a proven, unit-tested module — which is why steps 1–4 went in so
-cleanly. But addressable per slot is not the same as **re-readable**, and
-replication needs the latter.
+With a re-readable payload, replication landed:
 
-**What step 5 actually needs:** payload storage as a slot-addressed RAM with an
-explicit per-transmission read pointer that is rewound at the start of each
-copy, instead of a FIFO whose read pointer only moves forward. The write side is
-unchanged. The cost is that a RAM read is registered, whereas the whole TX path
-is written against `pkt_beat_fifo`'s first-word fall-through contract, so the
-emit/finish logic has to be re-timed with it — which is the part worth doing
-carefully rather than at the end of a long session.
+- A **member table** (`MCAST_GROUPS` × one bit per queue) programmed over
+  AXI4-Lite, reusing the generic table-write machinery.
+- On enqueue, a packet with `mcast_group != 0` goes to its **first** member
+  queue; the rest are recorded in a per-slot pending bitmap.
+- When a copy leaves the wire, the slot's payload is **rewound** and the next
+  member is enqueued. Copies are **serialised** — the output PHV lives per
+  slot, so two copies in flight would have the second overwrite the first's
+  header before TX sent it.
+- Only the **last** copy marks the slot transmitted, so the slot is not reused
+  while copies remain.
+- Each copy's `egress_port` is the queue it came from, so per-port rewrites and
+  per-port drops apply per copy. That is the whole reason egress runs after the
+  traffic manager.
 
-Nothing from this attempt is in the tree; `emit_top.py` is the verified step-4
-state and all 39 testbenches pass. The design above is what to build from.
+`mcprobe.p4` + `tb_mcprobe_top` (15 assertions): one packet in → three copies
+out, one per member port, each stamped with **its own** port's MAC (egress ran
+per copy), each carrying a **byte-identical payload** (the buffer was rewound),
+the loop-prune copy dropped while its siblings still go out, and the shell
+still flowing afterwards. **40 testbenches green.**
 
-### Two iverilog traps found on the way (both cost real time)
+### Two more bugs, both only visible with replication
 
-- **A dynamically-indexed read of a value that comes combinationally from
-  `processing_generated`'s output, inside `always_comb`, stops simulation time
-  dead.** No error, no output — the clock simply stops advancing. Indexing the
-  replication table straight from `u_proc`'s `out_std_meta_mcast_group` did it;
-  registering the index (a pipelined enqueue stage, which is how one would
-  pipeline a table read in hardware anyway) fixes it. A constant index or a
-  registered index both work, which is how it was isolated.
-- **An `always_comb` that writes a variable and then reads it back** is
-  sensitive to its own output and re-triggers forever. Splitting the member
-  lookup and the priority encode into two blocks fixes it.
+- **Sticky drop was per slot, not per copy.** `slot_drop` carries the final
+  decision for TX, but egress overwrites it for every copy — so the copy the
+  loop-prune dropped made every later copy of that packet inherit the drop, and
+  only one of three came out. Ingress's decision is now kept separately in
+  `slot_ig_drop` and is what each copy's egress starts from.
+- **`always_comb` reading per-slot state that an `always_ff` writes back**
+  stops iverilog's simulation time. Deriving the next-pending-copy
+  combinationally from `slot_pending` did it at *any* index, constant or not,
+  because the `always_ff` that writes `slot_pending` is itself conditioned on
+  the result. Registering the encode fixes it and costs nothing: a slot's
+  pending set only changes at its own `tx_finish`, so the registered value is
+  already correct on the cycle it is read.
 
-Both belong with the existing iverilog rules (no unpacked-array reads in
-continuous assigns, no `automatic` in `always_comb`, no bit-select of an `int`
-loop variable).
+**Quartus** (`load_balance_p4rtl` selftest, DE2-115) across the whole traffic
+manager:
+
+| | pre-TM | step 2 | step 4 | step 5 |
+|---|---:|---:|---:|---:|
+| Logic elements | 25,533 | 29,500 | 29,495 | 29,510 |
+| Memory bits | 275,712 (7 %) | 497,664 (13 %) | 497,664 | 497,664 |
+| Fmax (MHz) | 74.1 | 69.0 | 69.8 | 67.5 |
+
+Making the payload buffer re-readable and adding replication cost essentially
+nothing in area (+15 LE, no extra memory — the buffer holds the same beats, it
+just stops throwing them away) and 2.3 MHz of Fmax. The traffic manager as a
+whole is +16 % logic, +6 points of memory and −9 % Fmax against the pre-TM
+shell — for per-port queues, a scheduler that genuinely reorders, queue-depth
+metadata, tail drop and multicast replication.
+
+### The iverilog rules this work added
+
+Alongside the existing ones (no unpacked-array reads in continuous assigns, no
+`break`, no `automatic` in `always_comb`, no bit-select of an `int` loop
+variable), **three ways to stop simulation time dead** — no error, no output,
+the clock simply stops:
+
+1. An `always_comb` that writes a variable and then reads it back.
+2. An `always_comb` indexing an array with a value that arrives combinationally
+   from `processing_generated`'s output. Register the index.
+3. An `always_comb` reading per-slot state that is written by an `always_ff`
+   whose condition depends on that same block's output. Register the result.
+
+All three were isolated the same way: stub the suspect expression to a constant
+and see whether time advances again.

@@ -72,6 +72,7 @@ module fiveTuple_top #(
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
+  logic slot_release; // likewise: the payload buffers below clear on it
   `ifndef SYNTHESIS
   // synthesis translate_off
   initial begin
@@ -121,13 +122,16 @@ module fiveTuple_top #(
   logic [NSLOT-1:0]    pfifo_rd_valid_v;
   logic [PFIFO_W-1:0]  pfifo_rd_data_v [0:NSLOT-1];
   logic [NSLOT-1:0]    pfifo_rd_en_v;
+  logic [NSLOT-1:0]    pfifo_rewind_v;
+  logic [NSLOT-1:0]    pfifo_clear_v;
   genvar gs;
   generate for (gs = 0; gs < NSLOT; gs++) begin : g_pfifo
-    pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (
+    pkt_beat_buf #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pbuf (
       .clk(clk), .rst_n(rst_n),
       .wr_en(pfifo_wr_en_v[gs]), .wr_data(pfifo_wr_data), .full(pfifo_full_v[gs]),
       .rd_valid(pfifo_rd_valid_v[gs]), .rd_data(pfifo_rd_data_v[gs]),
       .rd_en(pfifo_rd_en_v[gs]),
+      .rewind(pfifo_rewind_v[gs]), .clear(pfifo_clear_v[gs]),
       .occupancy()
     );
   end endgenerate
@@ -144,8 +148,8 @@ module fiveTuple_top #(
     pfifo_rd_valid = pfifo_rd_valid_v[tx_slot];
     pfifo_rd_data  = pfifo_rd_data_v[tx_slot];
     for (int sl = 0; sl < NSLOT; sl++) begin
-      pfifo_wr_en_v[sl] = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);
-      pfifo_rd_en_v[sl] = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);
+      pfifo_wr_en_v[sl]  = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);
+      pfifo_rd_en_v[sl]  = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);
     end
   end
   wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];
@@ -1171,7 +1175,23 @@ module fiveTuple_top #(
   wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);
   wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));
   assign tx_finish  = last_loaded || discard_done;
-  wire slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];
+
+  // ── Payload buffer recycle controls ──────────────────────────────────────
+  // A SEPARATE always_comb from the one that produces pfifo_rd_valid. Both
+  // of these depend on tx_finish, which depends on pfifo_rd_valid -- driving
+  // them from that same block makes it sensitive to its own output, and
+  // iverilog then re-triggers it forever, stopping simulation time with no
+  // error at all.
+  always_comb begin
+    for (int sl = 0; sl < NSLOT; sl++) begin
+      // Reads do not consume, so the buffer is emptied explicitly when
+      // the slot is released. Nothing rewinds it: one packet per slot is
+      // transmitted exactly once.
+      pfifo_clear_v[sl]  = slot_release && (rel_slot == sl[SLOT_AW-1:0]);
+      pfifo_rewind_v[sl] = 1'b0;
+    end
+  end
+  assign slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin

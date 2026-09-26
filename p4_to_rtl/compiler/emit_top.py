@@ -87,6 +87,11 @@ TM_QUEUES = 4
 # that leaves the most packets queued for the scheduler to choose between.
 TM_INFLIGHT = 2
 
+# Multicast groups the replication table can hold. Group 0 is reserved for
+# "unicast", so this is how many distinct member sets a control plane can
+# program. Each entry is one bit per output queue.
+MCAST_GROUPS = 8
+
 MAX_PKT_BEATS = 256     # max packet size in AXI4-Stream beats (beat count is
                         # independent of datapath width; MAX_PKT_BYTES below
                         # scales with whichever width a given run selects)
@@ -389,7 +394,8 @@ def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind,
 
 # ── AXI4-Lite register map ─────────────────────────────────────────────────────
 
-def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None):
+def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None,
+                       mcast_groups=0, mcast_qcount=1):
     """
     Return list of table register-map entries, ingress control first, then
     (P4RtlPipeline) the egress control's, each tagged 'stage' so the
@@ -562,6 +568,23 @@ def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None):
             'is_counter': True,
             'has_pkt': has_pkt,
             'has_byte': has_byte,
+        })
+        base += TABLE_AXIL_SZ
+
+    # Replication member table. Not a P4 table -- it is the traffic manager's
+    # own state -- but the control plane programs it the same way, so it reuses
+    # the generic AXI4-Lite staging/write machinery. Marked is_mcast so the
+    # processing-module wiring skips it: no cp_query, no hit_out, no port on
+    # either control.
+    if mcast_groups:
+        gw = max(1, math.ceil(math.log2(max(mcast_groups, 2))))
+        result.append({
+            'tname': 'mcast', 'stage': 'ingress', 'base': base,
+            'regs':  [('wr_idx',  'mcast_cp_wr_idx',  gw),
+                      ('wr_mask', 'mcast_cp_wr_mask', mcast_qcount),
+                      ('commit',  'mcast_cp_wr_en',   1)],
+            'read_regs': [], 'idx_w': gw, 'act_w': 0, 'params': [],
+            'supports_query': False, 'is_mcast': True,
         })
         base += TABLE_AXIL_SZ
 
@@ -1076,7 +1099,10 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
     if ectrl is not None and not (ectrl.tables or ectrl.statements):
         ectrl = None
     eamap = {a.name: a for a in ectrl.actions} if ectrl else None
-    regmap = _build_axil_regmap(ctrl, amap, fwmap, ectrl=ectrl, eamap=eamap)
+    _mc = 'mcast_group' in _collect_std_meta_outputs(ctrl)
+    regmap = _build_axil_regmap(ctrl, amap, fwmap, ectrl=ectrl, eamap=eamap,
+                                mcast_groups=(MCAST_GROUPS if _mc else 0),
+                                mcast_qcount=(TM_QUEUES if _mc else 1))
 
     # Determine which headers are non-stack and appear in emit list
     emit_list = (ir.pipeline.deparser.emit_list
@@ -1333,7 +1359,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # round-robin scheduler stays a flat priority encoder. The queue index is
     # the low bits of the egress_port ingress wrote; a program with no
     # egress_port has a single queue and behaves exactly as before.
-    QCOUNT = TM_QUEUES if 'egress_port' in ig_std_outs else 1
+    QCOUNT = TM_QUEUES if ('egress_port' in ig_std_outs or 'mcast_group' in ig_std_outs) else 1
+    # Replication (TM step 5): a packet whose mcast_group is non-zero is sent to
+    # every port in that group's member set. Copies are SERIALISED -- the next
+    # one is enqueued only once the previous has left the wire -- because the
+    # output PHV lives per slot, not per copy, so two copies in flight would
+    # have the second overwrite the first's header before TX sent it. The
+    # payload is re-read for each copy via pkt_beat_buf's rewind.
+    mcast = 'mcast_group' in ig_std_outs
     QSEL_W = max(1, math.ceil(math.log2(QCOUNT)))
 
     # ── Packet buffer ──────────────────────────────────────────────────────────
@@ -1395,6 +1428,36 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic slot_drop     [0:NSLOT-1];\n')
     f.write('  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot\n')
     f.write('  logic tx_finish;    // driven in the TX section; read here to set slot_txdone\n')
+    f.write('  logic slot_release; // likewise: the payload buffers below clear on it\n')
+    if mcast:
+        f.write(f'  localparam int MCAST_GROUPS = {MCAST_GROUPS};\n')
+        f.write('  // Member set per group, one bit per output queue, written by the\n')
+        f.write('  // control plane. ONE PACKED VECTOR, not an unpacked array.\n')
+        f.write('  logic [MCAST_GROUPS*QCOUNT-1:0] mcast_members;\n')
+        f.write('  // Copies of this slot still to be sent, as a queue bitmap, and the\n')
+        f.write('  // port of the copy currently in flight (copies are serialised, so one\n')
+        f.write('  // value per slot is unambiguous).\n')
+        f.write('  logic [QCOUNT-1:0] slot_pending  [0:NSLOT-1];\n')
+        f.write('  logic              slot_is_mcast [0:NSLOT-1];\n')
+        f.write('  logic [QSEL_W-1:0] slot_copy_q   [0:NSLOT-1];\n')
+        f.write('  // INGRESS\'s drop decision, kept separately from slot_drop. Sticky drop\n')
+        f.write('  // means "egress cannot un-drop what ingress dropped", and slot_drop\n')
+        f.write('  // carries the FINAL decision for TX -- but egress overwrites it per\n')
+        f.write('  // copy, so a copy that egress drops (the loop-prune) would otherwise\n')
+        f.write('  // make every later copy of the same packet inherit that drop.\n')
+        f.write('  logic              slot_ig_drop  [0:NSLOT-1];\n')
+        f.write('  // Next pending member, computed PER SLOT with constant indices.\n')
+        f.write('  // The obvious form -- one always_comb reading slot_pending[tx_slot] --\n')
+        f.write('  // reads an unpacked array at an index that is itself produced by\n')
+        f.write('  // another always_comb, and iverilog then stops advancing simulation\n')
+        f.write('  // time. Indexing per slot keeps every combinational read constant;\n')
+        f.write('  // the always_ff consumers can still index by tx_slot freely.\n')
+        f.write('  logic [QSEL_W-1:0] slot_next_q   [0:NSLOT-1];\n')
+        f.write('  logic              slot_has_next [0:NSLOT-1];\n')
+        f.write('  function automatic [QCOUNT-1:0] mcast_bit(input [QSEL_W-1:0] q);\n')
+        f.write('    mcast_bit = \'0;\n')
+        f.write('    mcast_bit[q] = 1\'b1;\n')
+        f.write('  endfunction\n')
     f.write('  `ifndef SYNTHESIS\n')
     f.write('  // synthesis translate_off\n')
     f.write('  initial begin\n')
@@ -1503,6 +1566,15 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  localparam int TM_INFLIGHT = {TM_INFLIGHT};\n')
         f.write('  wire [SLOT_AW+1:0] tm_inflight = (egq_wr - egq_rd) + (txq_wr - txq_rd);\n')
         f.write('  wire               deq_fire = sched_valid && (tm_inflight < TM_INFLIGHT);\n')
+        if mcast and 'egress_port' in eg_std_ins:
+            f.write('  // A multicast copy\'s egress_port is the QUEUE it was taken from --\n')
+            f.write('  // that is what "replicate to this port" means, and it is why egress\n')
+            f.write('  // runs after the traffic manager: each copy gets its own port, so\n')
+            f.write('  // per-port rewrites and per-port drops apply per copy.\n')
+            f.write(f'  logic [{eg_std_ins["egress_port"]-1}:0] eg_port_of_copy;\n')
+            f.write('  always_comb eg_port_of_copy = slot_is_mcast[deq_slot]\n')
+            f.write(f'                              ? {eg_std_ins["egress_port"]}\'(sched_q)\n')
+            f.write('                              : slot_std_meta_egress_port[deq_slot];\n')
     f.write('  always_comb begin\n')
     if ectrl:
         f.write('    // Bypass: an egress control with NO pipeline boundary (no table, no\n')
@@ -1516,6 +1588,25 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('    cmp_slot = cmp_ptr[SLOT_AW-1:0];\n')
     f.write('    tx_slot  = txq_mem[txq_rd[SLOT_AW-1:0]];\n')
     f.write('  end\n')
+    if mcast:
+        f.write('  // REGISTERED, not combinational. slot_pending is written by an\n')
+        f.write('  // always_ff whose condition depends on these signals; deriving them\n')
+        f.write('  // combinationally from it -- at any index, constant or not -- makes\n')
+        f.write('  // iverilog stop advancing simulation time. Registering is also free of\n')
+        f.write('  // staleness here: a slot\'s pending set only changes at its own\n')
+        f.write('  // tx_finish, so the registered value is already correct on that cycle.\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        for sl in range(NSLOT):
+            f.write(f'      slot_next_q[{sl}] <= \'0; slot_has_next[{sl}] <= 1\'b0;\n')
+        f.write('    end else begin\n')
+        for sl in range(NSLOT):
+            f.write(f'      slot_next_q[{sl}]   <= \'0;\n')
+            f.write(f'      slot_has_next[{sl}] <= 1\'b0;\n')
+            for k in range(QCOUNT - 1, -1, -1):
+                f.write(f'      if (slot_pending[{sl}][{k}]) begin slot_next_q[{sl}] <= {QSEL_W}\'d{k}; slot_has_next[{sl}] <= 1\'b1; end\n')
+        f.write('    end\n')
+        f.write('  end\n')
 
     f.write('  // rel_ptr: RELEASE pointer, trails tx_ptr. TX moving on (tx_ptr) and the\n')
     f.write('  // slot being reusable are different events: on an OVERSIZE packet the\n')
@@ -1560,13 +1651,16 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic [NSLOT-1:0]    pfifo_rd_valid_v;\n')
     f.write('  logic [PFIFO_W-1:0]  pfifo_rd_data_v [0:NSLOT-1];\n')
     f.write('  logic [NSLOT-1:0]    pfifo_rd_en_v;\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_rewind_v;\n')
+    f.write('  logic [NSLOT-1:0]    pfifo_clear_v;\n')
     f.write('  genvar gs;\n')
     f.write('  generate for (gs = 0; gs < NSLOT; gs++) begin : g_pfifo\n')
-    f.write('    pkt_beat_fifo #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pfifo (\n')
+    f.write('    pkt_beat_buf #(.W(PFIFO_W), .DEPTH(PFIFO_DEPTH), .AW(PFIFO_AW)) u_pbuf (\n')
     f.write('      .clk(clk), .rst_n(rst_n),\n')
     f.write('      .wr_en(pfifo_wr_en_v[gs]), .wr_data(pfifo_wr_data), .full(pfifo_full_v[gs]),\n')
     f.write('      .rd_valid(pfifo_rd_valid_v[gs]), .rd_data(pfifo_rd_data_v[gs]),\n')
     f.write('      .rd_en(pfifo_rd_en_v[gs]),\n')
+    f.write('      .rewind(pfifo_rewind_v[gs]), .clear(pfifo_clear_v[gs]),\n')
     f.write('      .occupancy()\n')
     f.write('    );\n')
     f.write('  end endgenerate\n')
@@ -1583,8 +1677,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    pfifo_rd_valid = pfifo_rd_valid_v[tx_slot];\n')
     f.write('    pfifo_rd_data  = pfifo_rd_data_v[tx_slot];\n')
     f.write('    for (int sl = 0; sl < NSLOT; sl++) begin\n')
-    f.write('      pfifo_wr_en_v[sl] = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);\n')
-    f.write('      pfifo_rd_en_v[sl] = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);\n')
+    f.write('      pfifo_wr_en_v[sl]  = pfifo_wr_en && (wr_slot == sl[SLOT_AW-1:0]);\n')
+    f.write('      pfifo_rd_en_v[sl]  = pfifo_rd_en && (tx_slot == sl[SLOT_AW-1:0]);\n')
     f.write('    end\n')
     f.write('  end\n')
     f.write('  wire                  pfifo_head_last = pfifo_rd_data[PFIFO_W-1];\n')
@@ -1812,7 +1906,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write(f'  wire {tname}_cp_query_en  = r_{tname}_cp_query_en;\n')
             if not ti.get('is_counter'):
                 f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
-        if not ti.get('is_counter'):
+        if not ti.get('is_counter') and not ti.get('is_mcast'):
             f.write(f'  wire {tname}_hit_out;\n')
 
     # Counter increment-request wires -- these connect u_proc's new
@@ -1894,7 +1988,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # cp_wr ports (tables only -- counters have no cp_wr/cp_query/hit_out
     # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
-        if ti.get('is_counter') or ti['stage'] != 'ingress':
+        if ti.get('is_counter') or ti.get('is_mcast') or ti['stage'] != 'ingress':
             continue
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -1933,7 +2027,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('    .clk       (clk),\n')
         f.write('    .rst_n     (rst_n),\n')
         f.write('    .valid_in  (deq_fire),\n')
-        f.write('    .drop_in   (slot_drop[deq_slot]),\n')
+        if mcast:
+            f.write('    .drop_in   (slot_ig_drop[deq_slot]),   // per COPY: ingress\'s decision\n')
+        else:
+            f.write('    .drop_in   (slot_drop[deq_slot]),\n')
         for hname in all_hdr_names:
             if inst_map.get(hname):
                 f.write(f'    .{hname}_valid     (slot_phv_{hname}_valid[deq_slot]),\n')
@@ -1953,6 +2050,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                 f.write(f'    .std_meta_{fname}  (enq_qdepth_of_deq),   // TM: depth when enqueued\n')
             elif fname == 'deq_qdepth':
                 f.write(f'    .std_meta_{fname}  ({eg_std_ins[fname]}\'(deq_qdepth_now)),   // TM: depth right now\n')
+            elif fname == 'egress_port' and mcast:
+                f.write('    .std_meta_egress_port  (eg_port_of_copy),   // THIS copy\'s port\n')
             elif fname in sop_std:
                 f.write(f'    .std_meta_{fname}  (slot_sop_{fname}[deq_slot]),   // shell-sourced, sampled at SOP\n')
             else:
@@ -1971,7 +2070,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fn in sorted(eg_std_outs):
             f.write(f'    .out_std_meta_{fn}  (eg_out_std_meta_{fn}),\n')
         for ti in regmap:
-            if ti.get('is_counter') or ti['stage'] != 'egress':
+            if ti.get('is_counter') or ti.get('is_mcast') or ti['stage'] != 'egress':
                 continue
             tname = ti['tname']
             f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -2081,7 +2180,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      // slot release: TX has moved past rel_slot AND its tlast has arrived\n')
     f.write('      // TX finished with a slot: mark it, so release (which happens in\n')
     f.write('      // arrival order) can tell which slots are done under reordering.\n')
-    f.write('      if (tx_finish) slot_txdone[tx_slot] <= 1\'b1;\n')
+    if mcast:
+        f.write('      // Only the LAST copy marks the slot as transmitted, so the slot is\n')
+        f.write('      // not reused while copies are still to come.\n')
+        f.write('      if (tx_finish && !slot_has_next[tx_slot]) slot_txdone[tx_slot] <= 1\'b1;\n')
+    else:
+        f.write('      if (tx_finish) slot_txdone[tx_slot] <= 1\'b1;\n')
     f.write('      if (slot_release) begin\n')
     f.write('        rel_ptr <= rel_ptr + 1\'b1;\n')
     f.write('        slot_txdone[rel_slot] <= 1\'b0;\n')
@@ -2140,6 +2244,44 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write(f'  wire [QSEL_W-1:0] enq_q = ig_out_std_meta_egress_port[QSEL_W-1:0];\n')
         else:
             f.write('  wire [QSEL_W-1:0] enq_q = \'0;\n')
+        if mcast:
+            gidx = max(0, (MCAST_GROUPS - 1).bit_length() - 1)
+            gw   = ig_std_outs['mcast_group']
+            f.write('  // ── Enqueue stage (one cycle after ingress completion) ────────────────\n')
+            f.write('  // The replication lookup is pipelined: ingress\'s result is latched\n')
+            f.write('  // here and the member table is read on the NEXT cycle, so the table\n')
+            f.write('  // index is a register rather than a combinational output of u_proc.\n')
+            f.write('  // Indexing it straight from u_proc\'s output instead makes iverilog\n')
+            f.write('  // stop advancing simulation time altogether -- no error, the clock\n')
+            f.write('  // simply stops. Registering the index is also how one would pipeline\n')
+            f.write('  // a table read in hardware anyway.\n')
+            f.write('  logic               enq_v;\n')
+            f.write('  logic [SLOT_AW-1:0] enq_slot;\n')
+            f.write(f'  logic [{gw-1}:0] enq_grp;\n')
+            f.write('  logic [QSEL_W-1:0] enq_port_q;\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (!rst_n) enq_v <= 1\'b0;\n')
+            f.write('    else begin\n')
+            f.write('      enq_v      <= proc_out_valid;\n')
+            f.write('      enq_slot   <= ig_slot;\n')
+            f.write('      enq_grp    <= ig_out_std_meta_mcast_group;\n')
+            f.write('      enq_port_q <= enq_q;\n')
+            f.write('    end\n')
+            f.write('  end\n')
+            f.write('  wire enq_is_mcast = (enq_grp != 0);\n')
+            f.write('  logic [QCOUNT-1:0] ig_members;\n')
+            f.write('  logic [QSEL_W-1:0] ig_first_q;\n')
+            f.write('  logic              ig_has_member;\n')
+            f.write(f'  always_comb ig_members = mcast_members[enq_grp[{gidx}:0]*QCOUNT +: QCOUNT];\n')
+            f.write('  // Priority encode in a SEPARATE block: one that wrote ig_members and\n')
+            f.write('  // then read it back would be sensitive to its own output and\n')
+            f.write('  // re-trigger forever.\n')
+            f.write('  always_comb begin\n')
+            f.write('    ig_first_q    = \'0;\n')
+            f.write('    ig_has_member = 1\'b0;\n')
+            for k in range(QCOUNT - 1, -1, -1):
+                f.write(f'    if (ig_members[{k}]) begin ig_first_q = {QSEL_W}\'d{k}; ig_has_member = 1\'b1; end\n')
+            f.write('  end\n')
         if tm_qlimit is not None:
             f.write(f'  localparam int TM_QLIMIT = {tm_qlimit};\n')
             f.write('  logic tail_drop;\n')
@@ -2170,6 +2312,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write('        slot_drop[ig_slot] <= proc_drop || tail_drop;\n')
         else:
             f.write('        slot_drop[ig_slot] <= proc_drop;\n')
+        if mcast:
+            f.write('        slot_ig_drop[ig_slot] <= proc_drop;\n')
         for hname in all_hdr_names:
             if inst_map.get(hname):
                 f.write(f'        slot_phv_{hname}_valid[ig_slot] <= out_{hname}_valid;\n')
@@ -2199,6 +2343,11 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     if ectrl:
         for fn in sorted(eg_std_outs):
             f.write(f'        slot_std_meta_{fn}[cmp_slot] <= eg_out_std_meta_{fn};\n')
+        if mcast and 'egress_port' in sideband_std and 'egress_port' not in eg_std_outs:
+            f.write('        // The sideband must name the port THIS copy leaves on, not the\n')
+            f.write('        // one ingress picked (a multicast packet picks none).\n')
+            f.write('        if (slot_is_mcast[cmp_slot])\n')
+            f.write(f'          slot_std_meta_egress_port[cmp_slot] <= {sideband_std["egress_port"]}\'(slot_copy_q[cmp_slot]);\n')
         for cnt in eg_counters:
             f.write(f'        slot_cnt_{cnt.name}_en[cmp_slot]  <= {cnt.name}_incr_en;\n')
             f.write(f'        slot_cnt_{cnt.name}_idx[cmp_slot] <= {cnt.name}_incr_idx;\n')
@@ -2220,10 +2369,36 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('      egq_wr <= \'0; egq_rd <= \'0; txq_wr <= \'0; txq_rd <= \'0; rr_ptr <= \'0;\n')
         f.write('    end else begin\n')
         f.write('      // enqueue: ingress finished, pick the queue from egress_port\n')
-        f.write('      if (proc_out_valid) begin\n')
-        f.write('        tmq_mem[enq_q*NSLOT + tmq_wr[enq_q][SLOT_AW-1:0]] <= ig_slot;\n')
-        f.write('        tmq_wr[enq_q] <= tmq_wr[enq_q] + 1\'b1;\n')
-        f.write('      end\n')
+        if mcast:
+            f.write('      // Enqueue (from the registered stage). A multicast packet goes to\n')
+            f.write('      // its FIRST member queue; the rest are recorded as pending copies.\n')
+            f.write('      if (enq_v) begin\n')
+            f.write('        slot_is_mcast[enq_slot] <= enq_is_mcast && ig_has_member;\n')
+            f.write('        if (enq_is_mcast && ig_has_member) begin\n')
+            f.write('          slot_pending[enq_slot] <= ig_members & ~mcast_bit(ig_first_q);\n')
+            f.write('          slot_copy_q[enq_slot]  <= ig_first_q;\n')
+            f.write('          tmq_mem[ig_first_q*NSLOT + tmq_wr[ig_first_q][SLOT_AW-1:0]] <= enq_slot;\n')
+            f.write('          tmq_wr[ig_first_q] <= tmq_wr[ig_first_q] + 1\'b1;\n')
+            f.write('        end else begin\n')
+            f.write('          slot_pending[enq_slot] <= \'0;\n')
+            f.write('          slot_copy_q[enq_slot]  <= enq_port_q;\n')
+            f.write('          tmq_mem[enq_port_q*NSLOT + tmq_wr[enq_port_q][SLOT_AW-1:0]] <= enq_slot;\n')
+            f.write('          tmq_wr[enq_port_q] <= tmq_wr[enq_port_q] + 1\'b1;\n')
+            f.write('        end\n')
+            f.write('      end\n')
+            f.write('      // A copy has left the wire: enqueue the next member, if any. The\n')
+            f.write('      // slot\'s payload buffer is rewound on this same cycle.\n')
+            f.write('      if (tx_finish && slot_has_next[tx_slot]) begin\n')
+            f.write('        tmq_mem[slot_next_q[tx_slot]*NSLOT + tmq_wr[slot_next_q[tx_slot]][SLOT_AW-1:0]] <= tx_slot;\n')
+            f.write('        tmq_wr[slot_next_q[tx_slot]] <= tmq_wr[slot_next_q[tx_slot]] + 1\'b1;\n')
+            f.write('        slot_pending[tx_slot] <= slot_pending[tx_slot] & ~mcast_bit(slot_next_q[tx_slot]);\n')
+            f.write('        slot_copy_q[tx_slot]  <= slot_next_q[tx_slot];\n')
+            f.write('      end\n')
+        else:
+            f.write('      if (proc_out_valid) begin\n')
+            f.write('        tmq_mem[enq_q*NSLOT + tmq_wr[enq_q][SLOT_AW-1:0]] <= ig_slot;\n')
+            f.write('        tmq_wr[enq_q] <= tmq_wr[enq_q] + 1\'b1;\n')
+            f.write('      end\n')
         f.write('      // dequeue: hand the scheduled slot to u_egress and remember it\n')
         f.write('      if (deq_fire) begin\n')
         f.write('        tmq_rd[sched_q] <= tmq_rd[sched_q] + 1\'b1;\n')
@@ -2327,6 +2502,30 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);\n')
     f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
     f.write('  assign tx_finish  = last_loaded || discard_done;\n')
+    f.write('\n  // ── Payload buffer recycle controls ──────────────────────────────────────\n')
+    f.write('  // A SEPARATE always_comb from the one that produces pfifo_rd_valid. Both\n')
+    f.write('  // of these depend on tx_finish, which depends on pfifo_rd_valid -- driving\n')
+    f.write('  // them from that same block makes it sensitive to its own output, and\n')
+    f.write('  // iverilog then re-triggers it forever, stopping simulation time with no\n')
+    f.write('  // error at all.\n')
+    f.write('  always_comb begin\n')
+    if mcast:
+        f.write('    // Unrolled: slot_has_next is an unpacked array, so it is read here at\n')
+        f.write('    // a CONSTANT index. Replication rewinds a slot\'s payload when a copy\n')
+        f.write('    // leaves the wire and another is due -- without it the next copy\n')
+        f.write('    // finds an empty buffer and TX never finishes it.\n')
+        for sl in range(NSLOT):
+            f.write(f'    pfifo_clear_v[{sl}]  = slot_release && (rel_slot == {SLOT_AW}\'d{sl});\n')
+            f.write(f'    pfifo_rewind_v[{sl}] = tx_finish && slot_has_next[{sl}] && (tx_slot == {SLOT_AW}\'d{sl});\n')
+    else:
+        f.write('    for (int sl = 0; sl < NSLOT; sl++) begin\n')
+        f.write('      // Reads do not consume, so the buffer is emptied explicitly when\n')
+        f.write('      // the slot is released. Nothing rewinds it: one packet per slot is\n')
+        f.write('      // transmitted exactly once.\n')
+        f.write('      pfifo_clear_v[sl]  = slot_release && (rel_slot == sl[SLOT_AW-1:0]);\n')
+        f.write('      pfifo_rewind_v[sl] = 1\'b0;\n')
+        f.write('    end\n')
+    f.write('  end\n')
     # Release: a slot is reusable once TX has finished it AND its reception is
     # complete. Transmission order is now the scheduler's, so "TX has finished
     # it" is a per-slot flag rather than a pointer comparison. Slots are still
@@ -2334,7 +2533,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # a slot transmitted early waits for older slots to be freed. With a
     # round-robin scheduler every queue drains, so the wait is bounded; a free
     # list would remove it at the cost of an allocator.
-    f.write('  wire slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];\n')
+    f.write('  assign slot_release = slot_done[rel_slot] && slot_txdone[rel_slot];\n')
 
     f.write('\n')
 
@@ -2385,6 +2584,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      end\n')
     f.write('    end\n')
     f.write('  end\n\n')
+
+    if mcast:
+        f.write('  // ── Replication member table (written over AXI4-Lite) ───────────────────\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n)              mcast_members <= \'0;\n')
+        f.write('    else if (mcast_cp_wr_en) mcast_members[mcast_cp_wr_idx*QCOUNT +: QCOUNT] <= mcast_cp_wr_mask;\n')
+        f.write('  end\n\n')
 
     # ── Counter externs (one request per packet at slot release) ──────────────
     for cnt in all_counters:

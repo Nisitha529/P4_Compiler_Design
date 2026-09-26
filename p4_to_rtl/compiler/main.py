@@ -13,7 +13,7 @@ from emit_deparser import emit_deparser
 from emit_table import emit_tables, _find_processing_ctrl
 from emit_counters import emit_counter_module
 from emit_user_extern import emit_user_extern_module
-from emit_fifo import emit_pkt_beat_fifo
+from emit_fifo import emit_pkt_beat_buf
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
 from ingest_p4ir import ingest_p4ir
@@ -492,12 +492,12 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot,
                  tm_qlimit=tm_qlimit)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
-        # The top's payload path is pkt_beat_fifo (emit_fifo.py); it is a
+        # The top's payload path is pkt_beat_buf (emit_fifo.py); it is a
         # generic module emitted next to the top so every XSA app carries its
         # own copy and the per-app file set stays self-contained.
-        out_fifo = os.path.join(out_dir, "pkt_beat_fifo.sv")
-        emit_pkt_beat_fifo(out_fifo)
-        print(f"[SUCCESS] Beat FIFO RTL    -> {out_fifo}")
+        out_fifo = os.path.join(out_dir, "pkt_beat_buf.sv")
+        emit_pkt_beat_buf(out_fifo)
+        print(f"[SUCCESS] Payload buffer   -> {out_fifo}")
 
         if board is not None:
             print(f"[INFO] Generating constraint-file skeleton for board '{board['name']}'...")
