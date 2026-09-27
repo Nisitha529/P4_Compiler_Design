@@ -69,6 +69,15 @@ module fiveTuple_top #(
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
   logic [15:0] slot_byte_len [0:NSLOT-1];
+  // Header validity as RECEIVED, sampled at issue. The output validity
+  // lives in slot_phv_*_valid; the difference between the two is how many
+  // bytes the deparser adds or removes.
+  logic slot_in_valid_eth [0:NSLOT-1];
+  logic slot_in_valid_new_vlan [0:NSLOT-1];
+  logic slot_in_valid_vlan [0:NSLOT-1];
+  logic slot_in_valid_ipv4 [0:NSLOT-1];
+  logic slot_in_valid_tcp [0:NSLOT-1];
+  logic slot_in_valid_udp [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -840,6 +849,12 @@ module fiveTuple_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_in_valid_eth[iss_slot] <= w_eth_valid;
+      slot_in_valid_new_vlan[iss_slot] <= w_new_vlan_valid;
+      slot_in_valid_vlan[iss_slot] <= w_vlan_valid;
+      slot_in_valid_ipv4[iss_slot] <= w_ipv4_valid;
+      slot_in_valid_tcp[iss_slot] <= w_tcp_valid;
+      slot_in_valid_udp[iss_slot] <= w_udp_valid;
     end
   end
 
@@ -969,6 +984,43 @@ module fiveTuple_top #(
   wire [0:0] phv_new_vlan_cfi = slot_phv_new_vlan_cfi[tx_slot];
   wire [11:0] phv_new_vlan_vid = slot_phv_new_vlan_vid[tx_slot];
   wire [15:0] phv_new_vlan_tpid = slot_phv_new_vlan_tpid[tx_slot];
+
+  // Bytes the deparser adds (+) or removes (-) for this packet: one term
+  // per emitted header, contributing only when its validity CHANGED
+  // between reception and the pipeline's output. Zero for every program
+  // that neither adds nor removes a header, which is what keeps this a
+  // no-op until the shifter uses it.
+  wire signed [8:0] hdr_d_eth = 
+      (phv_eth_valid ? 9'sd14 : 9'sd0)
+    - (slot_in_valid_eth[tx_slot] ? 9'sd14 : 9'sd0);
+  wire signed [8:0] hdr_d_new_vlan = 
+      (phv_new_vlan_valid ? 9'sd4 : 9'sd0)
+    - (slot_in_valid_new_vlan[tx_slot] ? 9'sd4 : 9'sd0);
+  wire signed [8:0] hdr_d_vlan = 
+      (phv_vlan_valid ? 9'sd4 : 9'sd0)
+    - (slot_in_valid_vlan[tx_slot] ? 9'sd4 : 9'sd0);
+  wire signed [8:0] hdr_d_ipv4 = 
+      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
+    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
+  wire signed [8:0] hdr_d_tcp = 
+      (phv_tcp_valid ? 9'sd20 : 9'sd0)
+    - (slot_in_valid_tcp[tx_slot] ? 9'sd20 : 9'sd0);
+  wire signed [8:0] hdr_d_udp = 
+      (phv_udp_valid ? 9'sd8 : 9'sd0)
+    - (slot_in_valid_udp[tx_slot] ? 9'sd8 : 9'sd0);
+  wire signed [8:0] hdr_delta = hdr_d_eth + hdr_d_new_vlan + hdr_d_vlan + hdr_d_ipv4 + hdr_d_tcp + hdr_d_udp;
+
+  // ── Output header offsets (deparser emit order) ─────────────────────────
+  // Running sum gated by OUTPUT validity. Only headers up to the last
+  // changeable one need these: everything after keeps its internal layout
+  // and is shifted wholesale, so the existing overlay covers it.
+  wire [13:0] obase_eth = 14'd0;
+  wire [13:0] obase_new_vlan = obase_eth
+      + (phv_eth_valid ? 14'd14 : 14'd0);
+  // Splice point: output bytes below this come from the re-placed header
+  // image; at or above it, from the original stream shifted by hdr_delta.
+  wire [13:0] tx_splice = obase_new_vlan
+      + (phv_new_vlan_valid ? 14'd4 : 14'd0);
 
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0);

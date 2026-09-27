@@ -81,6 +81,11 @@ module ioprobe_top #(
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
   logic [15:0] slot_byte_len [0:NSLOT-1];
+  // Header validity as RECEIVED, sampled at issue. The output validity
+  // lives in slot_phv_*_valid; the difference between the two is how many
+  // bytes the deparser adds or removes.
+  logic slot_in_valid_eth [0:NSLOT-1];
+  logic slot_in_valid_ipv4 [0:NSLOT-1];
   logic [8:0] slot_sop_ingress_port [0:NSLOT-1];   // sampled at SOP
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
@@ -568,6 +573,8 @@ module ioprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_in_valid_eth[iss_slot] <= w_eth_valid;
+      slot_in_valid_ipv4[iss_slot] <= w_ipv4_valid;
     end
   end
 
@@ -637,6 +644,19 @@ module ioprobe_top #(
   wire [15:0] phv_ipv4_hdrChecksum = slot_phv_ipv4_hdrChecksum[tx_slot];
   wire [31:0] phv_ipv4_srcAddr = slot_phv_ipv4_srcAddr[tx_slot];
   wire [31:0] phv_ipv4_dstAddr = slot_phv_ipv4_dstAddr[tx_slot];
+
+  // Bytes the deparser adds (+) or removes (-) for this packet: one term
+  // per emitted header, contributing only when its validity CHANGED
+  // between reception and the pipeline's output. Zero for every program
+  // that neither adds nor removes a header, which is what keeps this a
+  // no-op until the shifter uses it.
+  wire signed [8:0] hdr_d_eth = 
+      (phv_eth_valid ? 9'sd14 : 9'sd0)
+    - (slot_in_valid_eth[tx_slot] ? 9'sd14 : 9'sd0);
+  wire signed [8:0] hdr_d_ipv4 = 
+      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
+    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
+  wire signed [8:0] hdr_delta = hdr_d_eth + hdr_d_ipv4;
 
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each

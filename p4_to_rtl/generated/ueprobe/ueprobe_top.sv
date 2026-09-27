@@ -72,6 +72,10 @@ module ueprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
+  // Header validity as RECEIVED, sampled at issue. The output validity
+  // lives in slot_phv_*_valid; the difference between the two is how many
+  // bytes the deparser adds or removes.
+  logic slot_in_valid_eth [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -313,6 +317,7 @@ module ueprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_in_valid_eth[iss_slot] <= w_eth_valid;
     end
   end
 
@@ -354,6 +359,16 @@ module ueprobe_top #(
   wire [47:0] phv_eth_dst = slot_phv_eth_dst[tx_slot];
   wire [47:0] phv_eth_src = slot_phv_eth_src[tx_slot];
   wire [15:0] phv_eth_etype = slot_phv_eth_etype[tx_slot];
+
+  // Bytes the deparser adds (+) or removes (-) for this packet: one term
+  // per emitted header, contributing only when its validity CHANGED
+  // between reception and the pipeline's output. Zero for every program
+  // that neither adds nor removes a header, which is what keeps this a
+  // no-op until the shifter uses it.
+  wire signed [7:0] hdr_d_eth = 
+      (phv_eth_valid ? 8'sd14 : 8'sd0)
+    - (slot_in_valid_eth[tx_slot] ? 8'sd14 : 8'sd0);
+  wire signed [7:0] hdr_delta = hdr_d_eth;
 
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each

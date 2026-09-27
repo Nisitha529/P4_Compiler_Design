@@ -36,6 +36,7 @@ import re
 from collections import defaultdict, deque
 
 from boards import validate_board
+from ir import ExternCall, IfStatement
 from emit_processing import (
     _find_processing_ctrl,
     _table_params,
@@ -171,6 +172,37 @@ def _worst_case_hdr_bytes(layouts, inst_map):
 
 
 # ── Byte offset layout computation ────────────────────────────────────────────
+
+def _validity_changing_headers(controls):
+    """Header instances whose validity a control can change, i.e. anything with
+    a setValid()/setInvalid() call. Determines whether a program can alter its
+    own packet length at all -- and therefore whether the shell needs the
+    length-changing TX path or can keep the simpler fixed-length one.
+
+    Recurses through if-bodies and action bodies, because a setValid() almost
+    always sits inside a table action."""
+    found = set()
+
+    def _scan(stmts):
+        for st in stmts or []:
+            if isinstance(st, ExternCall):
+                parts = st.name.split('.')
+                if parts[-1] in ('setValid', 'setInvalid'):
+                    # 'hdr.X.setValid' or 'X.setValid'
+                    if len(parts) >= 2:
+                        found.add(parts[-2])
+            elif isinstance(st, IfStatement):
+                _scan(st.then_body)
+                _scan(st.else_body)
+
+    for c in controls:
+        if c is None:
+            continue
+        for action in c.actions:
+            _scan(action.body)
+        _scan(c.statements)
+    return found
+
 
 def _compute_layout(ir, inst_map):
     """
@@ -1204,6 +1236,68 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # emit_processing uses, so the two can't disagree about which ports exist).
     # These were previously left completely unconnected: the ports were
     # declared and nothing drove them.
+    # ── Output header set, for the length-changing deparser ────────────────
+    # The INPUT layout comes from the parser graph (where bytes arrived); the
+    # OUTPUT layout is the deparser's emit list (where bytes go). They have been
+    # identical until now, which is why one structure served both -- but a header
+    # the parser never extracts has no layout entry at all, so `setValid()` on it
+    # is silently dropped. See docs/length_changing_deparser_plan.md.
+    #
+    # The shift amount only needs the headers whose VALIDITY differs between the
+    # two sides:
+    #     delta = sum over emitted headers of  size * (out_valid - in_valid)
+    # A header whose validity is unchanged contributes zero whatever its size,
+    # so a variable-length header only needs a real size if it can appear or
+    # disappear -- which is reported rather than guessed.
+    emit_names = [h for h in ((ir.pipeline.deparser.emit_list
+                               if ir.pipeline.deparser else []))
+                  if h in inst_map]
+    # Can this program change its own packet length at all? Only if it calls
+    # setValid()/setInvalid() on a header the deparser emits. If not, the delta
+    # is structurally zero and the shell keeps the simpler fixed-length TX path,
+    # which is what every existing app gets -- byte-identical RTL.
+    split_names = []           # emitted headers needing an OUTPUT offset (up to the splice)
+    _vc = _validity_changing_headers([ctrl, ectrl])
+    _vc_emitted = sorted(_vc & set(emit_names))
+    can_change_len = bool(_vc_emitted)
+    if can_change_len:
+        print(f"[INFO] Length-changing deparser: {', '.join(_vc_emitted)} can be "
+              f"added/removed -- TX uses the shifting path")
+        # Only headers up to and including the LAST changeable one need to be
+        # re-placed at output offsets; everything after it keeps its internal
+        # layout and is simply shifted. So only those need a compile-time size.
+        _split_idx = max(emit_names.index(h) for h in _vc_emitted)
+        _need_sized = emit_names[:_split_idx + 1]
+        split_names = _need_sized
+        _bad = [h for h in _need_sized
+                if getattr(inst_map[h].header_type, 'is_variable_length', False)]
+        if _bad:
+            raise ValueError(
+                f"{app_name}: header(s) {', '.join(_bad)} are variable-length and sit at "
+                f"or before the last header whose validity changes ({emit_names[_split_idx]}). "
+                f"The deparser needs a compile-time size for every header up to that point "
+                f"to compute output offsets. Reorder the emit list, or give these headers a "
+                f"fixed size.")
+    len_changing = []          # (inst_name, size_bytes) for fixed-size emitted headers
+    len_unknown  = []          # emitted headers with no compile-time size
+    for hname in emit_names:
+        inst = inst_map[hname]
+        if getattr(inst.header_type, 'is_variable_length', False):
+            len_unknown.append(hname)
+        else:
+            len_changing.append((hname, _hdr_bytes_total(inst)))
+
+    # A varbit header has no compile-time size, so it cannot contribute a term.
+    # That is correct as long as its validity never changes -- true for every
+    # program here (fiveTuple's ipv4opt/tcpopt are parsed and emitted alike) --
+    # but it is an assumption, so say so rather than leave it implicit.
+    if len_unknown:
+        print(f"[NOTE]  variable-length emitted header(s) "
+              f"{', '.join(len_unknown)}: excluded from the deparser's length "
+              f"delta, which assumes their validity is the same on input and "
+              f"output. A program that adds or removes one of these would need "
+              f"its runtime length here.")
+
     std_meta_ins = _collect_std_meta_inputs(ctrl)
     # ── Standard metadata across the ingress -> egress boundary ─────────────
     # The slot ring is the queueing point, so it carries the packet's standard
@@ -1419,6 +1513,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # ring, because the processing instantiation below reads them -- this file
     # keeps every declaration ahead of its first use (Vivado's xvlog rejects a
     # forward reference that iverilog accepts; see the extraction section).
+    # Input validity per slot. w_*_valid is the live extraction result for the
+    # ISSUE slot, so TX cannot read it -- by then it belongs to a later packet.
+    f.write('  // Header validity as RECEIVED, sampled at issue. The output validity\n')
+    f.write('  // lives in slot_phv_*_valid; the difference between the two is how many\n')
+    f.write('  // bytes the deparser adds or removes.\n')
+    for hname, _sz in len_changing:
+        f.write(f'  logic slot_in_valid_{hname} [0:NSLOT-1];\n')
     for fn, fw in sorted(sop_std.items()):
         f.write(f'  logic [{fw-1}:0] slot_sop_{fn} [0:NSLOT-1];   // sampled at SOP\n')
     if 'enq_qdepth' in tm_std:
@@ -2225,6 +2326,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')
     f.write('      iss_ptr <= iss_ptr + 1\'b1;\n')
+    for hname, _sz in len_changing:
+        f.write(f'      slot_in_valid_{hname}[iss_slot] <= w_{hname}_valid;\n')
     for fn, fw in sorted(eg_issue_std.items()):
         f.write(f'      slot_std_meta_{fn}[iss_slot] <= {_shell_std_src(fn, fw)};   // for egress\n')
     f.write('    end\n')
@@ -2446,6 +2549,50 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     for hname, fname, w in hdr_fields:
         f.write(f'  wire [{w-1}:0] phv_{hname}_{fname} = slot_phv_{hname}_{fname}[tx_slot];\n')
     f.write('\n')
+    # ── How much the deparser changes this packet's length ──────────────────
+    if len_changing:
+        dw = max(8, (max(sz for _h, sz in len_changing).bit_length() + 4))
+        f.write('  // Bytes the deparser adds (+) or removes (-) for this packet: one term\n')
+        f.write('  // per emitted header, contributing only when its validity CHANGED\n')
+        f.write('  // between reception and the pipeline\'s output. Zero for every program\n')
+        f.write('  // that neither adds nor removes a header, which is what keeps this a\n')
+        f.write('  // no-op until the shifter uses it.\n')
+        for hname, sz in len_changing:
+            f.write(f'  wire signed [{dw-1}:0] hdr_d_{hname} = \n')
+            f.write(f'      (phv_{hname}_valid ? {dw}\'sd{sz} : {dw}\'sd0)\n')
+            f.write(f'    - (slot_in_valid_{hname}[tx_slot] ? {dw}\'sd{sz} : {dw}\'sd0);\n')
+        terms = ' + '.join(f'hdr_d_{h}' for h, _sz in len_changing)
+        f.write(f'  wire signed [{dw-1}:0] hdr_delta = {terms};\n')
+        f.write('\n')
+    if can_change_len:
+        # ── Output offsets, up to the splice ────────────────────────────────
+        # A running sum over the deparser's EMIT ORDER, gated by output
+        # validity. This is the output layout: the input layout (the parser
+        # graph) does not have entries for headers the parser never extracts,
+        # which is why setValid() on one used to be dropped silently.
+        sizes = dict(len_changing)
+        f.write('  // ── Output header offsets (deparser emit order) ─────────────────────────\n')
+        f.write('  // Running sum gated by OUTPUT validity. Only headers up to the last\n')
+        f.write('  // changeable one need these: everything after keeps its internal layout\n')
+        f.write('  // and is shifted wholesale, so the existing overlay covers it.\n')
+        acc = None
+        for idx, hname in enumerate(split_names):
+            if idx == 0:
+                f.write(f'  wire [{HDR_IDX_W-1}:0] obase_{hname} = {HDR_IDX_W}\'d0;\n')
+            else:
+                prev = split_names[idx - 1]
+                psz  = sizes[prev]
+                f.write(f'  wire [{HDR_IDX_W-1}:0] obase_{hname} = obase_{prev}\n')
+                f.write(f'      + (phv_{prev}_valid ? {HDR_IDX_W}\'d{psz} : {HDR_IDX_W}\'d0);\n')
+            acc = hname
+        # Splice point: the output end of the last changeable header.
+        last = split_names[-1]
+        lsz  = sizes[last]
+        f.write('  // Splice point: output bytes below this come from the re-placed header\n')
+        f.write('  // image; at or above it, from the original stream shifted by hdr_delta.\n')
+        f.write(f'  wire [{HDR_IDX_W-1}:0] tx_splice = obase_{last}\n')
+        f.write(f'      + (phv_{last}_valid ? {HDR_IDX_W}\'d{lsz} : {HDR_IDX_W}\'d0);\n')
+        f.write('\n')
     # phv_*_base: the same offset arithmetic as w_*_base, over the STORED output
     # PHV (header length is preserved by the program, so the offsets agree).
     import io as _io, re as _re

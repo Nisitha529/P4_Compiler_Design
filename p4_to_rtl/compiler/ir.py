@@ -54,15 +54,27 @@ class ParserState:
 # ============================================================
 
 class HeaderField:
-    def __init__(self, name, width):
+    def __init__(self, name, width, is_varbit=False):
         self.name = name
         self.width = width
+        # varbit fields carry a MAXIMUM width, not an actual one: the real
+        # length comes from another header's length field at runtime. The two
+        # used to be indistinguishable here, which matters as soon as anything
+        # needs a header's real byte size (the length-changing deparser does).
+        self.is_varbit = is_varbit
 
 
 class Header:
     def __init__(self, name):
         self.name = name
         self.fields = []
+
+    @property
+    def is_variable_length(self):
+        """True if any field is a varbit, i.e. this header's byte size is only
+        known at runtime. Such a header has no compile-time size, so anything
+        that sums header sizes has to treat it specially."""
+        return any(getattr(f, 'is_varbit', False) for f in self.fields)
 
     def add_field(self, field):
         self.fields.append(field)

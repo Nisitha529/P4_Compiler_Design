@@ -239,7 +239,8 @@ def _parse_header_types(text):
             if fm:
                 w = int(fm.group(2))
                 fname = fm.group(3)
-                hdr.add_field(HeaderField(fname, w if w > 0 else None))
+                hdr.add_field(HeaderField(fname, w if w > 0 else None,
+                                          is_varbit=(fm.group(1) == 'varbit')))
         result[name] = hdr
     return result
 
