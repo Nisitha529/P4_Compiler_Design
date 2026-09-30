@@ -634,28 +634,6 @@ module echo_top #(
   wire [15:0] phv_udp_length = slot_phv_udp_length[tx_slot];
   wire [15:0] phv_udp_checksum = slot_phv_udp_checksum[tx_slot];
 
-  // Bytes the deparser adds (+) or removes (-) for this packet: one term
-  // per emitted header, contributing only when its validity CHANGED
-  // between reception and the pipeline's output. Zero for every program
-  // that neither adds nor removes a header, which is what keeps this a
-  // no-op until the shifter uses it.
-  wire signed [8:0] hdr_d_eth = 
-      (phv_eth_valid ? 9'sd14 : 9'sd0)
-    - (slot_in_valid_eth[tx_slot] ? 9'sd14 : 9'sd0);
-  wire signed [8:0] hdr_d_vlan_0 = 
-      (phv_vlan_0_valid ? 9'sd4 : 9'sd0)
-    - (slot_in_valid_vlan_0[tx_slot] ? 9'sd4 : 9'sd0);
-  wire signed [8:0] hdr_d_vlan_1 = 
-      (phv_vlan_1_valid ? 9'sd4 : 9'sd0)
-    - (slot_in_valid_vlan_1[tx_slot] ? 9'sd4 : 9'sd0);
-  wire signed [8:0] hdr_d_ipv4 = 
-      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_d_udp = 
-      (phv_udp_valid ? 9'sd8 : 9'sd0)
-    - (slot_in_valid_udp[tx_slot] ? 9'sd8 : 9'sd0);
-  wire signed [8:0] hdr_delta = hdr_d_eth + hdr_d_vlan_0 + hdr_d_vlan_1 + hdr_d_ipv4 + hdr_d_udp;
-
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0) + (((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h8100)) ? 4 : 0);
   wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_hdr_len} << 2;

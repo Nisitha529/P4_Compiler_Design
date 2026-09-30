@@ -156,7 +156,7 @@ which is luck, not correctness.
 | 0 | Fixture + **failing** baseline: a probe that inserts a header, and one that removes one | that the tests actually pin the gap | **done** — `lenprobe`, 2/8 pass, the 6 failures are exactly the gap |
 | 1 | The emit-list header set, per-slot input validity, and `hdr_delta` | the validity arithmetic | **done** — 40/40 unchanged, delta verified 0/+4/+8/−4 |
 | 2 | The output layout: emit-order offsets, the splice point, and the length-changing gate | the offset arithmetic, in isolation | **done** — 40/40 unchanged; offsets verified against the model |
-| 3 | The emission itself: re-placed header image, the 2-beat payload shifter, output `tkeep`/`tlast` | the shifter — the real risk | the step-0 tests PASS |
+| 3 | The emission itself: re-placed header image, the 2-beat payload shifter, output `tkeep`/`tlast` | the shifter — the real risk | **done** — `lenprobe` 16/16, all four cases byte-for-byte |
 | 4 | Length-dependent metadata: keep `packet_length` as the **received** length, fix counters and `totalLen`-style fields | metadata semantics under a length change | probe assertions on both lengths |
 | 5 | Turn on `fiveTuple`'s `InsertVLAN` and port `flowcache` | real apps | `fiveTuple` VLAN insertion verified end-to-end at last |
 
@@ -411,3 +411,102 @@ The one interaction to be careful about is **oversize packets**: `slot_byte_len`
 counts every received byte including those RX truncated, so a length-derived
 `tlast` must still defer to the existing truncation terminator rather than trying
 to emit beats that were never stored. The stream harness's T8 covers that case.
+
+
+## Step 3 — done (2026-09-30)
+
+TX no longer has a header phase and a payload phase. It emits **one byte
+stream**: the output header image up to `tx_pstart`, then the payload. A beat is
+just "the next `BEAT_BYTES` of it", and `tkeep`/`tlast` fall out of the output
+length, which is how a shorter or longer packet terminates.
+
+**The output image** takes the existing overlay (modified fields at their
+*original* positions), shifts it by `hdr_delta`, then re-places the headers that
+did not simply move:
+
+```systemverilog
+always_comb begin
+  int q;
+  for (int p = 0; p < HDR_OUT_BYTES; p++) begin
+    q = p - hdr_delta;
+    oimg[p] = (q >= 0 && q < HDR_MAX_BYTES) ? hdr_out[q] : 8'h00;
+  end
+  if (phv_eth_valid) begin oimg[obase_eth] = ...; end     // at OUTPUT offsets
+  if (phv_tag_valid) begin oimg[obase_tag] = ...; end
+end
+```
+
+Everything below `tx_splice` is covered by the re-placement; everything above it
+is the shifted original, which is right because those headers keep their internal
+layout and only move.
+
+**The shifter.** `tx_pstart` is not beat-aligned when `hdr_delta` is not a
+multiple of the beat width, so the payload lanes split: lanes at or above
+`tx_rot` come from the current payload beat, lanes below it from the previous
+one. One mux level over a two-beat window, with `pl_prev` holding the older beat.
+The final beat of a grown packet may need **only** `pl_prev`, which is why
+`pl_prev_v` can stand in for an empty buffer head.
+
+**Result** — all four cases byte-for-byte correct, including the payload shift:
+
+```
+[INFO] T1: 64 bytes out, byte-for-byte correct
+[INFO] T2: 68 bytes out, byte-for-byte correct
+[INFO] T3: 72 bytes out, byte-for-byte correct
+[INFO] T4: 60 bytes out, byte-for-byte correct
+  Results: 16 passed, 0 failed
+```
+
+### Three bugs, and two of them were predicted
+
+- **Signed/unsigned contamination.** Verilog makes a whole expression unsigned as
+  soon as one operand is, so `tx_in_len + hdr_delta` turned −4 into 252 and a
+  64-byte packet came out as **316 bytes**. Every mixed expression is now forced
+  signed and narrowed back. The arithmetic bugs in this project have almost all
+  been this shape.
+- **Truncated packets** — flagged in the step-2 write-up before it was hit, and it
+  duly failed `fiveTuple`'s oversize test. `slot_byte_len` counts every byte
+  *received*, including the ones RX discarded past `MAX_PKT_BEATS`, so a
+  length-derived `tlast` asked TX for beats that were never stored. The input
+  length is now clamped to what the slot actually holds.
+- **Two more simulation-time stalls**, both the documented class. The second one
+  only appeared once `hdr_delta` was non-zero for the first time — the shifted
+  read `hdr_out[p - hdr_delta]` indexes an **unpacked** array at a computed
+  offset from inside `always_comb`. Copying the overlay into a packed vector
+  first (`hdr_out_flat[q*8 +: 8]`) fixes it; a packed part-select with a variable
+  base is fine, and so is copying element-by-element at the loop index, which is
+  what the existing `t_hdr` copy already does. The first one: `hdr_delta`
+  as a six-term expression reading per-slot arrays at a *combinational* index,
+  feeding a 160-iteration `always_comb`. Isolated in one step by stubbing it to a
+  constant. The fix is also the better design — the delta is a per-packet fact,
+  so it is computed **once at capture** into `slot_hdr_delta[]` and read at TX as
+  a single slot lookup, the same shape as the `phv_*_valid` views that have
+  always worked.
+
+### `fiveTuple`'s `InsertVLAN` now runs for real
+
+`tb_fiveTuple_counters_e2e` is titled *"real packet -> InsertVLAN -> counters"*
+and is the one test that configures a table entry with `action=InsertVLAN`. It
+used to pass only because the inserted VLAN was silently dropped and the test
+checked counters rather than bytes. It is now genuinely inserting 4 bytes and
+still passes 7/7 — which is also how the second stall above was found.
+
+### Where this leaves the gate
+
+Only programs that call `setValid`/`setInvalid` on an emitted header take the new
+path; everything else keeps byte-identical RTL. That is `lenprobe` and
+`fiveTuple`, and `fiveTuple`'s full suite (28 + 15 + 7 + 10 + 29 + counters)
+exercises the new path with `delta == 0`, which is exactly the regression you
+want on a restructure this size.
+
+## Remaining: step 4 and step 5
+
+- **Step 4 — length-dependent metadata.** `packet_length` and the byte counters
+  still report the **received** length, which is the documented default and is
+  what v1model means. What is *not* yet handled is a program that recomputes a
+  length field of its own (`ipv4.totalLen`) after inserting a header — it would
+  have to do that arithmetic itself in P4, which is fine, but worth stating.
+- **Step 5 — turn on `fiveTuple`'s `InsertVLAN`.** The shell can now do it; what
+  remains is a testbench that configures a table entry with `action=InsertVLAN`
+  and checks a 4-byte VLAN tag really appears. That is the payoff this whole
+  phase was for, and it is now a testbench change rather than an RTL one.

@@ -2,13 +2,15 @@
 // tb_lenprobe_top.sv -- the LENGTH-CHANGING deparser
 // (docs/length_changing_deparser_plan.md, step 0).
 //
-// THIS TESTBENCH IS EXPECTED TO FAIL UNTIL STEP 3 LANDS. It exists to pin the
-// gap before anything is changed, so the fix has a target and a regression.
+// Written as a FAILING baseline (step 0) and now passing (step 3). It pinned the
+// gap before anything was changed, which is why the fix had a target.
 //
-// The shell reproduces the input packet's length exactly: TX replays
-// slot_beat_cnt beats and the deparser overlays headers onto the received bytes
-// at fixed offsets. So a header made valid that was not parsed is dropped
-// entirely, and one made invalid leaves its bytes behind.
+// The shell used to reproduce the input packet's length exactly: TX replayed
+// slot_beat_cnt beats and the deparser overlaid headers onto the received bytes
+// at fixed offsets, so a header made valid that was never parsed was dropped
+// entirely and one made invalid left its bytes behind. TX now emits a single
+// byte stream -- the output header image, then the payload shifted by
+// hdr_delta -- so both work.
 //
 // Four cases, each an exact byte-for-byte comparison against the packet the P4
 // program says should come out:
@@ -200,8 +202,7 @@ module tb_lenprobe_top;
   int i;
 
   initial begin
-    $display("\n== tb_lenprobe_top: length-changing deparser ==");
-    $display("   (expected to FAIL until step 3 of the plan lands)\n");
+    $display("\n== tb_lenprobe_top: length-changing deparser ==\n");
     do_reset();
 
     prog_cls(0, 16'h0001, ACT_INS1,  9'd1);
@@ -265,7 +266,7 @@ module tb_lenprobe_top;
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);
     $display("================================================================");
     if (fail_cnt == 0) $display("  ALL TESTS PASSED");
-    else                $display("  SOME TESTS FAILED  <-- expected before step 3");
+    else                $display("  SOME TESTS FAILED");
     $finish;
   end
 

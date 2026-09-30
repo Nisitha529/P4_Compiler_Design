@@ -1260,6 +1260,11 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     _vc = _validity_changing_headers([ctrl, ectrl])
     _vc_emitted = sorted(_vc & set(emit_names))
     can_change_len = bool(_vc_emitted)
+    # A length-changing deparser derives the OUTPUT length from the received
+    # length plus hdr_delta, so it needs the byte count whether or not any
+    # counter asked for it.
+    if can_change_len:
+        needs_byte_len = True
     if can_change_len:
         print(f"[INFO] Length-changing deparser: {', '.join(_vc_emitted)} can be "
               f"added/removed -- TX uses the shifting path")
@@ -1520,6 +1525,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // bytes the deparser adds or removes.\n')
     for hname, _sz in len_changing:
         f.write(f'  logic slot_in_valid_{hname} [0:NSLOT-1];\n')
+    if can_change_len:
+        _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
+        f.write('  // Bytes the deparser adds (+) or removes (-), computed ONCE per packet\n')
+        f.write('  // when its result is captured. Deriving it combinationally at TX instead\n')
+        f.write('  // -- six per-slot array reads at a combinational index, feeding the\n')
+        f.write('  // output-image block -- stops iverilog advancing simulation time. It is\n')
+        f.write('  // also just a per-packet fact, so a register is the honest home for it.\n')
+        f.write(f'  logic signed [{_dw-1}:0] slot_hdr_delta [0:NSLOT-1];\n')
     for fn, fw in sorted(sop_std.items()):
         f.write(f'  logic [{fw-1}:0] slot_sop_{fn} [0:NSLOT-1];   // sampled at SOP\n')
     if 'enq_qdepth' in tm_std:
@@ -2436,6 +2449,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         # still names the completing slot. With egress it comes off egq.
         f.write('        cmp_ptr <= cmp_ptr + 1\'b1;\n')
     f.write(f'        slot_drop[cmp_slot] <= {fin_drop};\n')
+    if can_change_len:
+        _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
+        terms = []
+        for hname, sz in len_changing:
+            terms.append(f"({fin_hdr}{hname}_valid ? {_dw}'sd{sz} : {_dw}'sd0)"
+                         f" - (slot_in_valid_{hname}[cmp_slot] ? {_dw}'sd{sz} : {_dw}'sd0)")
+        f.write('        slot_hdr_delta[cmp_slot] <=\n            ' + '\n          + '.join(terms) + ';\n')
     for hname in all_hdr_names:
         if inst_map.get(hname):
             f.write(f'        slot_phv_{hname}_valid[cmp_slot] <= {fin_hdr}{hname}_valid;\n')
@@ -2550,20 +2570,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire [{w-1}:0] phv_{hname}_{fname} = slot_phv_{hname}_{fname}[tx_slot];\n')
     f.write('\n')
     # ── How much the deparser changes this packet's length ──────────────────
-    if len_changing:
-        dw = max(8, (max(sz for _h, sz in len_changing).bit_length() + 4))
-        f.write('  // Bytes the deparser adds (+) or removes (-) for this packet: one term\n')
-        f.write('  // per emitted header, contributing only when its validity CHANGED\n')
-        f.write('  // between reception and the pipeline\'s output. Zero for every program\n')
-        f.write('  // that neither adds nor removes a header, which is what keeps this a\n')
-        f.write('  // no-op until the shifter uses it.\n')
-        for hname, sz in len_changing:
-            f.write(f'  wire signed [{dw-1}:0] hdr_d_{hname} = \n')
-            f.write(f'      (phv_{hname}_valid ? {dw}\'sd{sz} : {dw}\'sd0)\n')
-            f.write(f'    - (slot_in_valid_{hname}[tx_slot] ? {dw}\'sd{sz} : {dw}\'sd0);\n')
-        terms = ' + '.join(f'hdr_d_{h}' for h, _sz in len_changing)
-        f.write(f'  wire signed [{dw-1}:0] hdr_delta = {terms};\n')
+    if len_changing and can_change_len:
+        _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
+        f.write('  // One read of the per-packet value computed at capture -- the same\n')
+        f.write('  // shape as the phv_*_valid views above, which is what keeps it safe.\n')
+        f.write(f'  wire signed [{_dw-1}:0] hdr_delta = slot_hdr_delta[tx_slot];\n')
         f.write('\n')
+
     if can_change_len:
         # ── Output offsets, up to the splice ────────────────────────────────
         # A running sum over the deparser's EMIT ORDER, gated by output
@@ -2593,6 +2606,42 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire [{HDR_IDX_W-1}:0] tx_splice = obase_{last}\n')
         f.write(f'      + (phv_{last}_valid ? {HDR_IDX_W}\'d{lsz} : {HDR_IDX_W}\'d0);\n')
         f.write('\n')
+
+        # ── The output header image ────────────────────────────────────────
+        # Take the existing overlay (modified fields at their ORIGINAL byte
+        # positions), shift it by hdr_delta, then re-place the headers that did
+        # not simply move. Everything below tx_splice is covered by the
+        # re-placement; everything at or above it is the shifted original,
+        # which is exactly right because those headers keep their internal
+        # layout and only move.
+        growth = sum(sizes[h] for h in _vc_emitted if h in sizes)
+        hob = ((HDR_MAX_BYTES + growth + KEEP_W - 1) // KEEP_W) * KEEP_W
+        f.write('  // ── Output header image (length-changing deparser) ──────────────────────\n')
+        f.write(f'  localparam int HDR_OUT_BYTES = {hob};  // HDR_MAX_BYTES + max growth, beat-rounded\n')
+        f.write('  logic [7:0] oimg [0:HDR_OUT_BYTES-1];\n')
+        f.write('  // A PACKED copy of the overlay. The shifted read below indexes it at a\n')
+        f.write('  // computed offset, and reading an UNPACKED array that way -- from inside\n')
+        f.write('  // always_comb, at an index that is not the loop variable -- stops\n')
+        f.write('  // iverilog advancing simulation time the moment the offset is non-zero.\n')
+        f.write('  // A packed part-select with a variable base is fine. (Copying element by\n')
+        f.write('  // element at the loop index is also fine, which is what this does.)\n')
+        f.write('  logic [HDR_MAX_BYTES*8-1:0] hdr_out_flat;\n')
+        f.write('  always_comb\n')
+        f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out_flat[i*8 +: 8] = hdr_out[i];\n')
+        f.write('  always_comb begin\n')
+        f.write('    int q;\n')
+        f.write('    // 1. the original stream, shifted\n')
+        f.write('    for (int p = 0; p < HDR_OUT_BYTES; p++) begin\n')
+        f.write('      q = p - hdr_delta;\n')
+        f.write('      oimg[p] = (q >= 0 && q < HDR_MAX_BYTES) ? hdr_out_flat[q*8 +: 8] : 8\'h00;\n')
+        f.write('    end\n')
+        f.write('    // 2. the headers that moved differently, at their OUTPUT offsets\n')
+        for hname in split_names:
+            inst = inst_map[hname]
+            _writeback_bytes(f, hname, f'obase_{hname}', inst.header_type,
+                             'phv_', f'phv_{hname}_valid', '    ',
+                             target='oimg', op='=')
+        f.write('  end\n\n')
     # phv_*_base: the same offset arithmetic as w_*_base, over the STORED output
     # PHV (header length is preserved by the program, so the offsets agree).
     import io as _io, re as _re
@@ -2642,13 +2691,91 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  wire pkt_ends_in_hdr  = tx_done_s && (tx_beat_cnt_s <= HDR_MAX_BEATS);\n')
     f.write('  wire hdr_row_ready    = (tx_hdr_row < tx_beat_cnt_s) && (tx_hdr_row < HDR_MAX_BEATS);\n')
     f.write(f'  wire hdr_row_is_last  = tx_done_s && (tx_hdr_row == tx_beat_cnt_s - {BEAT_CNT_W}\'d1);\n')
-    f.write('  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;\n')
-    f.write('  wire emit_pl     = slot_live && !cur_discard &&  tx_in_payload && pfifo_rd_valid && tx_slot_free;\n')
-    f.write('  wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;\n')
-    f.write('  assign pfifo_rd_en = emit_pl || discard_pop;\n')
-    f.write('  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);\n')
-    f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
-    f.write('  assign tx_finish  = last_loaded || discard_done;\n')
+    if can_change_len:
+        f.write('  // ── Length-changing TX control ──────────────────────────────────────────\n')
+        f.write('  // The output stream is oimg[0 .. tx_pstart) followed by the payload,\n')
+        f.write('  // which therefore starts at a byte position that is NOT beat-aligned\n')
+        f.write('  // when hdr_delta is not a multiple of the beat width. `tx_rot` is that\n')
+        f.write('  // misalignment, constant for the whole packet, so every payload output\n')
+        f.write('  // beat is one two-beat window selected at a fixed offset.\n')
+        f.write('  // Every one of these mixes the unsigned byte counters with the SIGNED\n')
+        f.write('  // hdr_delta, and Verilog makes the whole expression unsigned as soon as\n')
+        f.write('  // one operand is -- so a negative delta silently becomes a huge positive\n')
+        f.write('  // number. (A 64-byte packet shrinking by 4 came out as 316 bytes before\n')
+        f.write('  // these casts.) Each one is therefore forced signed and narrowed back.\n')
+        f.write('  // slot_byte_len counts every byte RECEIVED, including the ones RX\n')
+        f.write('  // truncated on an oversize packet -- only MAX_PKT_BYTES were stored. A\n')
+        f.write('  // length derived from the raw count would ask TX for beats that were\n')
+        f.write('  // never written, so it is clamped to what the slot actually holds.\n')
+        f.write('  wire [15:0] tx_in_raw   = slot_byte_len[tx_slot];\n')
+        f.write('  wire [15:0] tx_in_len   = (tx_in_raw > MAX_PKT_BYTES[15:0])\n')
+        f.write('                            ? MAX_PKT_BYTES[15:0] : tx_in_raw;\n')
+        f.write('  wire signed [17:0] tx_out_len_s = $signed({2\'b0, tx_in_len}) + hdr_delta;\n')
+        f.write('  wire [15:0] tx_out_len  = tx_out_len_s[15:0];\n')
+        f.write('  wire signed [17:0] tx_pstart_s  = $signed(18\'d0 + HDR_MAX_BYTES) + hdr_delta;\n')
+        f.write('  wire [15:0] tx_pstart   = tx_pstart_s[15:0];\n')
+        f.write(f'  wire [{ (KEEP_W-1).bit_length()-1 }:0] tx_rot = tx_pstart[{ (KEEP_W-1).bit_length()-1 }:0];\n')
+        f.write('  logic [15:0] tx_out_byte;   // output byte position of the next beat\n')
+        f.write('  wire [15:0] tx_left     = tx_out_len - tx_out_byte;\n')
+        f.write('  wire tx_last_beat       = tx_done_s && (tx_left <= BEAT_BYTES);\n')
+
+    if can_change_len:
+        # One emit condition, not two: the output is a single byte stream
+        # (oimg then the payload), so a beat is just "the next BEAT_BYTES of it".
+        f.write('  wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;\n')
+        f.write('  // Does this beat reach into the payload region?\n')
+        f.write('  wire tx_need_pl  = ((tx_out_byte + BEAT_BYTES) > tx_pstart);\n')
+        f.write('  // Source bytes this beat reads, so the header part is only emitted once\n')
+        f.write('  // the bytes it shifts FROM have actually arrived.\n')
+        f.write('  wire signed [17:0] tx_src_need_s =\n')
+        f.write('        $signed({2\'b0, tx_out_byte}) + $signed(18\'d0 + BEAT_BYTES) - hdr_delta;\n')
+        f.write('  wire tx_src_ready = tx_done_s\n')
+        f.write('        || ($signed(18\'d0 + (tx_beat_cnt_s * BEAT_BYTES)) >= tx_src_need_s);\n')
+        f.write('  // The two-beat payload window: the head is the beat this output beat\n')
+        f.write('  // consumes, pl_prev the one before it (needed when tx_rot != 0). The\n')
+        f.write('  // final beat of a grown packet may need ONLY pl_prev, which is why\n')
+        f.write('  // pl_prev_v can stand in for the head being empty.\n')
+        f.write('  logic [AXI_DATA_W-1:0] pl_prev;\n')
+        f.write('  logic                  pl_prev_v;\n')
+        f.write('  wire emit_beat = slot_live && !cur_discard && tx_slot_free && (tx_left != 0)\n')
+        f.write('                   && (tx_need_pl ? (pfifo_rd_valid || pl_prev_v) : tx_src_ready);\n')
+        f.write('  assign pfifo_rd_en = (emit_beat && tx_need_pl && pfifo_rd_valid) || discard_pop;\n')
+        f.write('  wire last_loaded  = emit_beat && tx_last_beat;\n')
+        f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
+        f.write('  assign tx_finish  = last_loaded || discard_done;\n')
+        f.write('\n  // ── Beat assembly ───────────────────────────────────────────────────────\n')
+        f.write('  // Output byte p comes from the output header image below tx_pstart, and\n')
+        f.write('  // from the payload above it. Because tx_pstart is not beat-aligned, the\n')
+        f.write('  // payload lanes split: lanes at or above tx_rot come from the current\n')
+        f.write('  // payload beat, lanes below it from the previous one. tkeep falls out of\n')
+        f.write('  // the output length, which is how a shorter or longer packet terminates.\n')
+        f.write('  logic [AXI_DATA_W-1:0]   tx_beat_data;\n')
+        f.write('  logic [AXI_DATA_W/8-1:0] tx_beat_keep;\n')
+        f.write('  always_comb begin\n')
+        f.write('    int p;\n')
+        f.write('    tx_beat_data = \'0;\n')
+        f.write('    tx_beat_keep = \'0;\n')
+        f.write('    for (int i = 0; i < BEAT_BYTES; i++) begin\n')
+        f.write('      p = tx_out_byte + i;\n')
+        f.write('      if (p < tx_out_len) begin\n')
+        f.write('        tx_beat_keep[i] = 1\'b1;\n')
+        f.write('        if (p < tx_pstart)\n')
+        f.write('          tx_beat_data[i*8 +: 8] = oimg[p];\n')
+        f.write('        else if (i >= tx_rot)\n')
+        f.write('          tx_beat_data[i*8 +: 8] = pfifo_head_data[(i - tx_rot)*8 +: 8];\n')
+        f.write('        else\n')
+        f.write('          tx_beat_data[i*8 +: 8] = pl_prev[(BEAT_BYTES - tx_rot + i)*8 +: 8];\n')
+        f.write('      end\n')
+        f.write('    end\n')
+        f.write('  end\n')
+    else:
+        f.write('  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;\n')
+        f.write('  wire emit_pl     = slot_live && !cur_discard &&  tx_in_payload && pfifo_rd_valid && tx_slot_free;\n')
+        f.write('  wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;\n')
+        f.write('  assign pfifo_rd_en = emit_pl || discard_pop;\n')
+        f.write('  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);\n')
+        f.write('  wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));\n')
+        f.write('  assign tx_finish  = last_loaded || discard_done;\n')
     f.write('\n  // ── Payload buffer recycle controls ──────────────────────────────────────\n')
     f.write('  // A SEPARATE always_comb from the one that produces pfifo_rd_valid. Both\n')
     f.write('  // of these depend on tx_finish, which depends on pfifo_rd_valid -- driving\n')
@@ -2690,6 +2817,10 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
 
     f.write('      tx_in_payload <= 1\'b0;\n')
     f.write('      tx_hdr_row    <= \'0;\n')
+    if can_change_len:
+        f.write('      tx_out_byte   <= \'0;\n')
+        f.write('      pl_prev       <= \'0;\n')
+        f.write('      pl_prev_v     <= 1\'b0;\n')
     f.write('      tx_out_valid  <= 1\'b0;\n')
     f.write('      tx_out_data   <= \'0;\n')
     f.write('      tx_out_keep   <= \'0;\n')
@@ -2702,31 +2833,52 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    end else begin\n')
 
     f.write('      if (tx_consumed) tx_out_valid <= 1\'b0;\n')
-    f.write('      if (emit_hdr) begin\n')
-    f.write('        tx_out_valid <= 1\'b1;\n')
-    f.write(f'        for (int i = 0; i < {KEEP_W}; i++)\n')
-    f.write(f'          tx_out_data[i*8 +: 8] <= hdr_out[tx_hdr_row * {KEEP_W} + i];\n')
-    f.write('        tx_out_keep  <= slot_keep[tx_slot*HDR_MAX_BEATS + tx_hdr_row];\n')
-    f.write('        tx_out_last  <= hdr_row_is_last;\n')
-    f.write(f'        tx_hdr_row   <= tx_hdr_row + {BEAT_CNT_W}\'d1;\n')
-    f.write('        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1\'b1;\n')
-    for mf in ir.metadata_fields:
-        f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
-    for fn in sorted(sideband_std):
-        f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
-    f.write('      end else if (emit_pl) begin\n')
-    f.write('        tx_out_valid <= 1\'b1;\n')
-    f.write('        tx_out_data  <= pfifo_head_data;\n')
-    f.write('        tx_out_keep  <= pfifo_head_keep;\n')
-    f.write('        tx_out_last  <= pfifo_head_last;\n')
-    for mf in ir.metadata_fields:
-        f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
-    for fn in sorted(sideband_std):
-        f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
-    f.write('      end\n')
+    if can_change_len:
+        f.write('      if (emit_beat) begin\n')
+        f.write('        tx_out_valid <= 1\'b1;\n')
+        f.write('        tx_out_data  <= tx_beat_data;\n')
+        f.write('        tx_out_keep  <= tx_beat_keep;\n')
+        f.write('        tx_out_last  <= tx_last_beat;\n')
+        f.write('        tx_out_byte  <= tx_out_byte + BEAT_BYTES;\n')
+        f.write('        // Slide the payload window only when a beat was actually taken.\n')
+        f.write('        if (tx_need_pl && pfifo_rd_valid) begin\n')
+        f.write('          pl_prev   <= pfifo_head_data;\n')
+        f.write('          pl_prev_v <= 1\'b1;\n')
+        f.write('        end\n')
+        for mf in ir.metadata_fields:
+            f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+        for fn in sorted(sideband_std):
+            f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
+        f.write('      end\n')
+    else:
+        f.write('      if (emit_hdr) begin\n')
+        f.write('        tx_out_valid <= 1\'b1;\n')
+        f.write(f'        for (int i = 0; i < {KEEP_W}; i++)\n')
+        f.write(f'          tx_out_data[i*8 +: 8] <= hdr_out[tx_hdr_row * {KEEP_W} + i];\n')
+        f.write('        tx_out_keep  <= slot_keep[tx_slot*HDR_MAX_BEATS + tx_hdr_row];\n')
+        f.write('        tx_out_last  <= hdr_row_is_last;\n')
+        f.write(f'        tx_hdr_row   <= tx_hdr_row + {BEAT_CNT_W}\'d1;\n')
+        f.write('        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1\'b1;\n')
+        for mf in ir.metadata_fields:
+            f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+        for fn in sorted(sideband_std):
+            f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
+        f.write('      end else if (emit_pl) begin\n')
+        f.write('        tx_out_valid <= 1\'b1;\n')
+        f.write('        tx_out_data  <= pfifo_head_data;\n')
+        f.write('        tx_out_keep  <= pfifo_head_keep;\n')
+        f.write('        tx_out_last  <= pfifo_head_last;\n')
+        for mf in ir.metadata_fields:
+            f.write(f'        out_meta_{mf.name} <= slot_meta_{mf.name}[tx_slot];\n')
+        for fn in sorted(sideband_std):
+            f.write(f'        out_std_meta_{fn} <= slot_std_meta_{fn}[tx_slot];\n')
+        f.write('      end\n')
     f.write('      if (tx_finish) begin\n')
     f.write('        tx_in_payload <= 1\'b0;\n')
     f.write('        tx_hdr_row    <= \'0;\n')
+    if can_change_len:
+        f.write('        tx_out_byte   <= \'0;\n')
+        f.write('        pl_prev_v     <= 1\'b0;\n')
 
     f.write('      end\n')
     f.write('    end\n')

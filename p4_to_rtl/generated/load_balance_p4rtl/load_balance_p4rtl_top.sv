@@ -1061,22 +1061,6 @@ module load_balance_p4rtl_top #(
   wire [15:0] phv_tcp_checksum = slot_phv_tcp_checksum[tx_slot];
   wire [15:0] phv_tcp_urgentPtr = slot_phv_tcp_urgentPtr[tx_slot];
 
-  // Bytes the deparser adds (+) or removes (-) for this packet: one term
-  // per emitted header, contributing only when its validity CHANGED
-  // between reception and the pipeline's output. Zero for every program
-  // that neither adds nor removes a header, which is what keeps this a
-  // no-op until the shifter uses it.
-  wire signed [8:0] hdr_d_ethernet = 
-      (phv_ethernet_valid ? 9'sd14 : 9'sd0)
-    - (slot_in_valid_ethernet[tx_slot] ? 9'sd14 : 9'sd0);
-  wire signed [8:0] hdr_d_ipv4 = 
-      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_d_tcp = 
-      (phv_tcp_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_tcp[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_delta = hdr_d_ethernet + hdr_d_ipv4 + hdr_d_tcp;
-
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_ihl} << 2;
   wire [13:0] phv_tcp_base = 14 + phv_ipv4_hdr_bytes;

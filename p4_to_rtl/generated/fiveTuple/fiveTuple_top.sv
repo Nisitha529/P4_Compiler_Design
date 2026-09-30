@@ -78,6 +78,12 @@ module fiveTuple_top #(
   logic slot_in_valid_ipv4 [0:NSLOT-1];
   logic slot_in_valid_tcp [0:NSLOT-1];
   logic slot_in_valid_udp [0:NSLOT-1];
+  // Bytes the deparser adds (+) or removes (-), computed ONCE per packet
+  // when its result is captured. Deriving it combinationally at TX instead
+  // -- six per-slot array reads at a combinational index, feeding the
+  // output-image block -- stops iverilog advancing simulation time. It is
+  // also just a per-packet fact, so a register is the honest home for it.
+  logic signed [8:0] slot_hdr_delta [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -866,6 +872,13 @@ module fiveTuple_top #(
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
         slot_drop[cmp_slot] <= proc_drop;
+        slot_hdr_delta[cmp_slot] <=
+            (out_eth_valid ? 9'sd14 : 9'sd0) - (slot_in_valid_eth[cmp_slot] ? 9'sd14 : 9'sd0)
+          + (out_new_vlan_valid ? 9'sd4 : 9'sd0) - (slot_in_valid_new_vlan[cmp_slot] ? 9'sd4 : 9'sd0)
+          + (out_vlan_valid ? 9'sd4 : 9'sd0) - (slot_in_valid_vlan[cmp_slot] ? 9'sd4 : 9'sd0)
+          + (out_ipv4_valid ? 9'sd20 : 9'sd0) - (slot_in_valid_ipv4[cmp_slot] ? 9'sd20 : 9'sd0)
+          + (out_tcp_valid ? 9'sd20 : 9'sd0) - (slot_in_valid_tcp[cmp_slot] ? 9'sd20 : 9'sd0)
+          + (out_udp_valid ? 9'sd8 : 9'sd0) - (slot_in_valid_udp[cmp_slot] ? 9'sd8 : 9'sd0);
         slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
         slot_phv_vlan_valid[cmp_slot] <= out_vlan_valid;
         slot_phv_ipv4_valid[cmp_slot] <= out_ipv4_valid;
@@ -985,30 +998,9 @@ module fiveTuple_top #(
   wire [11:0] phv_new_vlan_vid = slot_phv_new_vlan_vid[tx_slot];
   wire [15:0] phv_new_vlan_tpid = slot_phv_new_vlan_tpid[tx_slot];
 
-  // Bytes the deparser adds (+) or removes (-) for this packet: one term
-  // per emitted header, contributing only when its validity CHANGED
-  // between reception and the pipeline's output. Zero for every program
-  // that neither adds nor removes a header, which is what keeps this a
-  // no-op until the shifter uses it.
-  wire signed [8:0] hdr_d_eth = 
-      (phv_eth_valid ? 9'sd14 : 9'sd0)
-    - (slot_in_valid_eth[tx_slot] ? 9'sd14 : 9'sd0);
-  wire signed [8:0] hdr_d_new_vlan = 
-      (phv_new_vlan_valid ? 9'sd4 : 9'sd0)
-    - (slot_in_valid_new_vlan[tx_slot] ? 9'sd4 : 9'sd0);
-  wire signed [8:0] hdr_d_vlan = 
-      (phv_vlan_valid ? 9'sd4 : 9'sd0)
-    - (slot_in_valid_vlan[tx_slot] ? 9'sd4 : 9'sd0);
-  wire signed [8:0] hdr_d_ipv4 = 
-      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_d_tcp = 
-      (phv_tcp_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_tcp[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_d_udp = 
-      (phv_udp_valid ? 9'sd8 : 9'sd0)
-    - (slot_in_valid_udp[tx_slot] ? 9'sd8 : 9'sd0);
-  wire signed [8:0] hdr_delta = hdr_d_eth + hdr_d_new_vlan + hdr_d_vlan + hdr_d_ipv4 + hdr_d_tcp + hdr_d_udp;
+  // One read of the per-packet value computed at capture -- the same
+  // shape as the phv_*_valid views above, which is what keeps it safe.
+  wire signed [8:0] hdr_delta = slot_hdr_delta[tx_slot];
 
   // ── Output header offsets (deparser emit order) ─────────────────────────
   // Running sum gated by OUTPUT validity. Only headers up to the last
@@ -1021,6 +1013,50 @@ module fiveTuple_top #(
   // image; at or above it, from the original stream shifted by hdr_delta.
   wire [13:0] tx_splice = obase_new_vlan
       + (phv_new_vlan_valid ? 14'd4 : 14'd0);
+
+  // ── Output header image (length-changing deparser) ──────────────────────
+  localparam int HDR_OUT_BYTES = 160;  // HDR_MAX_BYTES + max growth, beat-rounded
+  logic [7:0] oimg [0:HDR_OUT_BYTES-1];
+  // A PACKED copy of the overlay. The shifted read below indexes it at a
+  // computed offset, and reading an UNPACKED array that way -- from inside
+  // always_comb, at an index that is not the loop variable -- stops
+  // iverilog advancing simulation time the moment the offset is non-zero.
+  // A packed part-select with a variable base is fine. (Copying element by
+  // element at the loop index is also fine, which is what this does.)
+  logic [HDR_MAX_BYTES*8-1:0] hdr_out_flat;
+  always_comb
+    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out_flat[i*8 +: 8] = hdr_out[i];
+  always_comb begin
+    int q;
+    // 1. the original stream, shifted
+    for (int p = 0; p < HDR_OUT_BYTES; p++) begin
+      q = p - hdr_delta;
+      oimg[p] = (q >= 0 && q < HDR_MAX_BYTES) ? hdr_out_flat[q*8 +: 8] : 8'h00;
+    end
+    // 2. the headers that moved differently, at their OUTPUT offsets
+    if (phv_eth_valid) begin
+        oimg[obase_eth] = phv_eth_dmac[47:40];
+        oimg[obase_eth+1] = phv_eth_dmac[39:32];
+        oimg[obase_eth+2] = phv_eth_dmac[31:24];
+        oimg[obase_eth+3] = phv_eth_dmac[23:16];
+        oimg[obase_eth+4] = phv_eth_dmac[15:8];
+        oimg[obase_eth+5] = phv_eth_dmac[7:0];
+        oimg[obase_eth+6] = phv_eth_smac[47:40];
+        oimg[obase_eth+7] = phv_eth_smac[39:32];
+        oimg[obase_eth+8] = phv_eth_smac[31:24];
+        oimg[obase_eth+9] = phv_eth_smac[23:16];
+        oimg[obase_eth+10] = phv_eth_smac[15:8];
+        oimg[obase_eth+11] = phv_eth_smac[7:0];
+        oimg[obase_eth+12] = phv_eth_type[15:8];
+        oimg[obase_eth+13] = phv_eth_type[7:0];
+    end
+    if (phv_new_vlan_valid) begin
+        oimg[obase_new_vlan] = {phv_new_vlan_pcp, phv_new_vlan_cfi, phv_new_vlan_vid[11:8]};
+        oimg[obase_new_vlan+1] = phv_new_vlan_vid[7:0];
+        oimg[obase_new_vlan+2] = phv_new_vlan_tpid[15:8];
+        oimg[obase_new_vlan+3] = phv_new_vlan_tpid[7:0];
+    end
+  end
 
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0);
@@ -1220,13 +1256,79 @@ module fiveTuple_top #(
   wire pkt_ends_in_hdr  = tx_done_s && (tx_beat_cnt_s <= HDR_MAX_BEATS);
   wire hdr_row_ready    = (tx_hdr_row < tx_beat_cnt_s) && (tx_hdr_row < HDR_MAX_BEATS);
   wire hdr_row_is_last  = tx_done_s && (tx_hdr_row == tx_beat_cnt_s - 9'd1);
-  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;
-  wire emit_pl     = slot_live && !cur_discard &&  tx_in_payload && pfifo_rd_valid && tx_slot_free;
+  // ── Length-changing TX control ──────────────────────────────────────────
+  // The output stream is oimg[0 .. tx_pstart) followed by the payload,
+  // which therefore starts at a byte position that is NOT beat-aligned
+  // when hdr_delta is not a multiple of the beat width. `tx_rot` is that
+  // misalignment, constant for the whole packet, so every payload output
+  // beat is one two-beat window selected at a fixed offset.
+  // Every one of these mixes the unsigned byte counters with the SIGNED
+  // hdr_delta, and Verilog makes the whole expression unsigned as soon as
+  // one operand is -- so a negative delta silently becomes a huge positive
+  // number. (A 64-byte packet shrinking by 4 came out as 316 bytes before
+  // these casts.) Each one is therefore forced signed and narrowed back.
+  // slot_byte_len counts every byte RECEIVED, including the ones RX
+  // truncated on an oversize packet -- only MAX_PKT_BYTES were stored. A
+  // length derived from the raw count would ask TX for beats that were
+  // never written, so it is clamped to what the slot actually holds.
+  wire [15:0] tx_in_raw   = slot_byte_len[tx_slot];
+  wire [15:0] tx_in_len   = (tx_in_raw > MAX_PKT_BYTES[15:0])
+                            ? MAX_PKT_BYTES[15:0] : tx_in_raw;
+  wire signed [17:0] tx_out_len_s = $signed({2'b0, tx_in_len}) + hdr_delta;
+  wire [15:0] tx_out_len  = tx_out_len_s[15:0];
+  wire signed [17:0] tx_pstart_s  = $signed(18'd0 + HDR_MAX_BYTES) + hdr_delta;
+  wire [15:0] tx_pstart   = tx_pstart_s[15:0];
+  wire [4:0] tx_rot = tx_pstart[4:0];
+  logic [15:0] tx_out_byte;   // output byte position of the next beat
+  wire [15:0] tx_left     = tx_out_len - tx_out_byte;
+  wire tx_last_beat       = tx_done_s && (tx_left <= BEAT_BYTES);
   wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;
-  assign pfifo_rd_en = emit_pl || discard_pop;
-  wire last_loaded  = (emit_hdr && hdr_row_is_last) || (emit_pl && pfifo_head_last);
+  // Does this beat reach into the payload region?
+  wire tx_need_pl  = ((tx_out_byte + BEAT_BYTES) > tx_pstart);
+  // Source bytes this beat reads, so the header part is only emitted once
+  // the bytes it shifts FROM have actually arrived.
+  wire signed [17:0] tx_src_need_s =
+        $signed({2'b0, tx_out_byte}) + $signed(18'd0 + BEAT_BYTES) - hdr_delta;
+  wire tx_src_ready = tx_done_s
+        || ($signed(18'd0 + (tx_beat_cnt_s * BEAT_BYTES)) >= tx_src_need_s);
+  // The two-beat payload window: the head is the beat this output beat
+  // consumes, pl_prev the one before it (needed when tx_rot != 0). The
+  // final beat of a grown packet may need ONLY pl_prev, which is why
+  // pl_prev_v can stand in for the head being empty.
+  logic [AXI_DATA_W-1:0] pl_prev;
+  logic                  pl_prev_v;
+  wire emit_beat = slot_live && !cur_discard && tx_slot_free && (tx_left != 0)
+                   && (tx_need_pl ? (pfifo_rd_valid || pl_prev_v) : tx_src_ready);
+  assign pfifo_rd_en = (emit_beat && tx_need_pl && pfifo_rd_valid) || discard_pop;
+  wire last_loaded  = emit_beat && tx_last_beat;
   wire discard_done = slot_live && cur_discard && (pkt_ends_in_hdr || (discard_pop && pfifo_head_last));
   assign tx_finish  = last_loaded || discard_done;
+
+  // ── Beat assembly ───────────────────────────────────────────────────────
+  // Output byte p comes from the output header image below tx_pstart, and
+  // from the payload above it. Because tx_pstart is not beat-aligned, the
+  // payload lanes split: lanes at or above tx_rot come from the current
+  // payload beat, lanes below it from the previous one. tkeep falls out of
+  // the output length, which is how a shorter or longer packet terminates.
+  logic [AXI_DATA_W-1:0]   tx_beat_data;
+  logic [AXI_DATA_W/8-1:0] tx_beat_keep;
+  always_comb begin
+    int p;
+    tx_beat_data = '0;
+    tx_beat_keep = '0;
+    for (int i = 0; i < BEAT_BYTES; i++) begin
+      p = tx_out_byte + i;
+      if (p < tx_out_len) begin
+        tx_beat_keep[i] = 1'b1;
+        if (p < tx_pstart)
+          tx_beat_data[i*8 +: 8] = oimg[p];
+        else if (i >= tx_rot)
+          tx_beat_data[i*8 +: 8] = pfifo_head_data[(i - tx_rot)*8 +: 8];
+        else
+          tx_beat_data[i*8 +: 8] = pl_prev[(BEAT_BYTES - tx_rot + i)*8 +: 8];
+      end
+    end
+  end
 
   // ── Payload buffer recycle controls ──────────────────────────────────────
   // A SEPARATE always_comb from the one that produces pfifo_rd_valid. Both
@@ -1249,29 +1351,32 @@ module fiveTuple_top #(
     if (!rst_n) begin
       tx_in_payload <= 1'b0;
       tx_hdr_row    <= '0;
+      tx_out_byte   <= '0;
+      pl_prev       <= '0;
+      pl_prev_v     <= 1'b0;
       tx_out_valid  <= 1'b0;
       tx_out_data   <= '0;
       tx_out_keep   <= '0;
       tx_out_last   <= 1'b0;
     end else begin
       if (tx_consumed) tx_out_valid <= 1'b0;
-      if (emit_hdr) begin
+      if (emit_beat) begin
         tx_out_valid <= 1'b1;
-        for (int i = 0; i < 32; i++)
-          tx_out_data[i*8 +: 8] <= hdr_out[tx_hdr_row * 32 + i];
-        tx_out_keep  <= slot_keep[tx_slot*HDR_MAX_BEATS + tx_hdr_row];
-        tx_out_last  <= hdr_row_is_last;
-        tx_hdr_row   <= tx_hdr_row + 9'd1;
-        if (!hdr_row_is_last && tx_hdr_row == HDR_MAX_BEATS - 1) tx_in_payload <= 1'b1;
-      end else if (emit_pl) begin
-        tx_out_valid <= 1'b1;
-        tx_out_data  <= pfifo_head_data;
-        tx_out_keep  <= pfifo_head_keep;
-        tx_out_last  <= pfifo_head_last;
+        tx_out_data  <= tx_beat_data;
+        tx_out_keep  <= tx_beat_keep;
+        tx_out_last  <= tx_last_beat;
+        tx_out_byte  <= tx_out_byte + BEAT_BYTES;
+        // Slide the payload window only when a beat was actually taken.
+        if (tx_need_pl && pfifo_rd_valid) begin
+          pl_prev   <= pfifo_head_data;
+          pl_prev_v <= 1'b1;
+        end
       end
       if (tx_finish) begin
         tx_in_payload <= 1'b0;
         tx_hdr_row    <= '0;
+        tx_out_byte   <= '0;
+        pl_prev_v     <= 1'b0;
       end
     end
   end

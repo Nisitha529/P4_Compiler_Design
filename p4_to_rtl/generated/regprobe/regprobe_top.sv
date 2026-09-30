@@ -360,16 +360,6 @@ module regprobe_top #(
   wire [47:0] phv_eth_src = slot_phv_eth_src[tx_slot];
   wire [15:0] phv_eth_etype = slot_phv_eth_etype[tx_slot];
 
-  // Bytes the deparser adds (+) or removes (-) for this packet: one term
-  // per emitted header, contributing only when its validity CHANGED
-  // between reception and the pipeline's output. Zero for every program
-  // that neither adds nor removes a header, which is what keeps this a
-  // no-op until the shifter uses it.
-  wire signed [7:0] hdr_d_eth = 
-      (phv_eth_valid ? 8'sd14 : 8'sd0)
-    - (slot_in_valid_eth[tx_slot] ? 8'sd14 : 8'sd0);
-  wire signed [7:0] hdr_delta = hdr_d_eth;
-
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.

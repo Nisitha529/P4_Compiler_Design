@@ -645,19 +645,6 @@ module ioprobe_top #(
   wire [31:0] phv_ipv4_srcAddr = slot_phv_ipv4_srcAddr[tx_slot];
   wire [31:0] phv_ipv4_dstAddr = slot_phv_ipv4_dstAddr[tx_slot];
 
-  // Bytes the deparser adds (+) or removes (-) for this packet: one term
-  // per emitted header, contributing only when its validity CHANGED
-  // between reception and the pipeline's output. Zero for every program
-  // that neither adds nor removes a header, which is what keeps this a
-  // no-op until the shifter uses it.
-  wire signed [8:0] hdr_d_eth = 
-      (phv_eth_valid ? 9'sd14 : 9'sd0)
-    - (slot_in_valid_eth[tx_slot] ? 9'sd14 : 9'sd0);
-  wire signed [8:0] hdr_d_ipv4 = 
-      (phv_ipv4_valid ? 9'sd20 : 9'sd0)
-    - (slot_in_valid_ipv4[tx_slot] ? 9'sd20 : 9'sd0);
-  wire signed [8:0] hdr_delta = hdr_d_eth + hdr_d_ipv4;
-
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.
