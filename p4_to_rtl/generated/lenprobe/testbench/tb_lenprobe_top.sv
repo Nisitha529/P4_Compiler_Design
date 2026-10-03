@@ -49,7 +49,7 @@ module tb_lenprobe_top;
   logic [31:0] s_axil_rdata;  logic [1:0] s_axil_rresp;
   logic s_axil_rvalid, s_axil_rready = 1'b1;
 
-  logic [15:0] out_meta_unused;
+  logic [15:0] out_meta_plen, out_meta_pbytes;
   logic  [8:0] out_std_meta_egress_port;
 
   lenprobe_top dut (
@@ -65,7 +65,7 @@ module tb_lenprobe_top;
     .s_axil_araddr(s_axil_araddr), .s_axil_arvalid(s_axil_arvalid), .s_axil_arready(s_axil_arready),
     .s_axil_rdata(s_axil_rdata), .s_axil_rresp(s_axil_rresp),
     .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready),
-    .out_meta_unused(out_meta_unused),
+    .out_meta_plen(out_meta_plen), .out_meta_pbytes(out_meta_pbytes),
     .out_std_meta_egress_port(out_std_meta_egress_port)
   );
 
@@ -97,7 +97,7 @@ module tb_lenprobe_top;
   endtask
 
   // cls (exact on eth.etype): 0 idx 1 action 2 key_etype 3 p_port 4 commit
-  localparam int ACT_FWD = 1, ACT_INS1 = 2, ACT_INS2 = 3, ACT_STRIP = 4;
+  localparam int ACT_FWD = 1, ACT_INS1 = 2, ACT_INS2 = 3, ACT_STAMP = 4, ACT_STRIP = 5;
   task automatic prog_cls(input int idx, input [15:0] etype, input int act,
                           input [8:0] port);
     axil_write(0, idx); axil_write(1, act); axil_write(2, etype);
@@ -149,8 +149,15 @@ module tb_lenprobe_top;
   endtask
 
   logic collecting = 0;
+  logic        got_meta;
+  logic [15:0] o_plen, o_pbytes;
   always @(posedge clk) begin
     #1;
+    if (collecting && m_axis_tvalid && m_axis_tready && !got_meta) begin
+      o_plen   = out_meta_plen;
+      o_pbytes = out_meta_pbytes;
+      got_meta = 1'b1;
+    end
     if (collecting && m_axis_tvalid && m_axis_tready)
       for (int i = 0; i < TB_BEAT_BYTES; i++)
         if (m_axis_tkeep[i]) rx_pkt.push_back(m_axis_tdata[i*8 +: 8]);
@@ -160,6 +167,7 @@ module tb_lenprobe_top;
                          input int wait_cyc = 400);
     build_frame(etype, nbytes, with_vlan);
     rx_pkt.delete();
+    got_meta = 1'b0; o_plen = 16'hFFFF; o_pbytes = 16'hFFFF;
     saw_delta = 1'b0; seen_delta = 999; seen_splice = 999;
     collecting = 1;
     send_pkt();
@@ -209,6 +217,7 @@ module tb_lenprobe_top;
     prog_cls(1, 16'h0002, ACT_INS2,  9'd1);
     prog_cls(2, 16'h0003, ACT_STRIP, 9'd1);
     prog_cls(3, 16'h0004, ACT_FWD,   9'd1);
+    prog_cls(4, 16'h0005, ACT_STAMP, 9'd1);
 
     // ---- T1: no length change (the control case) -------------------------
     $display("== T1: fwd -- nothing changes, out == in ==");
@@ -219,6 +228,8 @@ module tb_lenprobe_top;
     chk("T1: tx_splice == 14 (step 2)", seen_splice == 14);
     chk("T1: 64 bytes out", rx_pkt.size() == 64);
     chk("T1: byte-for-byte identical to the input", first_diff() == -2);
+    chk("T1: packet_length == 64 (received length)", o_plen == 16'd64);
+    chk("T1: parsed_bytes == 14 (eth only)",         o_pbytes == 16'd14);
 
     // ---- T2: insert 4 bytes ---------------------------------------------
     $display("\n== T2: insert_one -- 4 bytes appear after ethernet ==");
@@ -233,6 +244,10 @@ module tb_lenprobe_top;
     chk("T2: tx_splice == 18 (step 2)", seen_splice == 18);
     chk("T2: 68 bytes out (64 + 4)", rx_pkt.size() == 68);
     chk("T2: the inserted tag is present and the tail shifted", first_diff() == -2);
+    chk("T2: packet_length still 64 -- the RECEIVED length, not the 68 sent",
+        o_plen == 16'd64);
+    chk("T2: parsed_bytes still 14 -- insert-only headers are never parsed",
+        o_pbytes == 16'd14);
 
     // ---- T3: insert 8 bytes ---------------------------------------------
     $display("\n== T3: insert_two -- 8 bytes appear after ethernet ==");
@@ -249,6 +264,7 @@ module tb_lenprobe_top;
     chk("T3: tx_splice == 22 (step 2)", seen_splice == 22);
     chk("T3: 72 bytes out (64 + 8)", rx_pkt.size() == 72);
     chk("T3: both tags present, tail shifted by 8", first_diff() == -2);
+    chk("T3: packet_length still 64 (out is 72)", o_plen == 16'd64);
 
     // ---- T4: remove 4 bytes ---------------------------------------------
     $display("\n== T4: strip_vlan -- a parsed 4-byte VLAN is removed ==");
@@ -261,6 +277,22 @@ module tb_lenprobe_top;
     chk("T4: tx_splice == 14 (step 2)", seen_splice == 14);
     chk("T4: 60 bytes out (64 - 4)", rx_pkt.size() == 60);
     chk("T4: the VLAN is gone and the tail pulled back by 4", first_diff() == -2);
+    chk("T4: packet_length == 64 (received), though only 60 went out", o_plen == 16'd64);
+    chk("T4: parsed_bytes == 18 (eth + the VLAN that WAS parsed)", o_pbytes == 16'd18);
+
+    // ---- T5: a program carrying a length across the change ---------------
+    $display("\n== T5: insert_stamp -- the inserted header carries packet_length ==");
+    run_one(16'h0005, 96, 0);
+    expect_pkt.delete();
+    for (i = 0; i < 14; i++) expect_pkt.push_back(tx_pkt[i]);
+    expect_pkt.push_back(8'hAA); expect_pkt.push_back(8'h01);   // tag.magic
+    expect_pkt.push_back(8'h00); expect_pkt.push_back(8'h60);   // tag.seq = 96
+    for (i = 14; i < 96; i++) expect_pkt.push_back(tx_pkt[i]);
+    report("T5");
+    chk("T5: 100 bytes out (96 + 4)", rx_pkt.size() == 100);
+    chk("T5: the stamped tag holds the received length, tail shifted",
+        first_diff() == -2);
+    chk("T5: packet_length == 96", o_plen == 16'd96);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);

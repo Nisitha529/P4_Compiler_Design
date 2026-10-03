@@ -221,6 +221,7 @@ module cls_table #(
   //   1 = fwd
   //   2 = insert_one
   //   3 = insert_two
-  //   4 = strip_vlan
+  //   4 = insert_stamp
+  //   5 = strip_vlan
 
 endmodule

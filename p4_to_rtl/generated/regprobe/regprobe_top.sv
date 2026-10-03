@@ -72,10 +72,6 @@ module regprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
-  // Header validity as RECEIVED, sampled at issue. The output validity
-  // lives in slot_phv_*_valid; the difference between the two is how many
-  // bytes the deparser adds or removes.
-  logic slot_in_valid_eth [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -317,7 +313,6 @@ module regprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
-      slot_in_valid_eth[iss_slot] <= w_eth_valid;
     end
   end
 

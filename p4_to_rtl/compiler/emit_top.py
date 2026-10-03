@@ -1520,11 +1520,22 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # forward reference that iverilog accepts; see the extraction section).
     # Input validity per slot. w_*_valid is the live extraction result for the
     # ISSUE slot, so TX cannot read it -- by then it belongs to a later packet.
-    f.write('  // Header validity as RECEIVED, sampled at issue. The output validity\n')
-    f.write('  // lives in slot_phv_*_valid; the difference between the two is how many\n')
-    f.write('  // bytes the deparser adds or removes.\n')
-    for hname, _sz in len_changing:
-        f.write(f'  logic slot_in_valid_{hname} [0:NSLOT-1];\n')
+    # Same set as all_hdr_names below (parsed headers, then action-only ones),
+    # computed here because the declarations come first. Only a program that can
+    # change its own length needs any of this -- for every other one the output
+    # validity and the received validity are the same thing.
+    _lset = {l['inst_name'] for l in layouts}
+    in_valid_names = [l['inst_name'] for l in layouts] + [
+        i.inst_name for i in ir.header_instances
+        if not i.is_stack and i.inst_name not in _lset]
+    in_valid_names = [h for h in in_valid_names if inst_map.get(h)]
+    if can_change_len:
+        f.write('  // Header validity as RECEIVED, sampled at issue. The output validity\n')
+        f.write('  // lives in slot_phv_*_valid; the difference between the two is how many\n')
+        f.write('  // bytes the deparser adds or removes, and it is also the only honest\n')
+        f.write('  // basis for the offsets at which the deparser reads the received bytes.\n')
+        for hname in in_valid_names:
+            f.write(f'  logic slot_in_valid_{hname} [0:NSLOT-1];\n')
     if can_change_len:
         _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
         f.write('  // Bytes the deparser adds (+) or removes (-), computed ONCE per packet\n')
@@ -2339,8 +2350,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')
     f.write('      iss_ptr <= iss_ptr + 1\'b1;\n')
-    for hname, _sz in len_changing:
-        f.write(f'      slot_in_valid_{hname}[iss_slot] <= w_{hname}_valid;\n')
+    if can_change_len:
+        for hname in in_valid_names:
+            f.write(f'      slot_in_valid_{hname}[iss_slot] <= w_{hname}_valid;\n')
     for fn, fw in sorted(eg_issue_std.items()):
         f.write(f'      slot_std_meta_{fn}[iss_slot] <= {_shell_std_src(fn, fw)};   // for egress\n')
     f.write('    end\n')
@@ -2568,6 +2580,15 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write(f'  wire phv_{hname}_valid = slot_phv_{hname}_valid[tx_slot];\n')
     for hname, fname, w in hdr_fields:
         f.write(f'  wire [{w-1}:0] phv_{hname}_{fname} = slot_phv_{hname}_{fname}[tx_slot];\n')
+    if can_change_len:
+        f.write('  // Validity as RECEIVED. hdr_out overlays the stored output PHV onto the\n')
+        f.write('  // bytes that arrived, so its offsets must follow the INPUT layout. The\n')
+        f.write('  // output validity is the wrong thing to ask, and so is re-evaluating the\n')
+        f.write('  // parser transition conditions over the output PHV: this app rewrites\n')
+        f.write('  // eth.type to 0x8100, which made the deparser read ipv4 at the offset a\n')
+        f.write('  // VLAN-tagged frame would have had and duplicate four bytes.\n')
+        for hname in in_valid_names:
+            f.write(f'  wire phv_in_valid_{hname} = slot_in_valid_{hname}[tx_slot];\n')
     f.write('\n')
     # ── How much the deparser changes this packet's length ──────────────────
     if len_changing and can_change_len:
@@ -2619,22 +2640,46 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('  // ── Output header image (length-changing deparser) ──────────────────────\n')
         f.write(f'  localparam int HDR_OUT_BYTES = {hob};  // HDR_MAX_BYTES + max growth, beat-rounded\n')
         f.write('  logic [7:0] oimg [0:HDR_OUT_BYTES-1];\n')
-        f.write('  // A PACKED copy of the overlay. The shifted read below indexes it at a\n')
-        f.write('  // computed offset, and reading an UNPACKED array that way -- from inside\n')
-        f.write('  // always_comb, at an index that is not the loop variable -- stops\n')
-        f.write('  // iverilog advancing simulation time the moment the offset is non-zero.\n')
-        f.write('  // A packed part-select with a variable base is fine. (Copying element by\n')
-        f.write('  // element at the loop index is also fine, which is what this does.)\n')
-        f.write('  logic [HDR_MAX_BYTES*8-1:0] hdr_out_flat;\n')
-        f.write('  always_comb\n')
-        f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out_flat[i*8 +: 8] = hdr_out[i];\n')
+        # The shift is a CASE over every delta the program can produce, so each
+        # branch reads hdr_out at a CONSTANT offset. Two rules, both learned the
+        # hard way, shape this block:
+        #   * the offset must be constant. hdr_out[p - hdr_delta] is an unpacked
+        #     read at a computed index and oimg[q + hdr_delta] the same as an
+        #     lvalue; either stops iverilog advancing simulation time. Staging
+        #     through hdr_out_flat[q*8 +: 8] is worse -- a variable part-select
+        #     as an lvalue is what "constant selects ... all bits will be
+        #     included" warns about, and it silently duplicated four bytes.
+        #   * every element of oimg is written exactly once, unconditionally, by
+        #     a single loop. A clear-then-fill pair of loops over the same
+        #     unpacked array in one always_comb also stalls simulation time.
+        # Each changeable header either appears (+size), disappears (-size), or
+        # does neither, so the achievable set is small.
+        _dlt = {0}
+        for _h in _vc_emitted:
+            _hs = sizes.get(_h, 0)
+            _dlt = {d + k for d in _dlt for k in (0, _hs, -_hs)}
+        _dlt = sorted(d for d in _dlt if -HDR_MAX_BYTES < d < hob)
+        f.write('  // The shift, as a case over every achievable hdr_delta so that each\n')
+        f.write('  // branch reads hdr_out at a CONSTANT offset, and each branch writes\n')
+        f.write('  // every oimg element exactly once. A computed offset, or a second\n')
+        f.write('  // write loop over oimg in this block, stops iverilog advancing\n')
+        f.write('  // simulation time; see the comment in emit_top.py.\n')
         f.write('  always_comb begin\n')
-        f.write('    int q;\n')
         f.write('    // 1. the original stream, shifted\n')
-        f.write('    for (int p = 0; p < HDR_OUT_BYTES; p++) begin\n')
-        f.write('      q = p - hdr_delta;\n')
-        f.write('      oimg[p] = (q >= 0 && q < HDR_MAX_BYTES) ? hdr_out_flat[q*8 +: 8] : 8\'h00;\n')
-        f.write('    end\n')
+        f.write('    case (hdr_delta)\n')
+        for _d in _dlt:
+            # Source index q = p - _d must land inside hdr_out.
+            _lo = max(0, _d)
+            _hi = min(hob, HDR_MAX_BYTES + _d)
+            _src = f'hdr_out[p - {_d}]' if _d > 0 else (
+                   f'hdr_out[p + {-_d}]' if _d < 0 else 'hdr_out[p]')
+            _g = f'p < {_hi}' if _lo == 0 else f'p >= {_lo} && p < {_hi}'
+            # A negative case label is -N'sdK, never N'sd-K.
+            _lbl = f"{_dw}'sd{_d}" if _d >= 0 else f"-{_dw}'sd{-_d}"
+            f.write(f"      {_lbl}: for (int p = 0; p < HDR_OUT_BYTES; p++) "
+                    f"oimg[p] = ({_g}) ? {_src} : 8'h00;\n")
+        f.write("      default: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = 8'h00;\n")
+        f.write('    endcase\n')
         f.write('    // 2. the headers that moved differently, at their OUTPUT offsets\n')
         for hname in split_names:
             inst = inst_map[hname]
@@ -2642,13 +2687,40 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                              'phv_', f'phv_{hname}_valid', '    ',
                              target='oimg', op='=')
         f.write('  end\n\n')
-    # phv_*_base: the same offset arithmetic as w_*_base, over the STORED output
-    # PHV (header length is preserved by the program, so the offsets agree).
+        # A PACKED copy for the beat assembly. That block indexes the image at a
+        # computed byte offset, and an unpacked read at a computed index inside
+        # always_comb stops iverilog advancing simulation time -- which is how
+        # this showed up: tx_beat_data re-triggered itself forever on oimg[p].
+        # A packed part-select with a variable base is fine as an RVALUE; it is
+        # only as an LVALUE that it silently misbehaves. So oimg keeps the
+        # overlay writes (variable base, but element writes, which are safe) and
+        # this copy, constant-indexed on both sides, bridges to the beat.
+        f.write('  // Packed copy of the output image. The beat assembly reads the image at\n')
+        f.write('  // a computed offset, and an unpacked read at a computed index inside\n')
+        f.write('  // always_comb makes the reading block re-trigger itself forever. A\n')
+        f.write('  // packed part-select with a variable base is safe to READ.\n')
+        f.write('  logic [HDR_OUT_BYTES*8-1:0] oflat;\n')
+        f.write('  always_comb begin\n')
+        for _b in range(hob):
+            f.write(f'    oflat[{_b*8+7}:{_b*8}] = oimg[{_b}];\n')
+        f.write('  end\n\n')
+    # phv_*_base: the same offset arithmetic as w_*_base, but over the INPUT
+    # layout -- these offsets index the RECEIVED bytes. For a fixed-length
+    # program the output PHV's own validity gives the same answer, so it was
+    # used directly; a program that rewrites a field a parser transition keys
+    # on (eth.type -> 0x8100 here) makes them disagree, so the length-changing
+    # path reads the validity sampled at issue instead.
+    # Still over the output PHV: any var_pred length field (ipv4.hdr_len and
+    # the like). A program that REWROTE one of those would need the received
+    # value stored too; none does, and the varbit guard above already rejects
+    # a variable-length header at or before the splice.
     import io as _io, re as _re
     _buf = _io.StringIO()
     _emitted = set()
+    _vmap_in = ({h: f'phv_in_valid_{h}' for h in in_valid_names}
+                if can_change_len else valid_map)
     for layout in layouts:
-        _emit_offset_var_for(_buf, layout, layouts, valid_map, hdr_idx_w, _emitted)
+        _emit_offset_var_for(_buf, layout, layouts, _vmap_in, hdr_idx_w, _emitted)
     _txt = _re.sub(r'\bw_', 'phv_', _buf.getvalue())
     if _txt.strip():
         f.write('  // header byte offsets over the stored PHV (same arithmetic as w_*_base)\n')
@@ -2755,18 +2827,28 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('    int p;\n')
         f.write('    tx_beat_data = \'0;\n')
         f.write('    tx_beat_keep = \'0;\n')
-        f.write('    for (int i = 0; i < BEAT_BYTES; i++) begin\n')
-        f.write('      p = tx_out_byte + i;\n')
-        f.write('      if (p < tx_out_len) begin\n')
-        f.write('        tx_beat_keep[i] = 1\'b1;\n')
-        f.write('        if (p < tx_pstart)\n')
-        f.write('          tx_beat_data[i*8 +: 8] = oimg[p];\n')
-        f.write('        else if (i >= tx_rot)\n')
-        f.write('          tx_beat_data[i*8 +: 8] = pfifo_head_data[(i - tx_rot)*8 +: 8];\n')
-        f.write('        else\n')
-        f.write('          tx_beat_data[i*8 +: 8] = pl_prev[(BEAT_BYTES - tx_rot + i)*8 +: 8];\n')
-        f.write('      end\n')
-        f.write('    end\n')
+        # The lanes are unrolled so that every part-select LVALUE has a constant
+        # base. Written as a loop -- tx_beat_data[i*8 +: 8] = ... -- iverilog
+        # treats the variable base as "all bits will be included", which makes
+        # the block sensitive to its own output: it then re-triggers forever and
+        # simulation time stops dead, with no error. It only showed up once
+        # hdr_delta was non-zero, because at tx_rot == 0 every lane takes the
+        # same branch and the repeated whole-vector write settles.
+        # Variable bases are fine on the READ side, which is why the two payload
+        # sources below still compute theirs.
+        for _i in range(KEEP_W):
+            f.write(f'    p = tx_out_byte + {_i};\n')
+            f.write('    if (p < tx_out_len) begin\n')
+            f.write(f"      tx_beat_keep[{_i}] = 1'b1;\n")
+            f.write('      if (p < tx_pstart)\n')
+            f.write(f'        tx_beat_data[{_i*8+7}:{_i*8}] = oflat[p*8 +: 8];\n')
+            f.write(f'      else if ({_i} >= tx_rot)\n')
+            f.write(f'        tx_beat_data[{_i*8+7}:{_i*8}] = '
+                    f'pfifo_head_data[({_i} - tx_rot)*8 +: 8];\n')
+            f.write('      else\n')
+            f.write(f'        tx_beat_data[{_i*8+7}:{_i*8}] = '
+                    f'pl_prev[(BEAT_BYTES - tx_rot + {_i})*8 +: 8];\n')
+            f.write('    end\n')
         f.write('  end\n')
     else:
         f.write('  wire emit_hdr    = slot_live && !cur_discard && !tx_in_payload && hdr_row_ready && tx_slot_free;\n')

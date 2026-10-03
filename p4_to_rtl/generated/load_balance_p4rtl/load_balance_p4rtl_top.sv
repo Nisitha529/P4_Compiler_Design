@@ -72,12 +72,6 @@ module load_balance_p4rtl_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
-  // Header validity as RECEIVED, sampled at issue. The output validity
-  // lives in slot_phv_*_valid; the difference between the two is how many
-  // bytes the deparser adds or removes.
-  logic slot_in_valid_ethernet [0:NSLOT-1];
-  logic slot_in_valid_ipv4 [0:NSLOT-1];
-  logic slot_in_valid_tcp [0:NSLOT-1];
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
@@ -912,9 +906,6 @@ module load_balance_p4rtl_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
-      slot_in_valid_ethernet[iss_slot] <= w_ethernet_valid;
-      slot_in_valid_ipv4[iss_slot] <= w_ipv4_valid;
-      slot_in_valid_tcp[iss_slot] <= w_tcp_valid;
     end
   end
 

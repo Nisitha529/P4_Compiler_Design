@@ -80,10 +80,6 @@ module lmprobe_top #(
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
   logic [15:0] slot_byte_len [0:NSLOT-1];
-  // Header validity as RECEIVED, sampled at issue. The output validity
-  // lives in slot_phv_*_valid; the difference between the two is how many
-  // bytes the deparser adds or removes.
-  logic slot_in_valid_eth [0:NSLOT-1];
   logic [8:0] slot_sop_ingress_port [0:NSLOT-1];   // sampled at SOP
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic [15:0] slot_std_meta_packet_length [0:NSLOT-1];
@@ -600,7 +596,6 @@ module lmprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
-      slot_in_valid_eth[iss_slot] <= w_eth_valid;
       slot_std_meta_packet_length[iss_slot] <= 16'({slot_byte_len[iss_slot]});   // for egress
     end
   end

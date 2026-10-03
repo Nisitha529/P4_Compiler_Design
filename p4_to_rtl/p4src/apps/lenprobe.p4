@@ -9,7 +9,16 @@
 //   0x0001 -> insert `tag` (4 bytes) after ethernet          -> out = in + 4
 //   0x0002 -> insert `tag` and `tag2` (8 bytes)              -> out = in + 8
 //   0x0003 -> make `vlan` invalid (it WAS parsed)            -> out = in - 4
+//   0x0005 -> insert `tag`, stamped with packet_length       -> out = in + 4
 //   anything else -> untouched                               -> out = in
+//
+// Ingress also copies standard_metadata.packet_length and .parsed_bytes into
+// user metadata so a testbench can check what a length-changing program sees:
+// packet_length is the RECEIVED length (it is ingress metadata describing
+// arrival, which is what v1model means too), and parsed_bytes is the bytes
+// extract() consumed -- neither follows the output length. Reading
+// packet_length also makes this app store-and-forward, so these tests cover
+// store-and-forward combined with a length change.
 //
 // This is the same shape as fiveTuple.p4's InsertVLAN, which is the flagship
 // app's whole purpose and has never been exercisable end-to-end because the
@@ -28,7 +37,7 @@ header tag_t  { bit<16> magic; bit<16> seq; }
 header tag2_t { bit<16> magic2; bit<16> seq2; }
 
 struct headers  { eth_t eth; tag_t tag; tag2_t tag2; vlan_t vlan; }
-struct metadata { bit<16> unused; }
+struct metadata { bit<16> plen; bit<16> pbytes; }
 
 parser MyParser(packet_in b, out headers hdr, inout metadata meta,
                 inout standard_metadata_t smeta) {
@@ -61,17 +70,29 @@ control MyIngress(inout headers hdr, inout metadata meta,
         hdr.tag2.magic2 = 16w0xBB02;
         hdr.tag2.seq2   = 16w0x2222;
     }
+    // Stamps the RECEIVED length into a header that did not exist on input --
+    // the way a program would carry a length it cares about across the change.
+    action insert_stamp(PortId_t port) {
+        smeta.egress_port = port;
+        hdr.tag.setValid();
+        hdr.tag.magic = 16w0xAA01;
+        hdr.tag.seq   = (bit<16>)smeta.packet_length;
+    }
     action strip_vlan(PortId_t port) {
         smeta.egress_port = port;
         hdr.vlan.setInvalid();
     }
     table cls {
         key            = { hdr.eth.etype : exact; }
-        actions        = { fwd; insert_one; insert_two; strip_vlan; NoAction; }
+        actions        = { fwd; insert_one; insert_two; insert_stamp; strip_vlan; NoAction; }
         size           = 16;
         default_action = NoAction();
     }
-    apply { cls.apply(); }
+    apply {
+        meta.plen   = smeta.packet_length;
+        meta.pbytes = smeta.parsed_bytes;
+        cls.apply();
+    }
 }
 
 control MyEgress(inout headers hdr, inout metadata meta,

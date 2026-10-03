@@ -21,7 +21,12 @@ module processing_generated (
   input  logic [15:0] vlan_inner_etype,
 
   // Metadata inputs
-  input  logic [15:0] meta_unused,
+  input  logic [15:0] meta_plen,
+  input  logic [15:0] meta_pbytes,
+
+  // Standard metadata inputs (table key sources)
+  input  logic [15:0] std_meta_packet_length,
+  input  logic [15:0] std_meta_parsed_bytes,
 
   // Header valid flag outputs (may be modified by setValid/setInvalid)
   output logic        out_eth_valid,
@@ -44,7 +49,8 @@ module processing_generated (
   output logic [8:0] out_std_meta_egress_port,
 
   // Metadata outputs (final value after the last stage)
-  output logic [15:0] out_meta_unused,
+  output logic [15:0] out_meta_plen,
+  output logic [15:0] out_meta_pbytes,
 
   // Control-plane write ports for table instances
   input  logic        cls_cp_wr_en,
@@ -71,7 +77,8 @@ module processing_generated (
 );
 
   // Metadata shadow locals (writable copies of metadata inputs)
-  logic [15:0] meta_unused_w;
+  logic [15:0] meta_plen_w;
+  logic [15:0] meta_pbytes_w;
 
   // Pipeline-stage forwarding registers (one set per exact-match
   // table boundary in the chain)
@@ -102,8 +109,11 @@ module processing_generated (
   logic [15:0] vlan_tci_s1;
   logic [15:0] out_vlan_inner_etype_s1;
   logic [15:0] vlan_inner_etype_s1;
-  logic [15:0] meta_unused_w_s1;
+  logic [15:0] meta_plen_w_s1;
+  logic [15:0] meta_pbytes_w_s1;
   logic [8:0] out_std_meta_egress_port_s1;
+  logic [15:0] std_meta_packet_length_s1;
+  logic [15:0] std_meta_parsed_bytes_s1;
   logic drop_s1;
   logic valid_s2;
   logic out_eth_valid_s2;
@@ -132,8 +142,11 @@ module processing_generated (
   logic [15:0] vlan_tci_s2;
   logic [15:0] out_vlan_inner_etype_s2;
   logic [15:0] vlan_inner_etype_s2;
-  logic [15:0] meta_unused_w_s2;
+  logic [15:0] meta_plen_w_s2;
+  logic [15:0] meta_pbytes_w_s2;
   logic [8:0] out_std_meta_egress_port_s2;
+  logic [15:0] std_meta_packet_length_s2;
+  logic [15:0] std_meta_parsed_bytes_s2;
   logic drop_s2;
 
   // Pool-A (out_*/drop) working copies -- every stage except the
@@ -171,7 +184,8 @@ module processing_generated (
 
   // Pool-B (locals/meta shadow/raw hdr+std_meta reads) working
   // copies -- every stage except the first, which reads live inputs
-  logic [15:0] meta_unused_w__st1;
+  logic [15:0] meta_plen_w__st1;
+  logic [15:0] meta_pbytes_w__st1;
   logic eth_valid__st1;
   logic tag_valid__st1;
   logic tag2_valid__st1;
@@ -185,7 +199,10 @@ module processing_generated (
   logic [15:0] tag2_seq2__st1;
   logic [15:0] vlan_tci__st1;
   logic [15:0] vlan_inner_etype__st1;
-  logic [15:0] meta_unused_w__st2;
+  logic [15:0] std_meta_packet_length__st1;
+  logic [15:0] std_meta_parsed_bytes__st1;
+  logic [15:0] meta_plen_w__st2;
+  logic [15:0] meta_pbytes_w__st2;
   logic eth_valid__st2;
   logic tag_valid__st2;
   logic tag2_valid__st2;
@@ -199,6 +216,8 @@ module processing_generated (
   logic [15:0] tag2_seq2__st2;
   logic [15:0] vlan_tci__st2;
   logic [15:0] vlan_inner_etype__st2;
+  logic [15:0] std_meta_packet_length__st2;
+  logic [15:0] std_meta_parsed_bytes__st2;
 
   // Table lookup result wires
   logic        cls_hit;
@@ -231,14 +250,16 @@ module processing_generated (
   assign cls_hit_out = cls_hit;
 
   // Metadata outputs (final value after the last stage)
-  assign out_meta_unused = meta_unused_w__st2;
+  assign out_meta_plen = meta_plen_w__st2;
+  assign out_meta_pbytes = meta_pbytes_w__st2;
 
   // ---- Pipeline stage 0 (combinational, feeds the first exact-match table boundary) ----
   always_comb begin
     drop__st0 = 0;
 
     // Metadata shadow defaults (init from inputs)
-    meta_unused_w = meta_unused;
+    meta_plen_w = meta_plen;
+    meta_pbytes_w = meta_pbytes;
 
     // Standard metadata defaults
     out_std_meta_egress_port__st0 = 9'b0;
@@ -259,6 +280,10 @@ module processing_generated (
     out_tag2_seq2__st0 = tag2_seq2;
     out_vlan_tci__st0 = vlan_tci;
     out_vlan_inner_etype__st0 = vlan_inner_etype;
+
+    // apply block (stage 0 of 2)
+    meta_plen_w = std_meta_packet_length;
+    meta_pbytes_w = std_meta_parsed_bytes;
   end
 
   // Forward stage-0 state into stage-1 registers (1-cycle
@@ -269,7 +294,8 @@ module processing_generated (
     end else begin
       valid_s1 <= valid_in;
       drop_s1 <= drop__st0;
-      meta_unused_w_s1 <= meta_unused_w;
+      meta_plen_w_s1 <= meta_plen_w;
+      meta_pbytes_w_s1 <= meta_pbytes_w;
       out_eth_valid_s1 <= out_eth_valid__st0;
       eth_valid_s1 <= eth_valid;
       out_tag_valid_s1 <= out_tag_valid__st0;
@@ -297,13 +323,16 @@ module processing_generated (
       out_vlan_inner_etype_s1 <= out_vlan_inner_etype__st0;
       vlan_inner_etype_s1 <= vlan_inner_etype;
       out_std_meta_egress_port_s1 <= out_std_meta_egress_port__st0;
+      std_meta_packet_length_s1 <= std_meta_packet_length;
+      std_meta_parsed_bytes_s1 <= std_meta_parsed_bytes;
     end
   end
 
   // ---- Pipeline stage 1 (registered 1 cycle(s) after stage 0) ----
   always_comb begin
     drop__st1 = drop_s1;
-    meta_unused_w__st1 = meta_unused_w_s1;
+    meta_plen_w__st1 = meta_plen_w_s1;
+    meta_pbytes_w__st1 = meta_pbytes_w_s1;
     out_eth_valid__st1 = out_eth_valid_s1;
     eth_valid__st1 = eth_valid_s1;
     out_tag_valid__st1 = out_tag_valid_s1;
@@ -331,6 +360,8 @@ module processing_generated (
     out_vlan_inner_etype__st1 = out_vlan_inner_etype_s1;
     vlan_inner_etype__st1 = vlan_inner_etype_s1;
     out_std_meta_egress_port__st1 = out_std_meta_egress_port_s1;
+    std_meta_packet_length__st1 = std_meta_packet_length_s1;
+    std_meta_parsed_bytes__st1 = std_meta_parsed_bytes_s1;
   end
 
   // Forward stage-1 state into stage-2 registers (1-cycle
@@ -341,7 +372,8 @@ module processing_generated (
     end else begin
       valid_s2 <= valid_s1;
       drop_s2 <= drop__st1;
-      meta_unused_w_s2 <= meta_unused_w__st1;
+      meta_plen_w_s2 <= meta_plen_w__st1;
+      meta_pbytes_w_s2 <= meta_pbytes_w__st1;
       out_eth_valid_s2 <= out_eth_valid__st1;
       eth_valid_s2 <= eth_valid__st1;
       out_tag_valid_s2 <= out_tag_valid__st1;
@@ -369,13 +401,16 @@ module processing_generated (
       out_vlan_inner_etype_s2 <= out_vlan_inner_etype__st1;
       vlan_inner_etype_s2 <= vlan_inner_etype__st1;
       out_std_meta_egress_port_s2 <= out_std_meta_egress_port__st1;
+      std_meta_packet_length_s2 <= std_meta_packet_length__st1;
+      std_meta_parsed_bytes_s2 <= std_meta_parsed_bytes__st1;
     end
   end
 
   // ---- Pipeline stage 2 (registered 2 cycle(s) after stage 0) ----
   always_comb begin
     drop = drop_s2;
-    meta_unused_w__st2 = meta_unused_w_s2;
+    meta_plen_w__st2 = meta_plen_w_s2;
+    meta_pbytes_w__st2 = meta_pbytes_w_s2;
     out_eth_valid = out_eth_valid_s2;
     eth_valid__st2 = eth_valid_s2;
     out_tag_valid = out_tag_valid_s2;
@@ -403,6 +438,8 @@ module processing_generated (
     out_vlan_inner_etype = out_vlan_inner_etype_s2;
     vlan_inner_etype__st2 = vlan_inner_etype_s2;
     out_std_meta_egress_port = out_std_meta_egress_port_s2;
+    std_meta_packet_length__st2 = std_meta_packet_length_s2;
+    std_meta_parsed_bytes__st2 = std_meta_parsed_bytes_s2;
 
     // apply block (stage 2 of 2)
     // cls.apply()
@@ -427,7 +464,13 @@ module processing_generated (
           out_tag2_magic2 = 16'hBB02;
           out_tag2_seq2 = 16'h2222;
         end
-        3'd4: begin // strip_vlan
+        3'd4: begin // insert_stamp
+          out_std_meta_egress_port = cls_p_port;
+          out_tag_valid = 1'b1;
+          out_tag_magic = 16'hAA01;
+          out_tag_seq = std_meta_packet_length__st2;
+        end
+        3'd5: begin // strip_vlan
           out_std_meta_egress_port = cls_p_port;
           out_vlan_valid = 1'b0;
         end

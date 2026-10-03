@@ -71,13 +71,16 @@ module fiveTuple_top #(
   logic [15:0] slot_byte_len [0:NSLOT-1];
   // Header validity as RECEIVED, sampled at issue. The output validity
   // lives in slot_phv_*_valid; the difference between the two is how many
-  // bytes the deparser adds or removes.
+  // bytes the deparser adds or removes, and it is also the only honest
+  // basis for the offsets at which the deparser reads the received bytes.
   logic slot_in_valid_eth [0:NSLOT-1];
-  logic slot_in_valid_new_vlan [0:NSLOT-1];
   logic slot_in_valid_vlan [0:NSLOT-1];
   logic slot_in_valid_ipv4 [0:NSLOT-1];
+  logic slot_in_valid_ipv4opt [0:NSLOT-1];
   logic slot_in_valid_tcp [0:NSLOT-1];
+  logic slot_in_valid_tcpopt [0:NSLOT-1];
   logic slot_in_valid_udp [0:NSLOT-1];
+  logic slot_in_valid_new_vlan [0:NSLOT-1];
   // Bytes the deparser adds (+) or removes (-), computed ONCE per packet
   // when its result is captured. Deriving it combinationally at TX instead
   // -- six per-slot array reads at a combinational index, feeding the
@@ -856,11 +859,13 @@ module fiveTuple_top #(
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
       slot_in_valid_eth[iss_slot] <= w_eth_valid;
-      slot_in_valid_new_vlan[iss_slot] <= w_new_vlan_valid;
       slot_in_valid_vlan[iss_slot] <= w_vlan_valid;
       slot_in_valid_ipv4[iss_slot] <= w_ipv4_valid;
+      slot_in_valid_ipv4opt[iss_slot] <= w_ipv4opt_valid;
       slot_in_valid_tcp[iss_slot] <= w_tcp_valid;
+      slot_in_valid_tcpopt[iss_slot] <= w_tcpopt_valid;
       slot_in_valid_udp[iss_slot] <= w_udp_valid;
+      slot_in_valid_new_vlan[iss_slot] <= w_new_vlan_valid;
     end
   end
 
@@ -997,6 +1002,20 @@ module fiveTuple_top #(
   wire [0:0] phv_new_vlan_cfi = slot_phv_new_vlan_cfi[tx_slot];
   wire [11:0] phv_new_vlan_vid = slot_phv_new_vlan_vid[tx_slot];
   wire [15:0] phv_new_vlan_tpid = slot_phv_new_vlan_tpid[tx_slot];
+  // Validity as RECEIVED. hdr_out overlays the stored output PHV onto the
+  // bytes that arrived, so its offsets must follow the INPUT layout. The
+  // output validity is the wrong thing to ask, and so is re-evaluating the
+  // parser transition conditions over the output PHV: this app rewrites
+  // eth.type to 0x8100, which made the deparser read ipv4 at the offset a
+  // VLAN-tagged frame would have had and duplicate four bytes.
+  wire phv_in_valid_eth = slot_in_valid_eth[tx_slot];
+  wire phv_in_valid_vlan = slot_in_valid_vlan[tx_slot];
+  wire phv_in_valid_ipv4 = slot_in_valid_ipv4[tx_slot];
+  wire phv_in_valid_ipv4opt = slot_in_valid_ipv4opt[tx_slot];
+  wire phv_in_valid_tcp = slot_in_valid_tcp[tx_slot];
+  wire phv_in_valid_tcpopt = slot_in_valid_tcpopt[tx_slot];
+  wire phv_in_valid_udp = slot_in_valid_udp[tx_slot];
+  wire phv_in_valid_new_vlan = slot_in_valid_new_vlan[tx_slot];
 
   // One read of the per-packet value computed at capture -- the same
   // shape as the phv_*_valid views above, which is what keeps it safe.
@@ -1017,22 +1036,19 @@ module fiveTuple_top #(
   // ── Output header image (length-changing deparser) ──────────────────────
   localparam int HDR_OUT_BYTES = 160;  // HDR_MAX_BYTES + max growth, beat-rounded
   logic [7:0] oimg [0:HDR_OUT_BYTES-1];
-  // A PACKED copy of the overlay. The shifted read below indexes it at a
-  // computed offset, and reading an UNPACKED array that way -- from inside
-  // always_comb, at an index that is not the loop variable -- stops
-  // iverilog advancing simulation time the moment the offset is non-zero.
-  // A packed part-select with a variable base is fine. (Copying element by
-  // element at the loop index is also fine, which is what this does.)
-  logic [HDR_MAX_BYTES*8-1:0] hdr_out_flat;
-  always_comb
-    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out_flat[i*8 +: 8] = hdr_out[i];
+  // The shift, as a case over every achievable hdr_delta so that each
+  // branch reads hdr_out at a CONSTANT offset, and each branch writes
+  // every oimg element exactly once. A computed offset, or a second
+  // write loop over oimg in this block, stops iverilog advancing
+  // simulation time; see the comment in emit_top.py.
   always_comb begin
-    int q;
     // 1. the original stream, shifted
-    for (int p = 0; p < HDR_OUT_BYTES; p++) begin
-      q = p - hdr_delta;
-      oimg[p] = (q >= 0 && q < HDR_MAX_BYTES) ? hdr_out_flat[q*8 +: 8] : 8'h00;
-    end
+    case (hdr_delta)
+      -9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 124) ? hdr_out[p + 4] : 8'h00;
+      9'sd0: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 128) ? hdr_out[p] : 8'h00;
+      9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p >= 4 && p < 132) ? hdr_out[p - 4] : 8'h00;
+      default: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = 8'h00;
+    endcase
     // 2. the headers that moved differently, at their OUTPUT offsets
     if (phv_eth_valid) begin
         oimg[obase_eth] = phv_eth_dmac[47:40];
@@ -1058,8 +1074,176 @@ module fiveTuple_top #(
     end
   end
 
+  // Packed copy of the output image. The beat assembly reads the image at
+  // a computed offset, and an unpacked read at a computed index inside
+  // always_comb makes the reading block re-trigger itself forever. A
+  // packed part-select with a variable base is safe to READ.
+  logic [HDR_OUT_BYTES*8-1:0] oflat;
+  always_comb begin
+    oflat[7:0] = oimg[0];
+    oflat[15:8] = oimg[1];
+    oflat[23:16] = oimg[2];
+    oflat[31:24] = oimg[3];
+    oflat[39:32] = oimg[4];
+    oflat[47:40] = oimg[5];
+    oflat[55:48] = oimg[6];
+    oflat[63:56] = oimg[7];
+    oflat[71:64] = oimg[8];
+    oflat[79:72] = oimg[9];
+    oflat[87:80] = oimg[10];
+    oflat[95:88] = oimg[11];
+    oflat[103:96] = oimg[12];
+    oflat[111:104] = oimg[13];
+    oflat[119:112] = oimg[14];
+    oflat[127:120] = oimg[15];
+    oflat[135:128] = oimg[16];
+    oflat[143:136] = oimg[17];
+    oflat[151:144] = oimg[18];
+    oflat[159:152] = oimg[19];
+    oflat[167:160] = oimg[20];
+    oflat[175:168] = oimg[21];
+    oflat[183:176] = oimg[22];
+    oflat[191:184] = oimg[23];
+    oflat[199:192] = oimg[24];
+    oflat[207:200] = oimg[25];
+    oflat[215:208] = oimg[26];
+    oflat[223:216] = oimg[27];
+    oflat[231:224] = oimg[28];
+    oflat[239:232] = oimg[29];
+    oflat[247:240] = oimg[30];
+    oflat[255:248] = oimg[31];
+    oflat[263:256] = oimg[32];
+    oflat[271:264] = oimg[33];
+    oflat[279:272] = oimg[34];
+    oflat[287:280] = oimg[35];
+    oflat[295:288] = oimg[36];
+    oflat[303:296] = oimg[37];
+    oflat[311:304] = oimg[38];
+    oflat[319:312] = oimg[39];
+    oflat[327:320] = oimg[40];
+    oflat[335:328] = oimg[41];
+    oflat[343:336] = oimg[42];
+    oflat[351:344] = oimg[43];
+    oflat[359:352] = oimg[44];
+    oflat[367:360] = oimg[45];
+    oflat[375:368] = oimg[46];
+    oflat[383:376] = oimg[47];
+    oflat[391:384] = oimg[48];
+    oflat[399:392] = oimg[49];
+    oflat[407:400] = oimg[50];
+    oflat[415:408] = oimg[51];
+    oflat[423:416] = oimg[52];
+    oflat[431:424] = oimg[53];
+    oflat[439:432] = oimg[54];
+    oflat[447:440] = oimg[55];
+    oflat[455:448] = oimg[56];
+    oflat[463:456] = oimg[57];
+    oflat[471:464] = oimg[58];
+    oflat[479:472] = oimg[59];
+    oflat[487:480] = oimg[60];
+    oflat[495:488] = oimg[61];
+    oflat[503:496] = oimg[62];
+    oflat[511:504] = oimg[63];
+    oflat[519:512] = oimg[64];
+    oflat[527:520] = oimg[65];
+    oflat[535:528] = oimg[66];
+    oflat[543:536] = oimg[67];
+    oflat[551:544] = oimg[68];
+    oflat[559:552] = oimg[69];
+    oflat[567:560] = oimg[70];
+    oflat[575:568] = oimg[71];
+    oflat[583:576] = oimg[72];
+    oflat[591:584] = oimg[73];
+    oflat[599:592] = oimg[74];
+    oflat[607:600] = oimg[75];
+    oflat[615:608] = oimg[76];
+    oflat[623:616] = oimg[77];
+    oflat[631:624] = oimg[78];
+    oflat[639:632] = oimg[79];
+    oflat[647:640] = oimg[80];
+    oflat[655:648] = oimg[81];
+    oflat[663:656] = oimg[82];
+    oflat[671:664] = oimg[83];
+    oflat[679:672] = oimg[84];
+    oflat[687:680] = oimg[85];
+    oflat[695:688] = oimg[86];
+    oflat[703:696] = oimg[87];
+    oflat[711:704] = oimg[88];
+    oflat[719:712] = oimg[89];
+    oflat[727:720] = oimg[90];
+    oflat[735:728] = oimg[91];
+    oflat[743:736] = oimg[92];
+    oflat[751:744] = oimg[93];
+    oflat[759:752] = oimg[94];
+    oflat[767:760] = oimg[95];
+    oflat[775:768] = oimg[96];
+    oflat[783:776] = oimg[97];
+    oflat[791:784] = oimg[98];
+    oflat[799:792] = oimg[99];
+    oflat[807:800] = oimg[100];
+    oflat[815:808] = oimg[101];
+    oflat[823:816] = oimg[102];
+    oflat[831:824] = oimg[103];
+    oflat[839:832] = oimg[104];
+    oflat[847:840] = oimg[105];
+    oflat[855:848] = oimg[106];
+    oflat[863:856] = oimg[107];
+    oflat[871:864] = oimg[108];
+    oflat[879:872] = oimg[109];
+    oflat[887:880] = oimg[110];
+    oflat[895:888] = oimg[111];
+    oflat[903:896] = oimg[112];
+    oflat[911:904] = oimg[113];
+    oflat[919:912] = oimg[114];
+    oflat[927:920] = oimg[115];
+    oflat[935:928] = oimg[116];
+    oflat[943:936] = oimg[117];
+    oflat[951:944] = oimg[118];
+    oflat[959:952] = oimg[119];
+    oflat[967:960] = oimg[120];
+    oflat[975:968] = oimg[121];
+    oflat[983:976] = oimg[122];
+    oflat[991:984] = oimg[123];
+    oflat[999:992] = oimg[124];
+    oflat[1007:1000] = oimg[125];
+    oflat[1015:1008] = oimg[126];
+    oflat[1023:1016] = oimg[127];
+    oflat[1031:1024] = oimg[128];
+    oflat[1039:1032] = oimg[129];
+    oflat[1047:1040] = oimg[130];
+    oflat[1055:1048] = oimg[131];
+    oflat[1063:1056] = oimg[132];
+    oflat[1071:1064] = oimg[133];
+    oflat[1079:1072] = oimg[134];
+    oflat[1087:1080] = oimg[135];
+    oflat[1095:1088] = oimg[136];
+    oflat[1103:1096] = oimg[137];
+    oflat[1111:1104] = oimg[138];
+    oflat[1119:1112] = oimg[139];
+    oflat[1127:1120] = oimg[140];
+    oflat[1135:1128] = oimg[141];
+    oflat[1143:1136] = oimg[142];
+    oflat[1151:1144] = oimg[143];
+    oflat[1159:1152] = oimg[144];
+    oflat[1167:1160] = oimg[145];
+    oflat[1175:1168] = oimg[146];
+    oflat[1183:1176] = oimg[147];
+    oflat[1191:1184] = oimg[148];
+    oflat[1199:1192] = oimg[149];
+    oflat[1207:1200] = oimg[150];
+    oflat[1215:1208] = oimg[151];
+    oflat[1223:1216] = oimg[152];
+    oflat[1231:1224] = oimg[153];
+    oflat[1239:1232] = oimg[154];
+    oflat[1247:1240] = oimg[155];
+    oflat[1255:1248] = oimg[156];
+    oflat[1263:1256] = oimg[157];
+    oflat[1271:1264] = oimg[158];
+    oflat[1279:1272] = oimg[159];
+  end
+
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
-  wire [13:0] phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0);
+  wire [13:0] phv_ipv4_base = 14 + (phv_in_valid_vlan ? 4 : 0);
   wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_hdr_len} << 2;
   wire [13:0] phv_ipv4opt_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
   wire [13:0] phv_tcp_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
@@ -1316,17 +1500,325 @@ module fiveTuple_top #(
     int p;
     tx_beat_data = '0;
     tx_beat_keep = '0;
-    for (int i = 0; i < BEAT_BYTES; i++) begin
-      p = tx_out_byte + i;
-      if (p < tx_out_len) begin
-        tx_beat_keep[i] = 1'b1;
-        if (p < tx_pstart)
-          tx_beat_data[i*8 +: 8] = oimg[p];
-        else if (i >= tx_rot)
-          tx_beat_data[i*8 +: 8] = pfifo_head_data[(i - tx_rot)*8 +: 8];
-        else
-          tx_beat_data[i*8 +: 8] = pl_prev[(BEAT_BYTES - tx_rot + i)*8 +: 8];
-      end
+    p = tx_out_byte + 0;
+    if (p < tx_out_len) begin
+      tx_beat_keep[0] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[7:0] = oflat[p*8 +: 8];
+      else if (0 >= tx_rot)
+        tx_beat_data[7:0] = pfifo_head_data[(0 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[7:0] = pl_prev[(BEAT_BYTES - tx_rot + 0)*8 +: 8];
+    end
+    p = tx_out_byte + 1;
+    if (p < tx_out_len) begin
+      tx_beat_keep[1] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[15:8] = oflat[p*8 +: 8];
+      else if (1 >= tx_rot)
+        tx_beat_data[15:8] = pfifo_head_data[(1 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[15:8] = pl_prev[(BEAT_BYTES - tx_rot + 1)*8 +: 8];
+    end
+    p = tx_out_byte + 2;
+    if (p < tx_out_len) begin
+      tx_beat_keep[2] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[23:16] = oflat[p*8 +: 8];
+      else if (2 >= tx_rot)
+        tx_beat_data[23:16] = pfifo_head_data[(2 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[23:16] = pl_prev[(BEAT_BYTES - tx_rot + 2)*8 +: 8];
+    end
+    p = tx_out_byte + 3;
+    if (p < tx_out_len) begin
+      tx_beat_keep[3] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[31:24] = oflat[p*8 +: 8];
+      else if (3 >= tx_rot)
+        tx_beat_data[31:24] = pfifo_head_data[(3 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[31:24] = pl_prev[(BEAT_BYTES - tx_rot + 3)*8 +: 8];
+    end
+    p = tx_out_byte + 4;
+    if (p < tx_out_len) begin
+      tx_beat_keep[4] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[39:32] = oflat[p*8 +: 8];
+      else if (4 >= tx_rot)
+        tx_beat_data[39:32] = pfifo_head_data[(4 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[39:32] = pl_prev[(BEAT_BYTES - tx_rot + 4)*8 +: 8];
+    end
+    p = tx_out_byte + 5;
+    if (p < tx_out_len) begin
+      tx_beat_keep[5] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[47:40] = oflat[p*8 +: 8];
+      else if (5 >= tx_rot)
+        tx_beat_data[47:40] = pfifo_head_data[(5 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[47:40] = pl_prev[(BEAT_BYTES - tx_rot + 5)*8 +: 8];
+    end
+    p = tx_out_byte + 6;
+    if (p < tx_out_len) begin
+      tx_beat_keep[6] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[55:48] = oflat[p*8 +: 8];
+      else if (6 >= tx_rot)
+        tx_beat_data[55:48] = pfifo_head_data[(6 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[55:48] = pl_prev[(BEAT_BYTES - tx_rot + 6)*8 +: 8];
+    end
+    p = tx_out_byte + 7;
+    if (p < tx_out_len) begin
+      tx_beat_keep[7] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[63:56] = oflat[p*8 +: 8];
+      else if (7 >= tx_rot)
+        tx_beat_data[63:56] = pfifo_head_data[(7 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[63:56] = pl_prev[(BEAT_BYTES - tx_rot + 7)*8 +: 8];
+    end
+    p = tx_out_byte + 8;
+    if (p < tx_out_len) begin
+      tx_beat_keep[8] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[71:64] = oflat[p*8 +: 8];
+      else if (8 >= tx_rot)
+        tx_beat_data[71:64] = pfifo_head_data[(8 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[71:64] = pl_prev[(BEAT_BYTES - tx_rot + 8)*8 +: 8];
+    end
+    p = tx_out_byte + 9;
+    if (p < tx_out_len) begin
+      tx_beat_keep[9] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[79:72] = oflat[p*8 +: 8];
+      else if (9 >= tx_rot)
+        tx_beat_data[79:72] = pfifo_head_data[(9 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[79:72] = pl_prev[(BEAT_BYTES - tx_rot + 9)*8 +: 8];
+    end
+    p = tx_out_byte + 10;
+    if (p < tx_out_len) begin
+      tx_beat_keep[10] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[87:80] = oflat[p*8 +: 8];
+      else if (10 >= tx_rot)
+        tx_beat_data[87:80] = pfifo_head_data[(10 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[87:80] = pl_prev[(BEAT_BYTES - tx_rot + 10)*8 +: 8];
+    end
+    p = tx_out_byte + 11;
+    if (p < tx_out_len) begin
+      tx_beat_keep[11] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[95:88] = oflat[p*8 +: 8];
+      else if (11 >= tx_rot)
+        tx_beat_data[95:88] = pfifo_head_data[(11 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[95:88] = pl_prev[(BEAT_BYTES - tx_rot + 11)*8 +: 8];
+    end
+    p = tx_out_byte + 12;
+    if (p < tx_out_len) begin
+      tx_beat_keep[12] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[103:96] = oflat[p*8 +: 8];
+      else if (12 >= tx_rot)
+        tx_beat_data[103:96] = pfifo_head_data[(12 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[103:96] = pl_prev[(BEAT_BYTES - tx_rot + 12)*8 +: 8];
+    end
+    p = tx_out_byte + 13;
+    if (p < tx_out_len) begin
+      tx_beat_keep[13] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[111:104] = oflat[p*8 +: 8];
+      else if (13 >= tx_rot)
+        tx_beat_data[111:104] = pfifo_head_data[(13 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[111:104] = pl_prev[(BEAT_BYTES - tx_rot + 13)*8 +: 8];
+    end
+    p = tx_out_byte + 14;
+    if (p < tx_out_len) begin
+      tx_beat_keep[14] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[119:112] = oflat[p*8 +: 8];
+      else if (14 >= tx_rot)
+        tx_beat_data[119:112] = pfifo_head_data[(14 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[119:112] = pl_prev[(BEAT_BYTES - tx_rot + 14)*8 +: 8];
+    end
+    p = tx_out_byte + 15;
+    if (p < tx_out_len) begin
+      tx_beat_keep[15] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[127:120] = oflat[p*8 +: 8];
+      else if (15 >= tx_rot)
+        tx_beat_data[127:120] = pfifo_head_data[(15 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[127:120] = pl_prev[(BEAT_BYTES - tx_rot + 15)*8 +: 8];
+    end
+    p = tx_out_byte + 16;
+    if (p < tx_out_len) begin
+      tx_beat_keep[16] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[135:128] = oflat[p*8 +: 8];
+      else if (16 >= tx_rot)
+        tx_beat_data[135:128] = pfifo_head_data[(16 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[135:128] = pl_prev[(BEAT_BYTES - tx_rot + 16)*8 +: 8];
+    end
+    p = tx_out_byte + 17;
+    if (p < tx_out_len) begin
+      tx_beat_keep[17] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[143:136] = oflat[p*8 +: 8];
+      else if (17 >= tx_rot)
+        tx_beat_data[143:136] = pfifo_head_data[(17 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[143:136] = pl_prev[(BEAT_BYTES - tx_rot + 17)*8 +: 8];
+    end
+    p = tx_out_byte + 18;
+    if (p < tx_out_len) begin
+      tx_beat_keep[18] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[151:144] = oflat[p*8 +: 8];
+      else if (18 >= tx_rot)
+        tx_beat_data[151:144] = pfifo_head_data[(18 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[151:144] = pl_prev[(BEAT_BYTES - tx_rot + 18)*8 +: 8];
+    end
+    p = tx_out_byte + 19;
+    if (p < tx_out_len) begin
+      tx_beat_keep[19] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[159:152] = oflat[p*8 +: 8];
+      else if (19 >= tx_rot)
+        tx_beat_data[159:152] = pfifo_head_data[(19 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[159:152] = pl_prev[(BEAT_BYTES - tx_rot + 19)*8 +: 8];
+    end
+    p = tx_out_byte + 20;
+    if (p < tx_out_len) begin
+      tx_beat_keep[20] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[167:160] = oflat[p*8 +: 8];
+      else if (20 >= tx_rot)
+        tx_beat_data[167:160] = pfifo_head_data[(20 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[167:160] = pl_prev[(BEAT_BYTES - tx_rot + 20)*8 +: 8];
+    end
+    p = tx_out_byte + 21;
+    if (p < tx_out_len) begin
+      tx_beat_keep[21] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[175:168] = oflat[p*8 +: 8];
+      else if (21 >= tx_rot)
+        tx_beat_data[175:168] = pfifo_head_data[(21 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[175:168] = pl_prev[(BEAT_BYTES - tx_rot + 21)*8 +: 8];
+    end
+    p = tx_out_byte + 22;
+    if (p < tx_out_len) begin
+      tx_beat_keep[22] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[183:176] = oflat[p*8 +: 8];
+      else if (22 >= tx_rot)
+        tx_beat_data[183:176] = pfifo_head_data[(22 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[183:176] = pl_prev[(BEAT_BYTES - tx_rot + 22)*8 +: 8];
+    end
+    p = tx_out_byte + 23;
+    if (p < tx_out_len) begin
+      tx_beat_keep[23] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[191:184] = oflat[p*8 +: 8];
+      else if (23 >= tx_rot)
+        tx_beat_data[191:184] = pfifo_head_data[(23 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[191:184] = pl_prev[(BEAT_BYTES - tx_rot + 23)*8 +: 8];
+    end
+    p = tx_out_byte + 24;
+    if (p < tx_out_len) begin
+      tx_beat_keep[24] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[199:192] = oflat[p*8 +: 8];
+      else if (24 >= tx_rot)
+        tx_beat_data[199:192] = pfifo_head_data[(24 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[199:192] = pl_prev[(BEAT_BYTES - tx_rot + 24)*8 +: 8];
+    end
+    p = tx_out_byte + 25;
+    if (p < tx_out_len) begin
+      tx_beat_keep[25] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[207:200] = oflat[p*8 +: 8];
+      else if (25 >= tx_rot)
+        tx_beat_data[207:200] = pfifo_head_data[(25 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[207:200] = pl_prev[(BEAT_BYTES - tx_rot + 25)*8 +: 8];
+    end
+    p = tx_out_byte + 26;
+    if (p < tx_out_len) begin
+      tx_beat_keep[26] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[215:208] = oflat[p*8 +: 8];
+      else if (26 >= tx_rot)
+        tx_beat_data[215:208] = pfifo_head_data[(26 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[215:208] = pl_prev[(BEAT_BYTES - tx_rot + 26)*8 +: 8];
+    end
+    p = tx_out_byte + 27;
+    if (p < tx_out_len) begin
+      tx_beat_keep[27] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[223:216] = oflat[p*8 +: 8];
+      else if (27 >= tx_rot)
+        tx_beat_data[223:216] = pfifo_head_data[(27 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[223:216] = pl_prev[(BEAT_BYTES - tx_rot + 27)*8 +: 8];
+    end
+    p = tx_out_byte + 28;
+    if (p < tx_out_len) begin
+      tx_beat_keep[28] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[231:224] = oflat[p*8 +: 8];
+      else if (28 >= tx_rot)
+        tx_beat_data[231:224] = pfifo_head_data[(28 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[231:224] = pl_prev[(BEAT_BYTES - tx_rot + 28)*8 +: 8];
+    end
+    p = tx_out_byte + 29;
+    if (p < tx_out_len) begin
+      tx_beat_keep[29] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[239:232] = oflat[p*8 +: 8];
+      else if (29 >= tx_rot)
+        tx_beat_data[239:232] = pfifo_head_data[(29 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[239:232] = pl_prev[(BEAT_BYTES - tx_rot + 29)*8 +: 8];
+    end
+    p = tx_out_byte + 30;
+    if (p < tx_out_len) begin
+      tx_beat_keep[30] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[247:240] = oflat[p*8 +: 8];
+      else if (30 >= tx_rot)
+        tx_beat_data[247:240] = pfifo_head_data[(30 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[247:240] = pl_prev[(BEAT_BYTES - tx_rot + 30)*8 +: 8];
+    end
+    p = tx_out_byte + 31;
+    if (p < tx_out_len) begin
+      tx_beat_keep[31] = 1'b1;
+      if (p < tx_pstart)
+        tx_beat_data[255:248] = oflat[p*8 +: 8];
+      else if (31 >= tx_rot)
+        tx_beat_data[255:248] = pfifo_head_data[(31 - tx_rot)*8 +: 8];
+      else
+        tx_beat_data[255:248] = pl_prev[(BEAT_BYTES - tx_rot + 31)*8 +: 8];
     end
   end
 

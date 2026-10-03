@@ -8,14 +8,14 @@
 // top-level integration entirely.
 //
 // Scope notes (read before extending this file):
-//   - fiveTuple.p4's only non-NoAction action is InsertVLAN, which grows the
-//     packet (hdr.new_vlan.setValid()) -- packet growing/shrinking is a
-//     separate, pre-existing, out-of-scope limitation (TX always replays
-//     exactly rx_beat_cnt beats), so no test here configures a matching
-//     table entry with action=InsertVLAN. All CP-configured entries use
-//     action=NoAction (still a real "hit", distinguishable from a genuine
-//     miss only via the internal FiveTuple_hit_out signal -- both produce
-//     byte-identical output, since NoAction never touches header fields).
+//   - fiveTuple.p4's only non-NoAction action is InsertVLAN, which GROWS the
+//     packet (hdr.new_vlan.setValid()). That used to be out of scope -- TX
+//     replayed exactly rx_beat_cnt beats -- so no test configured it and the
+//     app's whole purpose went unexercised. The length-changing deparser
+//     (docs/length_changing_deparser_plan.md) fixed that, and T12 below now
+//     checks the inserted tag byte for byte. Most entries here still use
+//     action=NoAction, which is a real "hit" producing byte-identical output
+//     since NoAction never touches header fields.
 //   - fiveTuple.p4 never calls mark_to_drop anywhere, so proc_drop is never
 //     asserted by this app's own P4 source -- the drop-suppression logic in
 //     PROC/TX (`!proc_drop` in the arm conditions) is verified by direct RTL
@@ -194,6 +194,26 @@ module tb_fiveTuple_top;
     axil_write(5, {16'd0, sport});
     axil_write(6, {16'd0, dport});
     axil_write(11, 32'd0); // commit
+  endtask
+
+  // The same entry, but with action=InsertVLAN and its four parameters.
+  // Words 7..10 are p_counter_index, p_pcp, p_cfi, p_vid.
+  task automatic cp_write_insertvlan(input [12:0] idx, input [31:0] src, input [31:0] dst,
+                                      input [7:0] proto, input [15:0] sport, input [15:0] dport,
+                                      input [12:0] counter_index, input [2:0] pcp,
+                                      input cfi, input [11:0] vid);
+    axil_write(0, idx);
+    axil_write(1, 32'd1);   // action = InsertVLAN
+    axil_write(2, src);
+    axil_write(3, dst);
+    axil_write(4, {24'd0, proto});
+    axil_write(5, {16'd0, sport});
+    axil_write(6, {16'd0, dport});
+    axil_write(7, {19'd0, counter_index});
+    axil_write(8, {29'd0, pcp});
+    axil_write(9, {31'd0, cfi});
+    axil_write(10, {20'd0, vid});
+    axil_write(11, 32'd0);  // commit
   endtask
 
   // Query/delete a table entry entirely over AXI4-Lite. The commit (word 17
@@ -730,6 +750,54 @@ module tb_fiveTuple_top;
       cp_query_entry(32'hC0A80020, 32'hC0A80021, 8'd17, 16'd300, 16'd400,
                       q_hit, q_act, q_cidx, q_pcp, q_cfi, q_vid);
       chk("T11: the stalled-then-committed write (idx3) landed correctly", q_hit);
+    end
+
+
+    // ══ T12: InsertVLAN -- the app's whole purpose, end to end ═════════════
+    // A hit on action=InsertVLAN makes hdr.new_vlan valid, which the deparser
+    // must INSERT as 4 bytes between ethernet and ipv4, shifting everything
+    // after it. The action sets new_vlan.tpid = hdr.eth.type BEFORE the apply
+    // block rewrites eth.type to VLAN_TYPE, so the tag carries the original
+    // 0x0800 and the frame now says 0x8100 -- a textbook VLAN tag push.
+    $display("\n══ T12: InsertVLAN grows the packet by 4 bytes ════════════════");
+    begin
+      byte in_arr[], exp_arr[];
+      int  k;
+
+      cp_write_insertvlan(13'd1, 32'hC0A8000A, 32'hC0A8000B, 8'd17,
+                          16'd7000, 16'd8000,
+                          13'd99, 3'd5, 1'b1, 12'd42);
+
+      pb.delete();
+      append_eth(16'h0800);
+      append_ipv4(4'd5, 8'd17, 32'hC0A8000A, 32'hC0A8000B);
+      append_udp(16'd7000, 16'd8000);
+      append_payload(64, 8'h33);
+      in_arr = pb;
+
+      exp_arr = new[in_arr.size() + 4];
+      for (k = 0; k < 12; k++) exp_arr[k] = in_arr[k];      // dmac + smac
+      exp_arr[12] = 8'h81; exp_arr[13] = 8'h00;             // eth.type <- VLAN_TYPE
+      exp_arr[14] = 8'hB0;                                   // {pcp=5, cfi=1, vid[11:8]=0}
+      exp_arr[15] = 8'h2A;                                   // vid[7:0] = 42
+      exp_arr[16] = 8'h08; exp_arr[17] = 8'h00;             // tpid <- original 0x0800
+      for (k = 14; k < in_arr.size(); k++) exp_arr[k + 4] = in_arr[k];
+
+      fork
+        send_packet(in_arr);
+        capture_response();
+      join
+
+      $display("    [INFO] T12: in %0d bytes -> out %0d bytes", in_arr.size(), rx_bytes.size());
+      chk("T12: output is 4 bytes longer than the input",
+          rx_bytes.size() == in_arr.size() + 4);
+      chk("T12: eth.type rewritten to 0x8100",
+          rx_bytes.size() > 13 && rx_bytes[12] == 8'h81 && rx_bytes[13] == 8'h00);
+      chk("T12: the inserted tag is {pcp=5,cfi=1,vid=42} then tpid=0x0800",
+          rx_bytes.size() > 17 && rx_bytes[14] == 8'hB0 && rx_bytes[15] == 8'h2A
+          && rx_bytes[16] == 8'h08 && rx_bytes[17] == 8'h00);
+      chk("T12: the whole frame matches, tail shifted by 4",
+          bytes_equal(rx_bytes, exp_arr));
     end
 
     // ──────────────────────────────────────────────────────────────────────

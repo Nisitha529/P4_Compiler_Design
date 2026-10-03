@@ -157,8 +157,8 @@ which is luck, not correctness.
 | 1 | The emit-list header set, per-slot input validity, and `hdr_delta` | the validity arithmetic | **done** — 40/40 unchanged, delta verified 0/+4/+8/−4 |
 | 2 | The output layout: emit-order offsets, the splice point, and the length-changing gate | the offset arithmetic, in isolation | **done** — 40/40 unchanged; offsets verified against the model |
 | 3 | The emission itself: re-placed header image, the 2-beat payload shifter, output `tkeep`/`tlast` | the shifter — the real risk | **done** — `lenprobe` 16/16, all four cases byte-for-byte |
-| 4 | Length-dependent metadata: keep `packet_length` as the **received** length, fix counters and `totalLen`-style fields | metadata semantics under a length change | probe assertions on both lengths |
-| 5 | Turn on `fiveTuple`'s `InsertVLAN` and port `flowcache` | real apps | `fiveTuple` VLAN insertion verified end-to-end at last |
+| 4 | Length-dependent metadata: keep `packet_length` as the **received** length, fix counters and `totalLen`-style fields | metadata semantics under a length change | **done** — `lenprobe` 26/26, both lengths asserted |
+| 5 | Turn on `fiveTuple`'s `InsertVLAN` and port `flowcache` | real apps | **done** — `fiveTuple` T12 byte-for-byte, 116/116; `flowcache` port still open |
 
 Steps 1 and 2 must leave every number unchanged — they are pure restructuring.
 The behaviour change starts at step 3.
@@ -499,7 +499,117 @@ path; everything else keeps byte-identical RTL. That is `lenprobe` and
 exercises the new path with `delta == 0`, which is exactly the regression you
 want on a restructure this size.
 
-## Remaining: step 4 and step 5
+## Step 4 — done (2026-10-03)
+
+Metadata under a length change, pinned by assertions rather than left as a
+documented intention. `lenprobe` grew to 26 assertions (from 16) and a second
+metadata field, and the app now copies both `packet_length` and `parsed_bytes`
+into user metadata so the testbench can read them off the wire.
+
+What the assertions establish:
+
+- **`packet_length` is the RECEIVED length.** A 64-byte frame reports 64 whether
+  it leaves as 68, 72 or 60. This was decision 2 above; it is now checked rather
+  than assumed.
+- **`parsed_bytes` is the extracted extent**, not the output length — 14 with
+  only ethernet parsed, 18 with the tag. Step 1 had wired this to
+  `slot_byte_len` by mistake (the whole packet, not the header extent); it reads
+  `cutoff_byte` now.
+- **A program can stamp the received length into a header it just inserted.**
+  `insert_stamp` sets `tag.seq = packet_length`; a 96-byte input comes out at
+  100 bytes with `tag.seq == 0x0060`. That is the `ipv4.totalLen` pattern working
+  end to end — the program does the arithmetic, the shell just makes the input
+  available at the right time.
+- **Store-and-forward combines with the length change.** The grown packet's
+  beats and `tkeep`/`tlast` are right whether the slot completed before TX
+  started or during it.
+
+Byte counters still count received bytes (decision 3), unchanged.
+
+## Step 5 — done (2026-10-03)
+
+`fiveTuple`'s `InsertVLAN` runs end to end. `tb_fiveTuple_top` gained
+`cp_write_insertvlan` (the same entry shape as the existing writer, with
+`action = 1` and the four parameters at words 7..10) and **T12**: a 106-byte UDP
+frame matching an entry with `pcp=5, cfi=1, vid=42`.
+
+T12 checks four things, and the fourth is the one that matters: a whole-frame
+comparison against an expected image built in the testbench. It passes —
+106 bytes in, 110 out, `eth.type` rewritten to `0x8100`, the tag reading
+`B0 2A 08 00` (the original `0x0800` carried into `tpid`), and every byte of the
+tail shifted by exactly four.
+
+**`fiveTuple`: 116 assertions across 8 testbenches, all green** (top 32,
+table query/delete 29, parser 10, packet counter 10, byte counter 6, counters
+e2e 7, selftest top 15, selftest AVMM 7). Full suite: **654 + 22 = 676
+assertions, 0 failures.**
+
+### One real bug, and four ways iverilog hid it
+
+The bug was a single wrong signal, and it is the kind this architecture invites:
+
+> **`phv_*_base` was computed from the OUTPUT PHV.** Those offsets index the
+> **received** bytes — `hdr_out` overlays the output PHV onto the bytes that
+> arrived — so they have to follow the input layout. For a fixed-length program
+> the two agree, which is why this stood for as long as it did. `fiveTuple`
+> rewrites `eth.type` to `0x8100`, and the generated offset was literally
+> `phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0)` — so the deparser
+> read ipv4 at the offset a VLAN-tagged frame would have had, four bytes too
+> high, and duplicated `45 00 00 00` into bytes 22..25.
+
+The fix is to read the validity sampled at issue instead: `slot_in_valid_*` was
+already being captured for `hdr_delta`, so the offsets now use
+`phv_in_valid_*` views of it. The arithmetic is otherwise untouched. One caveat
+stated in the code: a `var_pred` length field (`ipv4.hdr_len`) still comes from
+the output PHV, so a program that *rewrote* one would need its received value
+stored too. None does, and the varbit guard from step 2 already rejects a
+variable-length header at or before the splice.
+
+Finding it took far longer than fixing it, because **four separate iverilog
+defects sat between the bug and the symptom** — three of them silent. All four
+are now worked around in the emitter, with the reason written at each site:
+
+| Construct | What iverilog does |
+|---|---|
+| `tx_beat_data[i*8 +: 8] = ...` (variable part-select **lvalue**) | "constant selects … all bits will be included" — treats it as a whole-vector access, so the block becomes sensitive to its own output and **re-triggers forever**. Simulation time stopped dead. Only appeared once `hdr_delta != 0`, because at `tx_rot == 0` every lane takes the same branch and the repeated whole-vector write settles. |
+| `oimg[p]` — unpacked read at a **computed** index inside `always_comb` | same self-retrigger, in whichever block reads it |
+| a **second** write loop over the same unpacked array in one `always_comb` (clear-then-fill) | same self-retrigger — and this one fired with `hdr_delta == 0`, so it broke tests that had been passing |
+| `hdr_out_flat[q*8 +: 8] = hdr_out[q]` (the same lvalue, used as a workaround for the above) | **silently wrong data** — duplicated four bytes of the shifted tail, which is how it masqueraded as the real bug for an entire debugging session |
+
+The shapes the emitter uses now, all four avoided:
+
+- the shift is a **`case` over every achievable `hdr_delta`**, so each branch
+  reads `hdr_out` at a *constant* offset. The achievable set is small — each
+  changeable header either appears (+size), disappears (−size), or does neither.
+- each branch writes **every** `oimg` element exactly once, unconditionally.
+- `oflat`, a packed copy of `oimg` built with constant indices on both sides,
+  bridges to the beat assembly; a variable part-select is safe to **read**.
+- the beat's 32 lanes are **unrolled at emit time**, so every part-select lvalue
+  has a constant base.
+
+The method that actually worked, after a lot of guessing that did not: a
+heartbeat `initial forever #N $display($time)` to tell a time stall from a logic
+deadlock, then an `always @(sig) bump(...)` counter on each suspect net to name
+the one spinning. That pointed straight at `tx_beat_data` — a block with no
+changing inputs — in one run. Worth reaching for first next time.
+
+### Not done here
+
+**No Quartus run.** This machine has no Quartus install (only a Windows
+installer on the external drive), so the synthesis check this step wants was not
+performed. It is worth doing before trusting the numbers: the new path adds
+`oflat` (a 1280-bit combinational vector) and 32 unrolled beat lanes, and while
+nothing here adds a *writer* to a slot array — the usual multi-driver trap —
+the area and Fmax effect is unmeasured. Gating `slot_in_valid_*` on
+`can_change_len` also *removes* dead per-slot arrays from every other app, which
+should help them slightly.
+
+**`flowcache` not ported.** Step 5 as written paired `InsertVLAN` with a
+`flowcache` port. The shell blocker is gone, so that is now an app-level task
+rather than an RTL one, and it is the natural next piece.
+
+## Original notes on steps 4 and 5
+
 
 - **Step 4 — length-dependent metadata.** `packet_length` and the byte counters
   still report the **received** length, which is the documented default and is
