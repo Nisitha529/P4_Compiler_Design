@@ -90,6 +90,12 @@ module port_fwd_table #(
   logic [0:0] q_rd_action;
   logic [8:0] q_rd_p_port;
 
+  // Power-on clear state. Declared up here because the query pipeline
+  // below gates on `clearing`, and xvlog will not accept a use that
+  // precedes the declaration.
+  logic clearing = 1'b1;
+  logic [3:0] clr_idx = '0;
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       q_pend_valid <= 1'b0;
@@ -151,9 +157,6 @@ module port_fwd_table #(
   // low-probability edge case, since DEPTH cycles is microseconds of real
   // wall-clock time, not something realistic control-plane software would
   // race against.
-  logic clearing = 1'b1;
-  logic [3:0] clr_idx = '0;
-
   // Synchronous write (control plane) -- extended, not duplicated, to add
   // the delete-commit branch AND the power-on clear above: this is the one
   // place mem_valid needs multiple writers, and it must stay a single

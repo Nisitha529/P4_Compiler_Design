@@ -546,6 +546,14 @@ assertions, 0 failures.**
 
 ### One real bug, and four ways iverilog hid it
 
+> **Corrected 2026-10-04.** The table below says these four constructs are
+> defective. A probe matrix across iverilog, Vivado `xsim` and Verilator
+> (`verification/toolchain_probes/`) showed that three of the four are accepted
+> and correct in all three simulators in isolation. They did fix real stalls in
+> this design, but the characterisation below is wrong as a general claim --
+> see `docs/toolchain_constraints.md` for what is actually true. The *bug*
+> described here, `phv_*_base` reading the output PHV, is unaffected.
+
 The bug was a single wrong signal, and it is the kind this architecture invites:
 
 > **`phv_*_base` was computed from the OUTPUT PHV.** Those offsets index the
@@ -595,9 +603,33 @@ changing inputs — in one run. Worth reaching for first next time.
 
 ### Not done here
 
-**No Quartus run.** This machine has no Quartus install (only a Windows
-installer on the external drive), so the synthesis check this step wants was not
-performed. It is worth doing before trusting the numbers: the new path adds
+**Quartus run: done 2026-10-04, 0 errors, 140 warnings.** Analysis & synthesis
+succeeds, so nothing here is an illegal construct or a multi-driver. The numbers:
+
+| | logic elements | registers | memory bits |
+|---|---|---|---|
+| `fiveTuple_top` (datapath) | 71,420 | 30,623 | 4,546,560 |
+| `fiveTuple_selftest_top` | 164,289 | 88,635 | 4,694,016 |
+| EP4CE115F29C7 available | ~114,480 | — | 3,981,312 (432 x M9K) |
+
+So the **datapath fits in logic (62%) and overflows block RAM by ~14%**, and the
+**selftest harness is what breaks the logic budget** -- it adds 92,869 LEs, more
+than the datapath itself. The harness is a test fixture, not the product, but it
+can no longer be synthesised onto this board alongside the design.
+
+The RAM overflow is **the P4 program's own resource request**, not compiler
+bloat: `fiveTuple.p4` declares `size = 8192` on the exact-match table and two
+`Counter<bit<64>, bit<13>>(8192)` instances. Three 8192-entry structures plus
+2 x 8192 x 64 bits of counters do not fit a Cyclone IV E. Lower `NUM_COUNTERS`
+and the table `size` and it fits; that is the program author's call.
+
+One genuine compiler-side lead, though: the reported 4,546,560 bits is about
+**1.85x the ~2.46 Mbit the design logically needs**. The table splits its key
+across one 8192-deep memory *per field* (32/32/8/16/16 bits), and on Cyclone IV a
+narrow-but-deep memory rounds up to whole M9K blocks, wasting most of each. 493
+M9Ks are needed where 432 exist. Packing the key fields into one wide memory is
+the obvious thing to try, and would likely bring the design inside the device
+without touching the P4. It is worth doing before trusting the numbers: the new path adds
 `oflat` (a 1280-bit combinational vector) and 32 unrolled beat lanes, and while
 nothing here adds a *writer* to a slot array — the usual multi-driver trap —
 the area and Fmax effect is unmeasured. Gating `slot_in_valid_*` on

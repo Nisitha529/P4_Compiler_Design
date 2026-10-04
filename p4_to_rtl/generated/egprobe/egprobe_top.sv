@@ -77,6 +77,8 @@ module egprobe_top #(
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
+  localparam int QCOUNT = 4;   // output queues
+  localparam int QSEL_W = 2;
   logic slot_release; // likewise: the payload buffers below clear on it
   `ifndef SYNTHESIS
   // synthesis translate_off
@@ -104,8 +106,6 @@ module egprobe_top #(
   wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
 
   // ── Traffic manager: per-queue slot FIFOs ────────────────────────────────
-  localparam int QCOUNT = 4;
-  localparam int QSEL_W = 2;
   logic [SLOT_AW-1:0] tmq_mem [0:QCOUNT*NSLOT-1];
   logic [SLOT_AW:0]   tmq_wr  [0:QCOUNT-1];
   logic [SLOT_AW:0]   tmq_rd  [0:QCOUNT-1];
@@ -729,10 +729,12 @@ module egprobe_top #(
   wire [47:0] phv_eth_src = slot_phv_eth_src[tx_slot];
   wire [15:0] phv_eth_etype = slot_phv_eth_etype[tx_slot];
 
+  // Declared here, driven further down. The output-image block below reads
+  // it, and xvlog will not accept a use that precedes the declaration.
+  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.
-  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   always_comb begin
     for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];
     hdr_out[0] = phv_eth_dst[47:40];

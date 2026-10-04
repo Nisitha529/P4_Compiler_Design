@@ -76,6 +76,8 @@ module load_balance_p4rtl_top #(
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
+  localparam int QCOUNT = 4;   // output queues
+  localparam int QSEL_W = 2;
   logic slot_release; // likewise: the payload buffers below clear on it
   `ifndef SYNTHESIS
   // synthesis translate_off
@@ -103,8 +105,6 @@ module load_balance_p4rtl_top #(
   wire  [SLOT_AW-1:0] rel_slot = rel_ptr[SLOT_AW-1:0];
 
   // ── Traffic manager: per-queue slot FIFOs ────────────────────────────────
-  localparam int QCOUNT = 4;
-  localparam int QSEL_W = 2;
   logic [SLOT_AW-1:0] tmq_mem [0:QCOUNT*NSLOT-1];
   logic [SLOT_AW:0]   tmq_wr  [0:QCOUNT-1];
   logic [SLOT_AW:0]   tmq_rd  [0:QCOUNT-1];
@@ -1052,6 +1052,9 @@ module load_balance_p4rtl_top #(
   wire [15:0] phv_tcp_checksum = slot_phv_tcp_checksum[tx_slot];
   wire [15:0] phv_tcp_urgentPtr = slot_phv_tcp_urgentPtr[tx_slot];
 
+  // Declared here, driven further down. The output-image block below reads
+  // it, and xvlog will not accept a use that precedes the declaration.
+  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_ihl} << 2;
   wire [13:0] phv_tcp_base = 14 + phv_ipv4_hdr_bytes;
@@ -1059,7 +1062,6 @@ module load_balance_p4rtl_top #(
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.
-  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   always_comb begin
     for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];
     hdr_out[0] = phv_ethernet_dstAddr[47:40];

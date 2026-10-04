@@ -638,10 +638,12 @@ module ioprobe_top #(
   wire [31:0] phv_ipv4_srcAddr = slot_phv_ipv4_srcAddr[tx_slot];
   wire [31:0] phv_ipv4_dstAddr = slot_phv_ipv4_dstAddr[tx_slot];
 
+  // Declared here, driven further down. The output-image block below reads
+  // it, and xvlog will not accept a use that precedes the declaration.
+  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.
-  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   always_comb begin
     for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];
     hdr_out[0] = phv_eth_dst[47:40];

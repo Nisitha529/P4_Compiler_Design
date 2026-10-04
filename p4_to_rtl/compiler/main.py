@@ -207,7 +207,21 @@ def _run_p4c(p4_path, p4c_bin=None):
         if result.returncode != 0:
             raise RuntimeError("p4c compilation failed — correct the P4 errors above")
 
-        with open(tmp_json) as f:
+        # p4c's `-o` has meant two different things across versions: older ones
+        # write the JSON to exactly that path, newer ones treat it as an output
+        # DIRECTORY and write <app>.json inside it (which surfaced as
+        # "IsADirectoryError: .../out.json" and made every bmv2 app
+        # unregenerable). Accept either rather than pin a p4c version.
+        json_path = tmp_json
+        if os.path.isdir(tmp_json):
+            produced = [os.path.join(tmp_json, n) for n in sorted(os.listdir(tmp_json))
+                        if n.endswith('.json')]
+            if not produced:
+                raise RuntimeError(
+                    f"p4c reported success but produced no .json in {tmp_json} "
+                    f"(found: {sorted(os.listdir(tmp_json)) or 'nothing'})")
+            json_path = produced[0]
+        with open(json_path) as f:
             return json.load(f)
 
     except subprocess.TimeoutExpired:

@@ -163,6 +163,12 @@ module tb_lenprobe_top;
         if (m_axis_tkeep[i]) rx_pkt.push_back(m_axis_tdata[i*8 +: 8]);
   end
 
+  // Step 1 observability: sample hdr_delta while TX is on the packet.
+  int    seen_delta, seen_splice;
+  logic  saw_delta = 0;
+  // Declared ahead of the task below that clears them: xvlog rejects an
+  // identifier used before its declaration, while iverilog accepts it.
+
   task automatic run_one(input [15:0] etype, input int nbytes, input bit with_vlan,
                          input int wait_cyc = 400);
     build_frame(etype, nbytes, with_vlan);
@@ -195,9 +201,6 @@ module tb_lenprobe_top;
                tag, rx_pkt.size(), d, rx_pkt[d], expect_pkt[d]);
   endtask
 
-  // Step 1 observability: sample hdr_delta while TX is on the packet.
-  int    seen_delta, seen_splice;
-  logic  saw_delta = 0;
   always @(posedge clk) begin
     #1;
     if (collecting && m_axis_tvalid && m_axis_tready && !saw_delta) begin

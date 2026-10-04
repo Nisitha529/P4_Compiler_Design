@@ -380,43 +380,59 @@ are together.
   `always_comb`.
 - No unpacked structs; `fork…join_any` + `disable fork` crashes `vvp`; no
   `real'()` cast; queue pops must be `x = q.pop_front()`.
-- **Six ways to stop simulation time dead** — no error, no output, the clock
-  simply stops. Every one of them is the same underlying defect: the block ends
-  up sensitive to something it writes, so it re-triggers forever. The first
-  three came out of the traffic-manager work, the last three out of the
-  length-changing deparser:
+- **Simulation time stopping dead** — no error, no output, the clock simply
+  stops. This has happened six times, and the shapes involved are listed below.
+  **Read `docs/toolchain_constraints.md` before treating any of them as a rule:**
+  every one was isolated into a standalone probe and run through iverilog, Vivado
+  `xsim` and Verilator, and *nine of eleven patterns pass in all three*. So these
+  are not "patterns that break iverilog" — they are shapes that stalled **this
+  design**, for reasons not yet isolated to a minimal case:
   1. An `always_comb` that writes a variable and then reads it back.
   2. An `always_comb` indexing an array with a value that arrives
      *combinationally* from `processing_generated`'s output. Register the index.
   3. An `always_comb` reading per-slot state written by an `always_ff` whose
      condition depends on that same block's output. Register the result.
-  4. A **variable part-select as an lvalue** — `data[i*8 +: 8] = ...` in a loop.
-     iverilog warns "constant selects … all bits will be included" and then
-     treats it as a whole-vector access, which makes the block self-sensitive.
-     **Unroll the loop** so every lvalue base is constant. Variable bases are
-     fine on the **read** side.
-  5. Reading an **unpacked array at a computed index** inside `always_comb`
-     (`oimg[p]` where `p` is not the loop variable). Stage through a packed
-     copy built with constant indices and read *that* at the variable offset.
-  6. A **second write loop over the same unpacked array** in one `always_comb` —
-     clear-then-fill. Write every element exactly once, unconditionally.
+  4. A variable part-select as an lvalue — `data[i*8 +: 8] = ...` in a loop.
+     Unrolling the loop fixed a real stall; the isolated pattern is fine.
+  5. Reading an unpacked array at a computed index inside `always_comb`. Staging
+     through a packed copy fixed a real stall; the isolated pattern is fine.
+  6. A second write loop over the same unpacked array in one `always_comb`.
+     Collapsing to one unconditional loop fixed a real stall; isolated, fine.
 
-  Isolate all six the same way: **stub the suspect expression to a constant and
-  see whether time starts advancing again.** Two tools make that search much
-  shorter, and are worth reaching for before guessing:
-  - a heartbeat — `initial forever #N $display("t=%0t", $time);` — tells a
-    **time stall** apart from a **logic deadlock** (a testbench waiting on a
-    packet that never arrives). They look identical from the outside.
+  Items 4–6 came out of the length-changing deparser. An earlier revision of this
+  document asserted each one "stops iverilog advancing simulation time"; the probe
+  matrix shows that is **wrong as a general claim**, and the honest statement is
+  the one above. What all six have in common is a block that ends up sensitive to
+  something it writes — that mechanism is real, but which construct triggers it
+  depends on context.
+
+  Two genuine, isolated language constraints *were* confirmed, and they are the
+  only ones: iverilog 11 rejects **`break`/`continue`** and **`automatic` inside
+  `always_comb`**. A third comes from the other direction — Vivado's `xvlog`
+  rejects **an identifier used before its declaration**, which iverilog and
+  Quartus both accept. Declare early; drive where it reads best.
+
+- **Finding a stall.** Two tools make this much shorter than guessing:
+  - a heartbeat — `initial forever #N $display("t=%0t", $time);` — separates a
+    **time stall** from a **logic deadlock** (a testbench waiting on a packet that
+    never arrives). They are indistinguishable from the outside.
   - a per-net spin counter — `always @(sig) bump(...)` printing once a count
-    crosses a threshold — **names** the oscillating net. The culprit is the one
-    spinning while everything upstream of it is stable. This found the
-    length-changing stall in a single run after a dozen failed guesses.
+    crosses a threshold — **names** the oscillating net: the one spinning while
+    everything upstream of it is stable. This found the length-changing stall in
+    one run after a dozen failed guesses.
 
-- **A variable part-select lvalue can also just corrupt data** rather than
-  stalling. `hdr_out_flat[q*8 +: 8] = hdr_out[q]` silently duplicated four bytes
-  of a shifted packet tail and looked exactly like a logic bug for a whole
-  debugging session. If iverilog prints the "all bits will be included" warning,
-  **fix the construct** — do not reason about the output.
+  Then stub the suspect expression to a constant and see whether time advances.
+
+- **Do not blanket-filter iverilog's warnings.** Two were being discarded by the
+  build scripts and both carry real information: `always_comb process has no
+  sensitivities` is a genuine delay-free infinite loop, and `sorry: constant
+  selects ... all bits will be included` means the sensitivity list was widened to
+  the whole vector — harmless for a read, a self-trigger if that signal is also
+  written by the block. Filter those two by name and read the rest.
+
+- **A variable part-select lvalue can corrupt data rather than stalling.**
+  `hdr_out_flat[q*8 +: 8] = hdr_out[q]` silently duplicated four bytes of a
+  shifted packet tail and looked exactly like a logic bug for a whole session.
 
 ### Quartus (things simulation will not catch)
 

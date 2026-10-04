@@ -752,6 +752,17 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
                 f.write(f'  logic [{pw-1}:0] q_rd_p_{pname};\n')
             f.write('\n')
 
+            # Declared HERE, before the query pipeline that gates on it, because
+            # Vivado's xvlog rejects an identifier used before its declaration
+            # ("[VRFC 10-3380] identifier 'clearing' is used before its
+            # declaration") while iverilog and Quartus both accept the forward
+            # reference. The power-on clear logic itself stays further down with
+            # its own commentary; only the two declarations move.
+            f.write('  // Power-on clear state. Declared up here because the query pipeline\n')
+            f.write('  // below gates on `clearing`, and xvlog will not accept a use that\n')
+            f.write('  // precedes the declaration.\n')
+            f.write("  logic clearing = 1'b1;\n")
+            f.write(f"  logic [{idx_w-1}:0] clr_idx = '0;\n\n")
             f.write('  always_ff @(posedge clk) begin\n')
             f.write('    if (!rst_n) begin\n')
             f.write("      q_pend_valid <= 1'b0;\n")
@@ -822,8 +833,8 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
             f.write('  // low-probability edge case, since DEPTH cycles is microseconds of real\n')
             f.write('  // wall-clock time, not something realistic control-plane software would\n')
             f.write('  // race against.\n')
-            f.write("  logic clearing = 1'b1;\n")
-            f.write(f"  logic [{idx_w-1}:0] clr_idx = '0;\n\n")
+            # The declarations themselves are hoisted above the query pipeline,
+            # which references `clearing` -- see there for why.
 
             f.write('  // Synchronous write (control plane) -- extended, not duplicated, to add\n')
             f.write('  // the delete-commit branch AND the power-on clear above: this is the one\n')

@@ -1553,6 +1553,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  logic slot_drop     [0:NSLOT-1];\n')
     f.write('  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot\n')
     f.write('  logic tx_finish;    // driven in the TX section; read here to set slot_txdone\n')
+    if ectrl:
+        # Hoisted above the multicast state, which sizes itself from QCOUNT.
+        # xvlog rejects "identifier 'QCOUNT' is used before its declaration";
+        # iverilog and Quartus both accept the forward reference.
+        f.write(f'  localparam int QCOUNT = {QCOUNT};   // output queues\n')
+        f.write(f'  localparam int QSEL_W = {QSEL_W};\n')
     f.write('  logic slot_release; // likewise: the payload buffers below clear on it\n')
     if mcast:
         f.write(f'  localparam int MCAST_GROUPS = {MCAST_GROUPS};\n')
@@ -1623,8 +1629,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write('  // (this program has no egress control, so the scheduler degenerates:\n')
         f.write('  //  ingress completion feeds the transmit queue directly)\n')
     if ectrl:
-        f.write(f'  localparam int QCOUNT = {QCOUNT};\n')
-        f.write(f'  localparam int QSEL_W = {QSEL_W};\n')
+        # QCOUNT/QSEL_W are declared further up, with the slot state that sizes
+        # itself from them.
         f.write('  logic [SLOT_AW-1:0] tmq_mem [0:QCOUNT*NSLOT-1];\n')
         f.write('  logic [SLOT_AW:0]   tmq_wr  [0:QCOUNT-1];\n')
         f.write('  logic [SLOT_AW:0]   tmq_rd  [0:QCOUNT-1];\n')
@@ -2598,6 +2604,17 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  wire signed [{_dw-1}:0] hdr_delta = slot_hdr_delta[tx_slot];\n')
         f.write('\n')
 
+    # hdr_out's DECLARATION is hoisted here, ahead of the output-image block
+    # that reads it; its driver stays further down next to the write-back it
+    # shares commentary with. The two toolchains disagree outright on the block
+    # ORDER -- xvlog rejects "identifier 'hdr_out' is used before its
+    # declaration", while iverilog stops advancing simulation time if the image
+    # block is moved below hdr_out's always_comb -- and neither will budge. What
+    # satisfies both is this: SystemVerilog requires the declaration before the
+    # use, not the driver, so the declaration moves and the blocks stay put.
+    f.write('  // Declared here, driven further down. The output-image block below reads\n')
+    f.write('  // it, and xvlog will not accept a use that precedes the declaration.\n')
+    f.write('  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];\n')
     if can_change_len:
         # ── Output offsets, up to the splice ────────────────────────────────
         # A running sum over the deparser's EMIT ORDER, gated by output
@@ -2731,7 +2748,6 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('  // ── Deparser: header-region assembly for slot tx_slot ────────────────────\n')
     f.write('  // Received bytes of the slot with its stored output PHV overlaid at each\n')
     f.write('  // header\'s layout offset, guarded by the stored output validity.\n')
-    f.write('  logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];\n')
     f.write('  always_comb begin\n')
     f.write('    for (int i = 0; i < HDR_MAX_BYTES; i++) hdr_out[i] = t_hdr[i];\n')
     _emit_writeback_block(f, layouts, inst_map, valid_map, '    ', target='hdr_out', op='=',
