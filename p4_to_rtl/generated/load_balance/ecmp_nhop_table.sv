@@ -5,7 +5,7 @@ module ecmp_nhop_table #(
   input  logic rst_n,
 
   // Lookup key (combinational)
-  input  logic [31:0] lkp_ecmp_select,
+  input  logic [13:0] lkp_ecmp_select,
 
   // Lookup result (registered — 1 cycle after lkp_* is presented)
   output logic        hit,
@@ -17,7 +17,7 @@ module ecmp_nhop_table #(
   // Control-plane write port (synchronous)
   input  logic        cp_wr_en,
   input  logic [0:0] cp_wr_idx,  // unused: exact-match tables self-address via hash(key)
-  input  logic [31:0] cp_wr_key_ecmp_select,
+  input  logic [13:0] cp_wr_key_ecmp_select,
   input  logic [1:0] cp_wr_action,
   input  logic [47:0] cp_wr_p_nhop_dmac,
   input  logic [31:0] cp_wr_p_nhop_ipv4,
@@ -26,7 +26,7 @@ module ecmp_nhop_table #(
 
   // Entry storage (synthesizes to block RAM)
   logic        mem_valid  [0:DEPTH-1];
-  logic [31:0] mem_key_ecmp_select[0:DEPTH-1];
+  logic [13:0] mem_key_ecmp_select[0:DEPTH-1];
   logic [1:0] mem_action[0:DEPTH-1];
   logic [47:0] mem_p_nhop_dmac[0:DEPTH-1];
   logic [31:0] mem_p_nhop_ipv4[0:DEPTH-1];
@@ -42,24 +42,24 @@ module ecmp_nhop_table #(
   // synthesis translate_on
   `endif
 
-  // XOR-fold hash: 32-bit key -> 1-bit BRAM address
-  function automatic logic [0:0] hash_key(input logic [31:0] k);
+  // XOR-fold hash: 14-bit key -> 1-bit BRAM address
+  function automatic logic [0:0] hash_key(input logic [13:0] k);
     logic [0:0] h;
     integer c;
     begin
       h = '0;
-      for (c = 0; c < 32; c = c + 1)
+      for (c = 0; c < 14; c = c + 1)
         h = h ^ k[c*1 +: 1];
       hash_key = h;
     end
   endfunction
 
-  logic [31:0] wr_key_concat;
+  logic [13:0] wr_key_concat;
   assign wr_key_concat = {cp_wr_key_ecmp_select};
   logic [0:0] wr_addr;
   assign wr_addr = hash_key(wr_key_concat);
 
-  logic [31:0] lkp_key_concat;
+  logic [13:0] lkp_key_concat;
   assign lkp_key_concat = {lkp_ecmp_select};
   logic [0:0] lkp_addr;
   assign lkp_addr = hash_key(lkp_key_concat);
@@ -78,8 +78,8 @@ module ecmp_nhop_table #(
 
   // Registered BRAM read + tag-compare stage (1-cycle lookup latency)
   logic        valid_r;
-  logic [31:0] key_r_ecmp_select;
-  logic [31:0] mem_key_r_ecmp_select;
+  logic [13:0] key_r_ecmp_select;
+  logic [13:0] mem_key_r_ecmp_select;
   logic [1:0] action_id_r;
   logic [47:0] p_r_nhop_dmac;
   logic [31:0] p_r_nhop_ipv4;

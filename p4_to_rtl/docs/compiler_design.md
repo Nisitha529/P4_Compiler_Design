@@ -434,6 +434,56 @@ are together.
   `hdr_out_flat[q*8 +: 8] = hdr_out[q]` silently duplicated four bytes of a
   shifted packet tail and looked exactly like a logic bug for a whole session.
 
+### Two bugs the bmv2 path hid, and what they have in common
+
+Both were found by running the suite under a **second simulator** and then
+chasing a port-width warning that had been dismissed as cosmetic. Both lived in
+the v1model/bmv2 frontend path, and both made a table silently never match --
+the worst failure shape, because a miss looks like "no matching entry".
+
+**1. A table keyed on user metadata got an undeclared signal.**
+bmv2 reports such a key as `['scalars', 'metadata.<field>']`. The *expression*
+path in `ingest_bmv2.py` normalised that to `meta.<field>`; the *table-key* path
+did not -- it assumed every `scalars` entry was a control-local temporary and
+passed the name through verbatim. The key was then wired to
+`metadata_<field>`, which nothing declares, so it became an **undriven implicit
+1-bit wire**. `load_balance`'s entire ECMP next-hop lookup was dead this way.
+Both paths now share `_scalars_field()`.
+
+**2. The key-staging fixup did not count extern writes.**
+`_meta_key_producing_stage` decides whether a table's `meta.*` key must read the
+stage-suffixed name (`meta_x_w__stK`) instead of the stage-0 input. It looked
+only for an `Assignment` writing that field. In `load_balance` the field is
+written by **`hash()`** inside `set_ecmp_select` -- an `ExternCall` with its
+destination as the first argument -- so the analysis reported "produced at stage
+0" and wired the key to the module input, which never carries the hash result.
+`register.read` has the same shape and the same exposure. Both are now
+recognised by `_extern_writes_meta()`.
+
+**An out-parameter is a write.** That is the lesson worth carrying: any dataflow
+analysis in this compiler that scans for `Assignment` needs to ask whether an
+extern's out-argument can do the same job. The `xsa`/`p4rtl` paths were correct
+all along, which is why this survived -- the only affected app was the one real
+bmv2 application whose logic depends on a two-level lookup.
+
+**Why no test caught it:** `tb_load_balance` never populated either ECMP table
+and described them as "RTL-stubbed (hit always 0)". They were real, just empty.
+Its 54 assertions could not see a broken key. Section 5 of that testbench now
+populates both over their CP ports and drives a packet through the real
+two-level lookup; it fails against the old RTL and passes against the fixed RTL.
+**If a testbench calls part of the design a stub, check whether that is still
+true before trusting the rest of the file.**
+
+### Port width mismatches are not cosmetic
+
+`tb_firewall` passed 194/194 under iverilog and failed 26 assertions under
+Vivado `xsim`. The cause was a testbench declaring `logic [3:0] lpm_cp_idx` and
+connecting it to an 8-bit port: **iverilog zero-pads the missing high bits,
+xsim drives them `Z`**, so the control-plane write landed at an undefined
+address and the table stayed empty. Wider-than-port connections merely truncate
+and are harmless; **narrower-than-port is a real portability bug.** Treat
+`Port N (x) of M expects A bits, got B` with `B < A` as an error, not a warning.
+
 ### Quartus (things simulation will not catch)
 
 - **Two procedural blocks writing one array is a multi-driver.** iverilog accepts

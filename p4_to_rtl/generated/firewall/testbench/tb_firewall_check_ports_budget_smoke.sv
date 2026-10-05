@@ -97,7 +97,7 @@ module tb_firewall_check_ports_budget_smoke;
   logic        pr_ipv4_lpm_hit_out, pr_check_ports_hit_out;
 
   logic        lpm_cp_en    = 0;
-  logic  [3:0] lpm_cp_idx   = 0;
+  logic  [7:0] lpm_cp_idx   = 0;
   logic [31:0] lpm_cp_key   = 0;
   logic  [5:0] lpm_cp_pfx   = 0;
   logic  [1:0] lpm_cp_act   = 0;
@@ -105,7 +105,7 @@ module tb_firewall_check_ports_budget_smoke;
   logic  [8:0] lpm_cp_port  = 0;
 
   logic        cp_cp_en     = 0;
-  logic  [3:0] cp_cp_idx    = 0;
+  logic  [9:0] cp_cp_idx    = 0;
   logic  [8:0] cp_cp_ing    = 0;
   logic  [8:0] cp_cp_egr    = 0;
   logic  [0:0] cp_cp_act    = 0;

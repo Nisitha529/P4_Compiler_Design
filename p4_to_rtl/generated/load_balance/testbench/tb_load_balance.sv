@@ -11,7 +11,11 @@
 //   Section 3 — Deparser packing (D1-D4): all/eth-only/no-headers/len check
 //   Section 4 — Integration      (INT1-INT2): processing→deparser, valid_out
 //
-// NOTE: ecmp_group and ecmp_nhop tables are RTL-stubbed (hit always 0).
+// NOTE: Section 5 populates ecmp_group and ecmp_nhop over their CP ports and
+//       drives a packet through the real two-level ECMP lookup. Sections 1-4
+//       leave the tables empty, so hit=0 there -- that is the condition, not
+//       a stub. This file used to call them "RTL-stubbed", which was wrong
+//       and hid two compiler bugs in the metadata key path.
 //       ecmp_group_hit_out is exposed as an output for external CAM connection.
 //
 // Compile (from this directory):
@@ -91,6 +95,20 @@ module tb_load_balance;
   logic [15:0] pr_o_tcp_win, pr_o_tcp_csum, pr_o_tcp_urg;
   logic        pr_hit_out, pr_valid_out, pr_drop;
 
+  // Control-plane write ports for the two ECMP tables. These were left
+  // unconnected, which is why this testbench used to describe the tables as
+  // "RTL-stubbed (hit always 0)" -- they were real, just never populated, so
+  // nothing here exercised the ECMP lookup at all. That coverage hole hid a
+  // compiler bug: the ecmp_nhop key was wired to an undeclared signal.
+  logic        g_cp_en  = 0;  logic  [7:0] g_cp_idx  = 0;
+  logic [31:0] g_cp_key = 0;  logic  [5:0] g_cp_pfx  = 0;
+  logic  [1:0] g_cp_act = 0;
+  logic [15:0] g_cp_base = 0; logic [31:0] g_cp_count = 0;
+  logic        n_cp_en  = 0;  logic  [0:0] n_cp_idx  = 0;
+  logic [13:0] n_cp_key = 0;  logic  [1:0] n_cp_act  = 0;
+  logic [47:0] n_cp_dmac = 0; logic [31:0] n_cp_nip  = 0;
+  logic  [8:0] n_cp_port = 0;
+
   processing_generated proc_dut (
     .clk                     (clk),               .rst_n              (rst_n),
     .valid_in                (pr_valid_in),
@@ -126,6 +144,14 @@ module tb_load_balance;
     .out_tcp_window          (pr_o_tcp_win),       .out_tcp_checksum   (pr_o_tcp_csum),
     .out_tcp_urgentPtr       (pr_o_tcp_urg),
     .ecmp_group_hit_out      (pr_hit_out),
+    .ecmp_group_cp_wr_en         (g_cp_en),    .ecmp_group_cp_wr_idx (g_cp_idx),
+    .ecmp_group_cp_wr_key_dstAddr(g_cp_key),   .ecmp_group_cp_wr_pfx_len (g_cp_pfx),
+    .ecmp_group_cp_wr_action     (g_cp_act),
+    .ecmp_group_cp_wr_p_ecmp_base (g_cp_base), .ecmp_group_cp_wr_p_ecmp_count(g_cp_count),
+    .ecmp_nhop_cp_wr_en          (n_cp_en),    .ecmp_nhop_cp_wr_idx  (n_cp_idx),
+    .ecmp_nhop_cp_wr_key_ecmp_select(n_cp_key),.ecmp_nhop_cp_wr_action (n_cp_act),
+    .ecmp_nhop_cp_wr_p_nhop_dmac (n_cp_dmac),  .ecmp_nhop_cp_wr_p_nhop_ipv4(n_cp_nip),
+    .ecmp_nhop_cp_wr_p_port      (n_cp_port),
     .valid_out               (pr_valid_out),       .drop               (pr_drop)
   );
 
@@ -199,6 +225,24 @@ module tb_load_balance;
   // Test infrastructure
   // ============================================================================
   int pass_cnt = 0, fail_cnt = 0;
+
+  // Populate one ecmp_group (LPM) entry.
+  task automatic g_write(input [7:0] idx, input [31:0] key, input [5:0] pfx,
+                         input [1:0] act, input [15:0] base, input [31:0] cnt);
+    @(negedge clk);
+    g_cp_idx=idx; g_cp_key=key; g_cp_pfx=pfx; g_cp_act=act;
+    g_cp_base=base; g_cp_count=cnt; g_cp_en=1;
+    @(posedge clk); #1; g_cp_en=0;
+  endtask
+
+  // Populate one ecmp_nhop (exact) entry.
+  task automatic n_write(input [0:0] idx, input [13:0] key, input [1:0] act,
+                         input [47:0] dmac, input [31:0] nip, input [8:0] portn);
+    @(negedge clk);
+    n_cp_idx=idx; n_cp_key=key; n_cp_act=act;
+    n_cp_dmac=dmac; n_cp_nip=nip; n_cp_port=portn; n_cp_en=1;
+    @(posedge clk); #1; n_cp_en=0;
+  endtask
 
   task automatic chk(input string name, input logic cond);
     if (cond) begin $display("    [PASS] %s", name); pass_cnt++; end
@@ -445,6 +489,58 @@ module tb_load_balance;
 
     // ──────────────────────────────────────────────────────────────────────────
     $display("\n════════════════════════════════════════════════════════════════");
+    // ──────────────────────────────────────────────────────────────────────────
+    // SECTION 5 — ECMP END TO END
+    // The two ECMP tables are real, but nothing here ever populated them, so
+    // this file used to call them "RTL-stubbed". That gap hid a compiler bug:
+    // ecmp_nhop's lookup key was wired to `metadata_ecmp_select`, a name
+    // nothing declares, so the key was an undriven implicit 1-bit wire and the
+    // next-hop lookup could never match. These assertions fail against that
+    // RTL and pass once the key is wired to meta_ecmp_select_w.
+    // ──────────────────────────────────────────────────────────────────────────
+    $display("\n══ Section 5: ECMP end to end ═════════════════════════════════");
+    begin
+      logic [31:0] e_src, e_dst; logic [15:0] e_sp, e_dp; logic [7:0] e_proto;
+      logic [13:0] e_sel;
+      e_src = 32'h0A000005; e_dst = 32'h0A000001;
+      e_proto = 8'd6; e_sp = 16'd1234; e_dp = 16'd80;
+      // mirror of the hash stub in set_ecmp_select
+      e_sel = (e_src ^ e_dst ^ e_proto ^ e_sp ^ e_dp) & 32'hFFF;
+
+      do_reset();
+      g_write(8'd0, 32'h0A000000, 6'd24, 2'd2, 16'd0, 32'd4);   // set_ecmp_select
+      n_write(1'd0, e_sel, 2'd2, 48'hAABBCCDDEEFF, 32'h0B000001, 9'd7); // set_nhop
+
+      pr_eth_valid = 1; pr_ipv4_valid = 1; pr_tcp_valid = 1;
+      pr_eth_dst = 48'h112233445566; pr_eth_src = 48'h665544332211;
+      pr_eth_type = 16'h0800;
+      pr_ipv4_ver = 4'h4; pr_ipv4_ihl = 4'h5; pr_ipv4_ds = 8'd0;
+      pr_ipv4_len = 16'd60; pr_ipv4_id = 16'd1; pr_ipv4_flg = 3'd0;
+      pr_ipv4_off = 13'd0;  pr_ipv4_ttl = 8'd64;
+      pr_ipv4_proto = e_proto; pr_ipv4_src = e_src; pr_ipv4_dst = e_dst;
+      pr_tcp_sp = e_sp; pr_tcp_dp = e_dp;
+      pr_valid_in = 1;
+      repeat (8) @(posedge clk); #1;
+      pr_valid_in = 0;
+
+      $display("    [INFO] E1: expected ecmp_select = 0x%03h", e_sel);
+      chk("E1: ecmp_group hit",            pr_hit_out);
+      chk("E1: not dropped",               !pr_drop);
+      chk("E1: nhop dmac rewritten",       pr_o_eth_dst  == 48'hAABBCCDDEEFF);
+      chk("E1: nhop ipv4 dst rewritten",   pr_o_ipv4_dst == 32'h0B000001);
+      chk("E1: ttl decremented",           pr_o_ipv4_ttl == 8'd63);
+
+      // E2: a packet whose hash lands on an unpopulated bucket must not be
+      // rewritten -- proves the key is actually compared, not ignored.
+      pr_tcp_dp = 16'd81;                  // changes the hash
+      pr_valid_in = 1;
+      repeat (8) @(posedge clk); #1;
+      pr_valid_in = 0;
+      chk("E2: ecmp_group still hits",     pr_hit_out);
+      chk("E2: nhop miss leaves dmac",     pr_o_eth_dst  == 48'h112233445566);
+      chk("E2: nhop miss leaves ipv4 dst", pr_o_ipv4_dst == e_dst);
+    end
+
     $display("  Results: %0d passed, %0d failed  (total %0d)",
              pass_cnt, fail_cnt, pass_cnt + fail_cnt);
     $display("════════════════════════════════════════════════════════════════");
@@ -452,7 +548,7 @@ module tb_load_balance;
       $display("  ALL TESTS PASSED");
     else
       $display("  FAILURES DETECTED — see [FAIL] lines above");
-    $display("\n  NOTE: ecmp_group / ecmp_nhop tables are RTL-stubbed (hit=0).\n");
+    $display("\n  NOTE: Sections 1-4 leave both ECMP tables empty (hit=0 by construction);\n          Section 5 populates them and exercises the real lookup.\n");
     $finish;
   end
 

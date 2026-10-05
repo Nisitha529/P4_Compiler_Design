@@ -50,6 +50,20 @@ def _sanitize(name):
     return name.rsplit('.', 1)[-1]
 
 
+def _scalars_field(fld_name):
+    """Name for a field bmv2 puts under its 'scalars' pseudo-header.
+
+    Dotted: a user metadata struct field ('metadata.ecmp_select') -> 'meta.ecmp_select'
+    Plain:  a compiler temporary ('tmp_0')                        -> 'tmp_0'
+
+    Both the expression path and the table-key path must agree on this; they
+    did not, and a table keyed on user metadata got an undeclared signal.
+    """
+    if '.' in fld_name:
+        return 'meta.' + fld_name.rsplit('.', 1)[-1]
+    return fld_name
+
+
 def _sanitize_stack_idx(name):
     """bmv2 names each header-stack *element* 'name[idx]' (e.g.
     'srcRoutes[0]') both as its own entry in headers[] and inside any
@@ -94,16 +108,13 @@ def _expr(node, runtime_data=None):
 
     if t == 'field':
         hdr_name, fld_name = v[0], v[1]
+        # (see _scalars_field for the 'scalars' naming rule)
         if fld_name == '$valid$':           # bmv2 header-validity pseudo-field
             return f'hdr.{_sanitize_stack_idx(hdr_name)}.isValid()'
         if hdr_name == 'standard_metadata':
             return f'standard_metadata.{fld_name}'
         if hdr_name.startswith('scalars'):
-            # Dotted: user struct field (e.g. 'metadata.ecmp_select') → 'meta.ecmp_select'
-            # Plain:  compiler temporary (e.g. 'tmp_0')               → 'tmp_0'
-            if '.' in fld_name:
-                return 'meta.' + fld_name.rsplit('.', 1)[-1]
-            return fld_name
+            return _scalars_field(fld_name)
         return f'hdr.{_sanitize_stack_idx(hdr_name)}.{fld_name}'
 
     if t in ('runtime_data', 'local'):
@@ -676,7 +687,15 @@ def ingest_bmv2(bm):
                 if hdr_name == 'standard_metadata':
                     field_str = f'standard_metadata.{fld_name}'
                 elif hdr_name.startswith('scalars'):
-                    field_str = fld_name          # control-local variable
+                    # Was `field_str = fld_name`, which assumed every scalars
+                    # entry is a control-local temporary. A table keyed on USER
+                    # METADATA arrives here as the dotted 'metadata.<field>',
+                    # and passing that through produced a key wired to
+                    # 'metadata_<field>' -- a name nothing declares, so the
+                    # lookup key sat as an undriven implicit 1-bit wire.
+                    # load_balance's whole ECMP next-hop lookup was broken this
+                    # way, and no testbench caught it.
+                    field_str = _scalars_field(fld_name)
                 else:
                     field_str = f'hdr.{hdr_name}.{fld_name}'
                 t.add_key(TableKey(field_str, k['match_type']))

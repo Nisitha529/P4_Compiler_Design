@@ -1667,8 +1667,27 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         # stage-suffixed name, not the stale bare one. Tables keyed only on
         # raw header/std_meta fields are unaffected (those never have a
         # same-block writer, so the bare name is always the live value).
+        def _extern_writes_meta(stmt, field_name):
+            """Does this extern call write meta.<field_name>?
+
+            An out-parameter is as much a write as an assignment, and missing
+            that cost load_balance its ECMP lookup: `hash()` computes
+            meta.ecmp_select inside set_ecmp_select, so the field IS produced
+            in a later stage -- but because the write was an ExternCall rather
+            than an Assignment, _meta_key_producing_stage returned 0 and the
+            ecmp_nhop key was wired to the stage-0 input, which never carries
+            the hash result. Both externs here take their destination first.
+            """
+            if not isinstance(stmt, ExternCall) or not stmt.args:
+                return False
+            meth = stmt.name.rsplit('.', 1)[-1]
+            if stmt.name == 'hash' or meth == 'read':
+                return _meta_fname(stmt.args[0].strip()) == field_name
+            return False
+
         def _action_writes_meta(action, field_name):
-            return any(isinstance(s, Assignment) and _meta_fname(s.lhs) == field_name
+            return any((isinstance(s, Assignment) and _meta_fname(s.lhs) == field_name)
+                       or _extern_writes_meta(s, field_name)
                        for s in action.body)
 
         def _table_writes_meta(tname, field_name):
@@ -1686,6 +1705,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 if isinstance(s, TableApply) and _table_writes_meta(s.table_name, field_name):
                     return True
                 if isinstance(s, ExternCall):
+                    if _extern_writes_meta(s, field_name):
+                        return True
                     action = amap.get(s.name)
                     if action and _action_writes_meta(action, field_name):
                         return True

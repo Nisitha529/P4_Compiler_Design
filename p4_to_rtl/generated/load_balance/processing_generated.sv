@@ -88,7 +88,7 @@ module processing_generated (
   input  logic [31:0] ecmp_group_cp_wr_p_ecmp_count,
   input  logic        ecmp_nhop_cp_wr_en,
   input  logic [0:0] ecmp_nhop_cp_wr_idx,
-  input  logic [31:0] ecmp_nhop_cp_wr_key_ecmp_select,
+  input  logic [13:0] ecmp_nhop_cp_wr_key_ecmp_select,
   input  logic [1:0] ecmp_nhop_cp_wr_action,
   input  logic [47:0] ecmp_nhop_cp_wr_p_nhop_dmac,
   input  logic [31:0] ecmp_nhop_cp_wr_p_nhop_ipv4,
@@ -698,7 +698,7 @@ module processing_generated (
   ecmp_nhop_table #(.DEPTH(2)) u_ecmp_nhop (
     .clk    (clk),
     .rst_n  (rst_n),
-    .lkp_ecmp_select    (metadata_ecmp_select),
+    .lkp_ecmp_select    (meta_ecmp_select_w__st2),
     .hit       (ecmp_nhop_hit),
     .action_id (ecmp_nhop_act_id),
     .p_nhop_dmac  (ecmp_nhop_p_nhop_dmac),

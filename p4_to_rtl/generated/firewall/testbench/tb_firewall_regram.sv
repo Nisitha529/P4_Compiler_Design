@@ -156,7 +156,7 @@ module tb_firewall;  // name kept: hierarchical refs below target it
 
   // CP write signals — ipv4_lpm
   logic        lpm_cp_en    = 0;
-  logic  [3:0] lpm_cp_idx   = 0;
+  logic  [7:0] lpm_cp_idx   = 0;
   logic [31:0] lpm_cp_key   = 0;
   logic  [5:0] lpm_cp_pfx   = 0;
   logic  [1:0] lpm_cp_act   = 0;
@@ -165,7 +165,7 @@ module tb_firewall;  // name kept: hierarchical refs below target it
 
   // CP write signals — check_ports
   logic        cp_cp_en     = 0;
-  logic  [3:0] cp_cp_idx    = 0;
+  logic  [9:0] cp_cp_idx    = 0;
   logic  [8:0] cp_cp_ing    = 0;
   logic  [8:0] cp_cp_egr    = 0;
   logic  [0:0] cp_cp_act    = 0;
