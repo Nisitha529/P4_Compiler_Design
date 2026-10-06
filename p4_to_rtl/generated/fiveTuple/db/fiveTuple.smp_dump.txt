@@ -1,0 +1,6 @@
+
+State Machine - |fiveTuple_top|axil_st
+Name axil_st.AXIL_IDLE axil_st.AXIL_BRESP axil_st.AXIL_WDATA 
+axil_st.AXIL_IDLE 0 0 0 
+axil_st.AXIL_WDATA 1 0 1 
+axil_st.AXIL_BRESP 1 1 0 

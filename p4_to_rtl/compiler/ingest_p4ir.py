@@ -12,8 +12,7 @@ from ir import (
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
     ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
-    IfStatement, TableApply, ChecksumUpdate, HashDecl, UserExternDecl,
-)
+    IfStatement, TableApply, ChecksumUpdate, HashDecl, UserExternDecl, MeterDecl, DigestDecl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -750,8 +749,12 @@ def _collect_name_maps(body_text):
     for m in re.finditer(r'(' + _ANN + r')\btable\s+(\w+)\s*\{', body_text):
         _reg(m.group(2), m.group(1))
 
-    # Local variables: annotations + 'bit<N> NAME;' or 'bool NAME;'
-    for m in re.finditer(r'(' + _ANN + r')\b(bit<\d+>|bool)\s+(\w+)\s*;', body_text):
+    # Local variables: annotations + 'bit<N> NAME;', 'bool NAME;' or
+    # 'MeterColor_t NAME;'. The enum had to be added here as well as to the
+    # LocalVar parse: p4test renames `MeterColor_t c;` to `c_0` and records the
+    # original in @name("..."), so without the rename the declaration came out
+    # as `c` while every expression still said `c_0`.
+    for m in re.finditer(r'(' + _ANN + r')\b(bit<\d+>|bool|MeterColor_t)\s+(\w+)\s*;', body_text):
         _reg(m.group(3), m.group(1))
 
     # Extern instances: annotations + 'TYPE<...>(...) NAME;'
@@ -791,7 +794,11 @@ def _parse_control_body(body_text, ctrl_name):
         apply_text, _ = _find_block(text, brace_pos)
 
     # ── Local variables ───────────────────────────────────────────────────────
-    for m in re.finditer(r'(' + _ANN + r')\b(bit<(\d+)>|bool)\s+(\w+)\s*;', text):
+    # MeterColor_t is included because a policer's natural shape declares one:
+    #     MeterColor_t c;  rate_limit.execute(idx, c);  if (c == ...RED) ...
+    # It is one bit in the RTL (0 = GREEN, 1 = RED). Without this the local was
+    # never declared and the generated module referenced an unknown signal.
+    for m in re.finditer(r'(' + _ANN + r')\b(bit<(\d+)>|bool|MeterColor_t)\s+(\w+)\s*;', text):
         ann_text = m.group(1)
         type_str = m.group(2)
         local_name = m.group(4)
@@ -880,6 +887,37 @@ def _parse_control_body(body_text, ctrl_name):
         canon = _extract_name_annotation(ann_text) or local_name
         canon = name_map.get(local_name, canon)
         counters.append(CounterDecl(canon, dw, n_counters, ctype))
+
+    # ── Meter externs ────────────────────────────────────────────────────────
+    # Match: @ann Meter<bit<S>>(N_METERS) name;
+    # Same width-prefixed-literal quirk as Counter's n_counters (`32w1024`).
+    meters = []
+    for m in re.finditer(
+        r'(' + _ANN + r')\bMeter\s*<\s*bit<(\d+)>\s*>\s*'
+        r'\(\s*(?:\d+w)?(\d+)\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text   = m.group(1)
+        iw         = int(m.group(2))
+        n_meters   = int(m.group(3))
+        local_name = m.group(4)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        meters.append(MeterDecl(canon, n_meters, iw))
+
+    # ── Digest externs ───────────────────────────────────────────────────────
+    # Match: @ann Digest<T>() name;   -- T is a struct, so its field list is
+    # recovered from the pack() CALL SITE rather than the declaration (the
+    # declaration only names the type). Recorded with no fields here; the
+    # fields are filled in once the apply block has been walked.
+    digests = []
+    for m in re.finditer(
+        r'(' + _ANN + r')\bDigest\s*<\s*([\w.<>]+)\s*>\s*\(\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text   = m.group(1)
+        local_name = m.group(3)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        digests.append(DigestDecl(canon, []))
 
     # ── Checksum<H> hash externs ─────────────────────────────────────────────
     # Match: @ann Checksum<bit<W>>(HashAlgorithm_t.ALGO) name;
@@ -1006,7 +1044,7 @@ def _parse_control_body(body_text, ctrl_name):
 
             tables_out.append((local_name, tbl, False, None))
 
-    return (local_vars, registers, counters, hashes, user_externs,
+    return (local_vars, registers, counters, hashes, user_externs, meters, digests,
             actions_out, tables_out, apply_text, name_map)
 
 
@@ -1225,7 +1263,7 @@ def _ingest_control(text, ctrl_name, stage, ir):
     ctrl_body = _find_control_body(text, ctrl_name)
     if not ctrl_body:
         return None
-    (local_vars, registers, counters, hashes, user_externs,
+    (local_vars, registers, counters, hashes, user_externs, meters, digests,
      actions_raw, tables_raw, apply_text, name_map) = \
         _parse_control_body(ctrl_body, ctrl_name)
 
@@ -1245,6 +1283,12 @@ def _ingest_control(text, ctrl_name, stage, ir):
 
     for ue in user_externs:
         ctrl.add_user_extern(ue)
+
+    for mt in meters:
+        ctrl.add_meter(mt)
+
+    for dg in digests:
+        ctrl.add_digest(dg)
 
     # Build action lookup dicts
     actions_by_local = {}

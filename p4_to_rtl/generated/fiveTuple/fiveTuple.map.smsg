@@ -1,0 +1,1 @@
+Warning (10268): Verilog HDL information at pkt_beat_buf.sv(78): always construct contains both blocking and non-blocking assignments File: /media/nisitha/My_Passport/MOODLE/P4_Networking/Compiler_design/p4_to_rtl/generated/fiveTuple/pkt_beat_buf.sv Line: 78

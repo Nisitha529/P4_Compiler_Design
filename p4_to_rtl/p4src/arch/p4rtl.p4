@@ -12,7 +12,8 @@
 //      no `field_mask`, no `unused`.
 //   4. Stateful primitives state their hazard semantics.
 //
-// Two match-action stages, ingress and egress, with PHV PASS-THROUGH: the
+// Two match-action stages -- IngressMatchAction and EgressMatchAction, named
+// for what they do -- with PHV PASS-THROUGH: the
 // egress control receives the header vector and metadata exactly as ingress
 // left them -- the packet is never re-parsed. The queueing point between them
 // is the shell's slot ring (docs/egress_stage_plan.md). drop is sticky
@@ -74,6 +75,15 @@ extern Counter<W, S> {
 }
 
 // ── Meter: single-rate two-colour, one bucket per index ─────────────────────
+// IMPLEMENTED. execute() is a read-modify-write of one bucket and the colour is
+// available to THIS packet, so it sits in the match-action pipeline and carries
+// the same hazard as Register: two packets closer together than the pipeline's
+// RAW distance can both see the pre-charge state.
+//
+// The rate and burst are programmed over AXI4-Lite and are per INSTANCE, not
+// per index -- one set of knobs for the whole array. The rate is expressed as a
+// SHIFT: one unit of allowance returns every 2^cp_rate_shift cycles, which
+// keeps a multiplier off the packet path. Charging is per PACKET, not per byte.
 enum MeterColor_t { GREEN, RED }
 extern Meter<S> {
     Meter(bit<32> n_meters);
@@ -81,6 +91,11 @@ extern Meter<S> {
 }
 
 // ── Digest: notify the control plane, does not affect the packet ───────────
+// IMPLEMENTED. pack() pushes one entry into a 16-deep FIFO the control plane
+// drains over AXI4-Lite. It never touches the packet and never applies
+// backpressure: if the control plane is too slow the NEWEST entry is dropped and
+// an overflow counter increments, so a notification can be lost but forwarding
+// cannot stall. One pack() site per instance, with a fixed entry shape.
 extern Digest<T> {
     Digest();
     void pack(in T data);
@@ -100,15 +115,112 @@ extern InternetChecksum {
     void get<W>(out W result);
 }
 
+// ============================================================================
 // ── Pipeline ────────────────────────────────────────────────────────────────
+//
+// TWO MATCH-ACTION STAGES. The control types are named for what they DO, not
+// only for where they sit: a reader of this file should not have to guess
+// whether match-action tables are supported. They are -- they are the point.
+// Declare `table`s inside IngressMatchAction and EgressMatchAction exactly as
+// you would in any P4_16 program; the compiler gives each one its own RTL
+// module and its own AXI4-Lite control-plane window.
+//
+// (`table` is a core P4_16 language construct, so no architecture declares it
+//  -- not v1model.p4, not xsa.p4, not this file. What an architecture provides
+//  is the control blocks that tables go inside.)
+//
+//                              AXI4-Lite  (control plane)
+//                                   │  s_axil_*
+//                                   ▼
+//                 ┌───────────────────────────────────────────┐
+//                 │  regmap: one window PER TABLE (add/query/  │
+//                 │  delete), counters, registers, mcast table │
+//                 └──────┬──────────────────────┬──────────────┘
+//                        │ cp_wr_*  /  cp_query_*
+//   s_axis_*   ┌──────┐  │                      │
+//  ──────────▶ │  RX  │ allocate a slot from the ring (NSLOT)
+//   (AXI-S in) └───┬──┘
+//                  ├─ header bytes ─▶ slot_hdr[slot]        payload beats
+//                  │                                             │
+//                  ▼                                             ▼
+//        ┌────────────────────┐                      ┌────────────────────┐
+//        │ PARSER  (inlined)  │ extract → w_*        │ pkt_beat_buf[slot] │
+//        │  = Parser<H,M>     │ cutoff_byte ⇒ issue  │ re-readable;       │
+//        └─────────┬──────────┘ (cut-through)        │ rewind = multicast │
+//                  │                                 └─────────┬──────────┘
+//                  ▼                                           │
+//    ╔═══════════════════════════════════════════╗             │
+//    ║  INGRESS MATCH-ACTION                     ║             │
+//    ║    = IngressMatchAction<H,M>              ║             │
+//    ║  ───────────────────────────────────────  ║             │
+//    ║   __st0  ──▶  __st1  ──▶  __st2  ──▶ ...  ║  stages split
+//    ║  ┌────────────────┐   ┌────────────────┐  ║  at table latency
+//    ║  │ TABLE lookup   │──▶│ action bodies  │  ║             │
+//    ║  │ hash+BRAM /    │   │ + externs      │  ║ ◀── TABLES  │
+//    ║  │ LPM tree /     │   │ Register,      │  ║     LIVE    │
+//    ║  │ ternary tree   │   │ Counter, ...   │  ║     HERE    │
+//    ║  └────────────────┘   └────────────────┘  ║             │
+//    ╚═══════════════════════╤═══════════════════╝             │
+//                            ▼  result captured into the slot  │
+//        ┌───────────────────────────────────────┐             │
+//        │          TRAFFIC MANAGER              │             │
+//        │  tmq[0..QCOUNT-1] slot-ID FIFOs       │ enq_qdepth  │
+//        │  rotating-priority scheduler          │ deq_qdepth  │
+//        │  multicast replication (serialised)   │             │
+//        └───────────────────┬───────────────────┘             │
+//                            ▼  at DEQUEUE                     │
+//    ╔═══════════════════════════════════════════╗             │
+//    ║  EGRESS MATCH-ACTION                      ║             │
+//    ║    = EgressMatchAction<H,M>               ║ ◀── TABLES  │
+//    ║  ───────────────────────────────────────  ║     LIVE    │
+//    ║   __st0  ──▶  __st1  ──▶  ...             ║     HERE    │
+//    ║   PHV PASS-THROUGH: never re-parsed       ║             │
+//    ║   drop is STICKY from ingress             ║             │
+//    ╚═══════════════════════╤═══════════════════╝             │
+//                            ▼                                 │
+//        ┌───────────────────────────────────────┐             │
+//        │ DEPARSER (inlined) = Deparser<H,M>    │             │
+//        │  received bytes + output PHV overlay; │             │
+//        │  length-changing splice at tx_pstart  │             │
+//        └───────────────────┬───────────────────┘             │
+//                            ▼                                 │
+//        ┌───────────────────────────────────────┐             │
+//        │ TX beat assembly:  header │ payload ◀─┼─────────────┘
+//        └───────────────────┬───────────────────┘
+//                            ▼  m_axis_*   (AXI-S out)
+//
+// The PAYLOAD never enters the match-action path. Only the header vector does.
+//
+// A table looks like this -- nothing architecture-specific about it:
+//
+//     action set_port(PortId_t p) { standard_metadata.egress_port = p; }
+//     table l2 {
+//         key     = { hdr.eth.dst : exact; }    // or lpm / ternary
+//         actions = { set_port; NoAction; }
+//         size    = 1024;
+//         default_action = NoAction();
+//     }
+//     apply { l2.apply(); }
+//
+// ============================================================================
 parser  Parser<H, M>(packet_in b, out H hdr, inout M meta,
                      inout standard_metadata_t standard_metadata);
-control Ingress<H, M>(inout H hdr, inout M meta,
-                      inout standard_metadata_t standard_metadata);
-control Egress<H, M>(inout H hdr, inout M meta,
-                     inout standard_metadata_t standard_metadata);
+
+// The first match-action stage: runs BEFORE the traffic manager, so it is what
+// chooses the output port / multicast group and therefore the queue.
+control IngressMatchAction<H, M>(inout H hdr, inout M meta,
+                                 inout standard_metadata_t standard_metadata);
+
+// The second match-action stage: runs AFTER the traffic manager, at dequeue,
+// which is what makes enq_qdepth/deq_qdepth meaningful and what lets a program
+// react to congestion (ECN) or rewrite per-egress-port state.
+control EgressMatchAction<H, M>(inout H hdr, inout M meta,
+                                inout standard_metadata_t standard_metadata);
+
 control Deparser<H, M>(packet_out b, in H hdr, inout M meta,
                        inout standard_metadata_t standard_metadata);
 
-package P4RtlPipeline<H, M>(Parser<H, M> p, Ingress<H, M> ig, Egress<H, M> eg,
+package P4RtlPipeline<H, M>(Parser<H, M> p,
+                            IngressMatchAction<H, M> ig,
+                            EgressMatchAction<H, M> eg,
                             Deparser<H, M> dep);

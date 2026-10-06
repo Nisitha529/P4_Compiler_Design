@@ -114,12 +114,6 @@ module ecmp_nhop_table #(
       q_pend_del   <= cp_query_del;
       q_pend_addr  <= q_addr;
       q_pend_key_ecmp_select <= cp_query_key_ecmp_select;
-      q_rd_valid   <= mem_valid[q_addr];
-      q_rd_key_ecmp_select <= mem_key_ecmp_select[q_addr];
-      q_rd_action  <= mem_action[q_addr];
-      q_rd_p_nhop_dmac <= mem_p_nhop_dmac[q_addr];
-      q_rd_p_nhop_ipv4 <= mem_p_nhop_ipv4[q_addr];
-      q_rd_p_port <= mem_p_port[q_addr];
     end else begin
       q_pend_valid <= 1'b0;
     end
@@ -186,23 +180,37 @@ module ecmp_nhop_table #(
   // than corrupting anything -- the AXI4-Lite decoder is responsible for
   // never letting that collision reach this port in the first place (see
   // cp_query_busy-gated backpressure on the write channel).
+  logic [3:0] cp_addr;
+  always_comb begin
+    if (clearing)                                   cp_addr = clr_idx;
+    else if (cp_wr_en && !q_pend_valid)             cp_addr = wr_addr;
+    else if (q_pend_valid && q_pend_del && q_match) cp_addr = q_pend_addr;
+    else                                            cp_addr = q_addr;
+  end
   always_ff @(posedge clk) begin
     if (clearing) begin
-      mem_valid[clr_idx] <= 1'b0;
+      mem_valid[cp_addr] <= 1'b0;
       if (clr_idx == DEPTH-1) begin
         clearing <= 1'b0;
       end else begin
         clr_idx <= clr_idx + 1'b1;
       end
     end else if (cp_wr_en && !q_pend_valid) begin
-      mem_valid[wr_addr]  <= 1'b1;
-      mem_key_ecmp_select[wr_addr] <= cp_wr_key_ecmp_select;
-      mem_action[wr_addr] <= cp_wr_action;
-      mem_p_nhop_dmac[wr_addr] <= cp_wr_p_nhop_dmac;
-      mem_p_nhop_ipv4[wr_addr] <= cp_wr_p_nhop_ipv4;
-      mem_p_port[wr_addr] <= cp_wr_p_port;
+      mem_valid[cp_addr]  <= 1'b1;
+      mem_key_ecmp_select[cp_addr] <= cp_wr_key_ecmp_select;
+      mem_action[cp_addr] <= cp_wr_action;
+      mem_p_nhop_dmac[cp_addr] <= cp_wr_p_nhop_dmac;
+      mem_p_nhop_ipv4[cp_addr] <= cp_wr_p_nhop_ipv4;
+      mem_p_port[cp_addr] <= cp_wr_p_port;
     end else if (q_pend_valid && q_pend_del && q_match) begin
-      mem_valid[q_pend_addr] <= 1'b0;
+      mem_valid[cp_addr] <= 1'b0;
+    end else if (cp_query_en && !q_pend_valid) begin
+      q_rd_valid   <= mem_valid[cp_addr];
+      q_rd_key_ecmp_select <= mem_key_ecmp_select[cp_addr];
+      q_rd_action  <= mem_action[cp_addr];
+      q_rd_p_nhop_dmac <= mem_p_nhop_dmac[cp_addr];
+      q_rd_p_nhop_ipv4 <= mem_p_nhop_ipv4[cp_addr];
+      q_rd_p_port <= mem_p_port[cp_addr];
     end
   end
 

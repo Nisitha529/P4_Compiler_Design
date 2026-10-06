@@ -22,27 +22,106 @@ in `docs/supported_p4_subset.md` and summarised in §8 here. The guiding rule
 throughout has been: *declare only what compiles, and verify everything that is
 declared.*
 
+### The flow, in one picture
+
+The compiler does four things in order. Each box below is a real file you can
+open, and each arrow is a data structure you can print.
+
 ```
-   my_app.p4
-      │
-      ├─ p4test  (front end only, for XSA / P4RTL programs)  ──►  MidEnd IR text
-      └─ p4c-bm2-ss (for v1model programs)                   ──►  bmv2 JSON
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ 1. LET p4c DO THE LANGUAGE                                             │
+  │    We never parse P4 ourselves. p4c desugars it -- resolves types,     │
+  │    inlines controls, lowers if/else, numbers the actions -- and we     │
+  │    read its OUTPUT. This is why the compiler is ~13k lines of Python   │
+  │    and not a language front end.                                      │
+  └────────────────────────────────────────────────────────────────────────┘
+         my_app.p4
+            │
+            ├── p4test       (XSA / P4RTL programs)  ──▶  MidEnd IR as TEXT
+            └── p4c-bm2-ss   (v1model programs)       ──▶  bmv2 JSON
+                                   │
+  ┌────────────────────────────────┼───────────────────────────────────────┐
+  │ 2. NORMALISE INTO A HARDWARE-SHAPED IR                                 │
+  │    Two readers, one IR. Everything downstream is architecture-blind.   │
+  └────────────────────────────────┼───────────────────────────────────────┘
+                                   ▼
+                    ingest_p4ir.py   /   ingest_bmv2.py
                                    │
                                    ▼
-                        ingest_p4ir.py / ingest_bmv2.py
+                      ┌─────────────────────────┐
+                      │   hardware IR (ir.py)   │   headers + field widths
+                      │                         │   tables + keys + match kind
+                      │   ~425 lines, no        │   actions + bodies
+                      │   P4 semantics left     │   externs (Register, Counter…)
+                      └─────────────────────────┘   parse graph + layout offsets
                                    │
+  ┌────────────────────────────────┼───────────────────────────────────────┐
+  │ 3. EMIT ONE FILE PER THING                                             │
+  │    No emitter knows about another. Each owns one output file.          │
+  └────────────────────────────────┼───────────────────────────────────────┘
+            ┌──────────────┬───────┴────────┬──────────────┬─────────────┐
+            ▼              ▼                ▼              ▼             ▼
+    emit_processing   emit_table      emit_top       emit_counters  emit_selftest
+    the match-action  one module      the SHELL:     one module     on-chip
+    pipeline, split   PER TABLE,      RX, parser,    per Counter    traffic gen
+    into stages       with its own    TM, deparser,                 so a board
+                      CP window       TX, AXI-Lite   emit_fifo      run needs no
+                                                     pkt_beat_buf   external kit
+                                   │
+  ┌────────────────────────────────┼───────────────────────────────────────┐
+  │ 4. WRITE A BUILDABLE DIRECTORY                                         │
+  └────────────────────────────────┼───────────────────────────────────────┘
                                    ▼
-                          hardware IR   (ir.py)
-                                   │
-        ┌──────────────┬───────────┴────────────┬───────────────┐
-        ▼              ▼                        ▼               ▼
-  emit_parser     emit_processing          emit_table       emit_top
-  emit_deparser   emit_counters            emit_fifo        emit_selftest
-                  emit_user_extern                          emit_constraints
-                                   │
-                                   ▼
-                     generated/<app>/*.sv   +  .qsf / .sdc
+            generated/<app>/  *.sv  +  <app>.qsf / .sdc  +  testbench/
 ```
+
+### A worked example: one table becomes three things
+
+Write this in your P4 program:
+
+```p4
+action set_port(PortId_t p) { standard_metadata.egress_port = p; }
+table l2 {
+    key     = { hdr.eth.dst : exact; }
+    actions = { set_port; NoAction; }
+    size    = 1024;
+}
+apply { l2.apply(); }
+```
+
+and the compiler produces exactly three things for it:
+
+| What | Where | Contains |
+|---|---|---|
+| **a storage module** | `l2_table.sv` | XOR-fold hash → BRAM, the key/action/parameter memories, the hit compare, and a control-plane write/query port |
+| **an instance + a stage** | `processing_generated.sv` | `u_l2` instantiated, the lookup wired to the key field, and the `apply` turned into `case (l2_act_id)` with `set_port`'s body inlined. The table's latency becomes a **pipeline-stage boundary**, so everything after it is re-registered |
+| **a control-plane window** | `<app>_top.sv` | AXI4-Lite registers to write an entry (key, action id, parameters, then commit) and to query or delete one |
+
+Change `exact` to `lpm` and only the first of those changes: `l2_table.sv`
+becomes a registered priority tree with per-entry prefix masks instead of a hash
+and a BRAM. The pipeline and the control plane are unaffected.
+
+### What comes out, at run time
+
+The generated shell is a packet pipeline with the match-action stages in the
+middle and the payload routed around them:
+
+```
+  AXI-Stream in ─▶ RX ─▶ PARSER ─▶ ╔═══════════════╗ ─▶ TRAFFIC ─▶ ╔═════════╗
+                   │     (header     ║ INGRESS       ║    MANAGER    ║ EGRESS  ║
+                   │      fields)    ║ MATCH-ACTION  ║    queues +   ║ MATCH-  ║
+                   │                 ║  tables here  ║    scheduler  ║ ACTION  ║
+                   │                 ╚═══════════════╝               ╚════╤════╝
+                   │                                                      │
+                   └── payload ──▶ pkt_beat_buf ───────────┐              ▼
+                       (bypasses the pipeline entirely)    │          DEPARSER
+                                                           ▼              │
+                                   AXI-Stream out ◀── TX ◀─┴──────────────┘
+```
+
+Only the **header vector** goes through the tables; the payload is buffered
+per slot and re-joined at TX. `p4src/arch/p4rtl.p4` carries the full version of
+this diagram with every signal named.
 
 We lean on `p4c` for parsing and all the hard language semantics, and only
 consume its **already-desugared output**. That is why the compiler is ~13k lines
@@ -364,6 +443,102 @@ So the remaining structural gap is the **length-changing deparser**. Nothing els
 in the metadata or extern area blocks a real app.
 
 ---
+
+## 8b. Meter and Digest, and what the memory measurement actually showed
+
+### Meter and Digest are implemented (2026-10-06)
+
+Both were declared in `p4rtl.p4` and had no implementation, which is the worst
+combination: a program could legally call either, the compiler exited 0, and the
+call came out as a `/* UNIMPLEMENTED EXTERN */` comment. `p4src/apps/mdprobe.p4`
+plus `tb_mdprobe_top` (13 assertions) exists so that cannot happen quietly again.
+
+**Meter** is single-rate two-colour, one bucket per index, and the per-index
+state is a **debit** rather than a token count. That is not a stylistic choice.
+A token bucket has to start *full* — a fresh meter must pass traffic — but "full"
+is `cp_burst`, a runtime value, and BRAM power-up content cannot be pre-loaded
+with it. An initialiser would need a power-on fill FSM, and that FSM would be a
+third accessor on the bucket memory, which costs a duplicate copy of the storage.
+A debit starts at **zero**, which reset and a cleared BRAM already give, so the
+first packet on every index is GREEN with no initialisation at all:
+
+```
+decay = (now - last_ts) >> cp_rate_shift     one unit per 2^shift cycles
+debt  = max(0, stored - decay)
+GREEN = debt < cp_burst                      then debt+1 is stored
+RED   = debt >= cp_burst                     nothing is charged
+```
+
+The shift keeps a multiplier off the packet path. Cost is one unit per **packet**
+(packet-rate policing); byte-rate would need `packet_length` plumbed in.
+`cp_rate_shift` and `cp_burst` are per **instance**, not per index — one set of
+knobs for the whole array — which is a real restriction, stated in `p4rtl.p4`.
+The read-modify-write hazard is the same as `Register`'s, for the same reason.
+
+**Digest** pushes into a 16-deep FIFO the control plane drains over AXI4-Lite
+(`status` = overflow count + occupancy, then the data words, then a one-cycle
+`pop`). A digest that is not drained fast enough **drops the newest entry and
+counts it** rather than stalling: `pack()` is a notification, and it must never
+apply backpressure to forwarding.
+
+Two bugs found building it, both the same shape as earlier ones:
+
+- the push was **ungated**, so it re-pushed every idle cycle and overflowed a
+  16-deep FIFO inside one packet — the identical trap the register writes had.
+- gating it on the module's `out_valid` fixed the overflow but read back **all
+  zeros**, because the data packed is the *pack stage's* view of the packet and
+  `out_valid` samples stages too late. The port is now a registered one-cycle
+  pulse captured at the pack's own stage valid.
+
+`MeterColor_t` also needed resolving to its 1-bit encoding in **both** `_map_expr`
+and `_map_cond` (a policer is `if (colour == MeterColor_t.RED)`, so the condition
+path matters), and the enum had to be added to the local-variable patterns in
+*two* places in `ingest_p4ir.py` — the declaration parse and the `name_map`.
+p4test renames `MeterColor_t c;` to `c_0` and records the original in `@name`,
+so with only the first, the local was declared as `c` while every expression
+still said `c_0`.
+
+### The table memory duplication: measured, and NOT fixed
+
+Worth recording because two plausible explanations were both wrong.
+
+`quartus_fit` on `fiveTuple_top` (Cyclone IV E, EP4CE115):
+
+| | used | available | |
+|---|---:|---:|---|
+| Logic elements | 71,015 | 114,480 | 62 % |
+| **M9K blocks** | **555** | **432** | **128 % — does not fit** |
+| Memory bits | 4,546,560 | 3,981,312 | 114 % |
+
+Every memory is instantiated **twice**, and `logical == implementation` bits for
+all of them, so there is **no granularity waste**: the doubling is the entire
+problem. Both attempted fixes changed the memory figure by **exactly zero bits**:
+
+1. merging the control-plane query read into the write block (fewer accessor
+   blocks) — no change;
+2. muxing the control-plane port to a single address expression — no change
+   (it did save ~400 logic elements, so it was kept).
+
+The reason is in the fitter report: every RAM is mapped **Simple Dual Port** —
+one write port, one read port — so an instance serves exactly **one** reader.
+These tables have **two** readers, the per-packet lookup and the control-plane
+query, and they are *not* mutually exclusive in time: the lookup reads on every
+cycle, including whichever cycle a query lands on. Two simultaneous readers plus
+a writer is three accesses; an M9K has two ports. Quartus duplicating the storage
+is correct, and no amount of HDL rearrangement removes it.
+
+**So the duplication is the price of runtime readback.** Removing it means
+removing a reader, and both options are design decisions:
+
+- **drop `cp_query`/`delete` per table** — one reader, one copy. Estimated
+  555 → ~358 M9K of 432, i.e. **it fits**, at the cost of not being able to read
+  entries back. The natural shape is an opt-out flag per table.
+- **let the query steal a lookup cycle** — needs a lookup-valid/stall signal the
+  table module does not have today.
+
+Neither is taken unasked. The P4's own `size = 8192` table plus two 8192-entry
+64-bit counters is also simply a large request for this part; halving those in
+the program fits too, and that is the program author's call.
 
 ## 9. Sharp edges — read before you write RTL generators
 

@@ -218,6 +218,11 @@ def _collect_hash_sites(ctrl, fwmap):
 
 
 def _map_cond(cond, cmap=None):
+    # Same MeterColor_t resolution as _map_expr -- a policer's whole shape is
+    # `if (colour == MeterColor_t.RED)`, so missing it here left the enum name
+    # in the generated condition and nothing compiled.
+    cond = re.sub(r'\bMeterColor_t\.GREEN\b', "1'b0", cond)
+    cond = re.sub(r'\bMeterColor_t\.RED\b',   "1'b1", cond)
     cond = re.sub(r'(\w+)\.apply\(\)\.(\w+)', r'\1_\2', cond)
     cond = re.sub(r'hdr\.(\w+)\.isValid\(\)', r'\1_valid', cond)
     cond = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', cond)
@@ -229,7 +234,52 @@ def _map_cond(cond, cmap=None):
     return cond
 
 
+def _collect_digest_packs(ctrl):
+    """[(digest_name, packed_expr)] for every `<inst>.pack(x)` in this control,
+    including inside action bodies and nested if/else."""
+    out = []
+
+    def _scan(stmts):
+        for st in stmts:
+            if isinstance(st, ExternCall) and st.name.endswith('.pack') and st.args:
+                out.append((st.name.rsplit('.', 1)[0], st.args[0].strip()))
+            elif isinstance(st, IfStatement):
+                _scan(st.then_body); _scan(st.else_body)
+
+    _scan(ctrl.statements)
+    for a in ctrl.actions:
+        _scan(a.body)
+    return out
+
+
+def _digest_expr_width(expr, fwmap):
+    """Width of a pack() operand, or None if it cannot be sized.
+
+    Only the shapes a digest realistically carries: a header field, a metadata
+    field, or a sized literal. Anything else is reported rather than guessed.
+    """
+    e = expr.strip()
+    m = re.match(r'^hdr\.(\w+)\.(\w+)$', e)
+    if m:
+        return fwmap.get(f'{m.group(1)}_{m.group(2)}')
+    m = re.match(r'^meta\.(\w+)$', e)
+    if m:
+        return fwmap.get(f'meta_{m.group(1)}')
+    m = re.match(r'^standard_metadata\.(\w+)$', e)
+    if m:
+        return _std_meta_width(m.group(1), None)
+    m = re.match(r'^(\d+)w', e)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def _map_expr(e, cmap=None):
+    # MeterColor_t is the only enum a program can read in an expression, and the
+    # RTL encodes it in one bit. Without this the enum name leaked through into
+    # the SystemVerilog verbatim and nothing would compile.
+    e = re.sub(r'\bMeterColor_t\.GREEN\b', "1'b0", e)
+    e = re.sub(r'\bMeterColor_t\.RED\b',   "1'b1", e)
     e = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', e)
     e = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', e)          # reads use the shadow
     e = re.sub(r'\bstandard_metadata\.(\w+)', r'std_meta_\1', e)
@@ -621,6 +671,23 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None, extern_ctx=None
             f.write(f'{ind}{obj}_wr_en   = 1\'b1;\n')
             f.write(f'{ind}{obj}_wr_addr = {addr};\n')
             f.write(f'{ind}{obj}_wr_data = {data};\n')
+            return
+        # Meter.execute(index, out colour): a read-modify-write of one token
+        # bucket whose RESULT this packet needs, so unlike Counter.count it has
+        # to happen in the pipeline rather than at slot release.
+        if method == 'execute' and len(stmt.args) >= 2:
+            idx  = _subst(stmt.args[0], pmap, cmap)
+            dest = _subst(stmt.args[1], pmap, cmap)
+            f.write(f"{ind}{obj}_exec_en  = 1'b1;\n")
+            f.write(f'{ind}{obj}_exec_idx = {idx};\n')
+            f.write(f'{ind}{dest} = {obj}_colour;\n')
+            return
+        # Digest.pack(data): push one entry to the control-plane FIFO. It must
+        # not touch the packet, so there is nothing else to emit.
+        if method == 'pack' and len(stmt.args) >= 1:
+            data = _subst(stmt.args[0], pmap, cmap)
+            f.write(f"{ind}{obj}_push_c = 1'b1;\n")
+            f.write(f'{ind}{obj}_data_c = {data};\n')
             return
         if method == 'count' and len(stmt.args) >= 1:
             idx = _subst(stmt.args[0], pmap, cmap)
@@ -1577,6 +1644,44 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 f.write(f'  output logic        {cnt.name}_incr_en,\n')
                 f.write(f'  output logic [{idx_w-1}:0] {cnt.name}_incr_idx,\n')
 
+        # Meter: the token buckets live HERE (the colour is needed by this
+        # packet, so unlike a Counter it cannot be deferred to slot release).
+        # Only the rate knobs come from outside, via AXI4-Lite.
+        meters  = getattr(ctrl, 'meters', [])
+        digests = getattr(ctrl, 'digests', [])
+        # A Digest's entry width is NOT in its declaration -- `Digest<T>()` only
+        # names the type -- so it is recovered from what pack() is actually
+        # given. One pack site per instance is what the compiler supports; a
+        # second one with a different shape would need a tagged union, so it is
+        # reported rather than guessed at.
+        if digests:
+            _packs = _collect_digest_packs(ctrl)
+            for dg in digests:
+                exprs = [e for (nm, e) in _packs if nm == dg.name]
+                widths = {_digest_expr_width(e, fwmap) for e in exprs}
+                if not exprs:
+                    print(f"[WARN]  Digest '{dg.name}': declared but never packed -- "
+                          f"no FIFO emitted for it")
+                    dg.fields = []
+                elif len(widths) > 1 or None in widths:
+                    print(f"[WARN]  Digest '{dg.name}': pack() operands could not be "
+                          f"sized consistently ({sorted(str(w) for w in widths)}) -- "
+                          f"only one fixed-width pack site per instance is supported")
+                    dg.fields = []
+                else:
+                    dg.fields = [('data', widths.pop())]
+        if meters:
+            f.write('\n  // Meter rate knobs (AXI4-Lite programmable, per INSTANCE not per index)\n')
+            for mt in meters:
+                f.write(f'  input  logic  [4:0] {mt.name}_cp_rate_shift,\n')
+                f.write(f'  input  logic [15:0] {mt.name}_cp_burst,\n')
+        if digests:
+            f.write('\n  // Digest pushes (the FIFO the control plane drains lives in the shell)\n')
+            for dg in digests:
+                w = dg.total_width or 1
+                f.write(f'  output logic        {dg.name}_push,\n')
+                f.write(f'  output logic [{w-1}:0] {dg.name}_data,\n')
+
         # Two valid outputs, deliberately. `valid_out` is registered one cycle
         # AFTER the last stage, while every out_* / drop is combinational from
         # the last stage's registers -- so under back-to-back issue (a new
@@ -1753,6 +1858,27 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             return 0
 
         reg_write_stage = {reg.name: _reg_write_stage(reg.name) for reg in registers}
+
+        def _stmts_contain_extern(stmts, full_name):
+            for st in stmts:
+                if isinstance(st, ExternCall) and st.name == full_name:
+                    return True
+                if isinstance(st, IfStatement):
+                    if _stmts_contain_extern(st.then_body, full_name) or \
+                       _stmts_contain_extern(st.else_body, full_name):
+                        return True
+            return False
+
+        def _extern_stage(full_name):
+            for i, stg in enumerate(stages):
+                if _stmts_contain_extern(stg, full_name):
+                    return i
+            return 0
+
+        meter_exec_stage   = {mt.name: _extern_stage(f'{mt.name}.execute')
+                              for mt in getattr(ctrl, 'meters', [])}
+        digest_push_stage  = {dg.name: _extern_stage(f'{dg.name}.pack')
+                              for dg in getattr(ctrl, 'digests', [])}
 
         def _table_contains_count(tbl, cnt_name):
             for aname in tbl.actions:
@@ -2084,6 +2210,91 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             f.write(f'  logic        {reg.name}_wr_en;\n')
             f.write(f'  logic [{addr_w-1}:0] {reg.name}_wr_addr;\n')
             f.write(f'  logic [{reg.data_width-1}:0] {reg.name}_wr_data;\n')
+        # ── Meter token buckets ────────────────────────────────────────
+        # Single-rate two-colour. The per-index state is a DEBIT, not a token
+        # count: how far this index is currently into its burst allowance.
+        #
+        # Debit rather than tokens on purpose. A token bucket has to START FULL
+        # (a fresh meter must pass traffic), but "full" is cp_burst, a runtime
+        # value, and BRAM power-up content cannot be pre-loaded with it -- an
+        # initialiser would need a power-on fill FSM, and that FSM would be a
+        # third accessor on this memory, which Quartus answers by duplicating
+        # the storage (see emit_table.py's measured note). A debit starts at
+        # ZERO, which is what reset and a cleared BRAM already give, so the
+        # first packet on every index is GREEN with no initialisation at all.
+        #
+        #   decay  = elapsed >> cp_rate_shift      one unit per 2^shift cycles
+        #   debt   = max(0, stored - decay)
+        #   GREEN  = debt < cp_burst               then debt+1 is stored
+        #   RED    = debt >= cp_burst              nothing is charged
+        #
+        # The shift keeps a multiplier off the packet path. Cost is one unit per
+        # PACKET (packet-rate policing); byte-rate would need packet_length
+        # plumbed in here. Same read-modify-write hazard as Register, for the
+        # same reason, and p4rtl.p4 states it.
+        if meters:
+            f.write('  // ── Meter debit buckets ───────────────────────────────────────────────\n')
+            for mt in meters:
+                aw = max(1, math.ceil(math.log2(mt.size))) if mt.size > 1 else 1
+                f.write(f'  // {mt.name}: Meter<bit<{mt.index_width}>>({mt.size})\n')
+                f.write(f'  logic [15:0] {mt.name}_debt [0:{mt.size-1}];\n')
+                f.write(f'  logic [31:0] {mt.name}_ts   [0:{mt.size-1}];\n')
+                f.write(f'  logic        {mt.name}_exec_en;\n')
+                f.write(f'  logic [{aw-1}:0] {mt.name}_exec_idx;\n')
+                f.write(f'  logic        {mt.name}_colour;   // 0 = GREEN, 1 = RED\n')
+            f.write('  // One free-running clock for every meter in this control.\n')
+            f.write('  logic [31:0] meter_now;\n')
+            f.write('  always_ff @(posedge clk) meter_now <= !rst_n ? 32\'d0 : meter_now + 32\'d1;\n')
+            f.write('  // synthesis translate_off\n')
+            f.write('  initial begin\n')
+            for mt in meters:
+                f.write(f'    for (int _mi = 0; _mi < {mt.size}; _mi++) begin\n')
+                f.write(f'      {mt.name}_debt[_mi] = 16\'d0;\n')
+                f.write(f'      {mt.name}_ts  [_mi] = 32\'d0;\n')
+                f.write('    end\n')
+            f.write('  end\n')
+            f.write('  // synthesis translate_on\n')
+            for mt in meters:
+                n = mt.name
+                f.write(f'  wire [15:0] {n}_debt_rd = {n}_debt[{n}_exec_idx];\n')
+                f.write(f'  wire [31:0] {n}_ts_rd   = {n}_ts  [{n}_exec_idx];\n')
+                f.write(f'  wire [31:0] {n}_elapsed = meter_now - {n}_ts_rd;\n')
+                f.write(f'  wire [31:0] {n}_decay   = {n}_elapsed >> {n}_cp_rate_shift;\n')
+                f.write(f'  wire [15:0] {n}_debt_now = ({{16\'d0, {n}_debt_rd}} > {n}_decay)\n')
+                f.write(f'                             ? ({n}_debt_rd - {n}_decay[15:0])\n')
+                f.write(f'                             : 16\'d0;\n')
+                f.write(f'  assign      {n}_colour  = !({n}_debt_now < {n}_cp_burst);\n')
+            f.write('\n')
+
+        # ── Digest defaults ────────────────────────────────────────────
+        # Driven low every cycle unless a pack() fires, so a held stage cannot
+        # push the same entry forever (the same trap the register writes had).
+        if digests:
+            f.write('  // ── Digest push outputs ──────────────────────────────────────────────\n')
+            f.write('  // The call site drives the _c pair combinationally; the PORT is a\n')
+            f.write('  // registered one-cycle pulse, captured at the stage the pack() is in.\n')
+            f.write('  // Both halves of that matter. The gate is needed because _push_c is\n')
+            f.write('  // combinational from stage registers that HOLD after a packet drains,\n')
+            f.write('  // so ungated it pushes the same entry every idle cycle. Capturing at\n')
+            f.write('  // the pack\'s OWN stage is needed because the data it packs is that\n')
+            f.write('  // stage\'s view of the packet -- gating on the module\'s out_valid\n')
+            f.write('  // instead samples it stages too late, which read back as all zeros.\n')
+            for dg in digests:
+                n, w = dg.name, dg.total_width
+                st = digest_push_stage.get(n, 0)
+                dvalid = 'valid_in' if st == 0 else f'valid_s{st}'
+                f.write(f'  // {n}: {w} bits per entry, packed in stage {st}\n')
+                f.write(f'  logic        {n}_push_c;\n')
+                f.write(f'  logic [{w-1}:0] {n}_data_c;\n')
+                f.write(f'  always_ff @(posedge clk) begin\n')
+                f.write(f'    if (!rst_n) {n}_push <= 1\'b0;\n')
+                f.write(f'    else begin\n')
+                f.write(f'      {n}_push <= {n}_push_c && {dvalid};\n')
+                f.write(f'      if ({n}_push_c && {dvalid}) {n}_data <= {n}_data_c;\n')
+                f.write('    end\n')
+                f.write('  end\n')
+            f.write('\n')
+
         reg_read_ports = []   # (reg_name, dest_id, addr_expr) for register_ram
         if registers:
             # Simulation-only zero-fill, excluded from synthesis. Quartus has
@@ -2313,6 +2524,14 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     if counter_incr_stage[cnt.name] == 0:
                         buf.write(f'    {cnt.name}_incr_en  = 1\'b0;\n')
                         buf.write(f'    {cnt.name}_incr_idx = \'0;\n')
+                for mt in meters:
+                    if meter_exec_stage.get(mt.name, 0) == 0:
+                        buf.write(f'    {mt.name}_exec_en  = 1\'b0;\n')
+                        buf.write(f'    {mt.name}_exec_idx = \'0;\n')
+                for dg in digests:
+                    if dg.fields and digest_push_stage.get(dg.name, 0) == 0:
+                        buf.write(f'    {dg.name}_push_c = 1\'b0;\n')
+                        buf.write(f'    {dg.name}_data_c = \'0;\n')
                 if std_meta_outs:
                     buf.write('\n    // Standard metadata defaults\n')
                     for fname in sorted(std_meta_outs):
@@ -2440,6 +2659,27 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                             f.write(f'    {reg_name}_rd_{dest_id} <= '
                                     f'{reg_name}_mem[{addr_expr}];\n')
                 f.write(f'  end\n')
+            f.write('\n')
+
+        # Meter bucket write-back. Gated on the stage valid for exactly the
+        # reason the register writes are: exec_en is combinational from stage
+        # registers that HOLD after a packet drains, so without the gate the
+        # same bucket would be re-charged every idle cycle -- which for a
+        # read-modify-write means the rate limiter drains itself to RED and
+        # stays there.
+        if meters:
+            for mt in meters:
+                n = mt.name
+                st = meter_exec_stage.get(n, 0)
+                mvalid = 'valid_in' if st == 0 else f'valid_s{st}'
+                f.write(f'  always_ff @(posedge clk) begin\n')
+                f.write(f'    if ({n}_exec_en && {mvalid}) begin\n')
+                f.write(f'      {n}_debt[{n}_exec_idx] <= {n}_colour\n')
+                f.write(f'                                 ? {n}_debt_now\n')
+                f.write(f'                                 : ({n}_debt_now + 16\'d1);\n')
+                f.write(f'      {n}_ts  [{n}_exec_idx] <= meter_now;\n')
+                f.write('    end\n')
+                f.write('  end\n')
             f.write('\n')
 
         # ── Pipeline register ──────────────────────────────────────────

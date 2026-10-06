@@ -772,12 +772,9 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
             f.write('      q_pend_addr  <= q_addr;\n')
             for fname, _ in key_fields:
                 f.write(f'      q_pend_key_{fname} <= cp_query_key_{fname};\n')
-            f.write('      q_rd_valid   <= mem_valid[q_addr];\n')
-            for fname, _ in key_fields:
-                f.write(f'      q_rd_key_{fname} <= mem_key_{fname}[q_addr];\n')
-            f.write('      q_rd_action  <= mem_action[q_addr];\n')
-            for pname, _ in params:
-                f.write(f'      q_rd_p_{pname} <= mem_p_{pname}[q_addr];\n')
+            # The mem_* reads for this query are NOT here: they live in the
+            # write block below, so that the memories have only TWO accessors.
+            # See the note there.
             f.write('    end else begin\n')
             f.write("      q_pend_valid <= 1'b0;\n")
             f.write('    end\n')
@@ -845,23 +842,67 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
             f.write('  // than corrupting anything -- the AXI4-Lite decoder is responsible for\n')
             f.write('  // never letting that collision reach this port in the first place (see\n')
             f.write('  // cp_query_busy-gated backpressure on the write channel).\n')
+            # ONE address for this whole port, so the write and the query read
+            # present a single address expression rather than one each. This was
+            # tried as a fix for the storage duplication and is NOT one -- see
+            # the measured note below -- but it is the honest way to express "one
+            # port, used by whichever control-plane operation is live", and it
+            # came out slightly cheaper in logic.
+            f.write('  logic [{}:0] cp_addr;\n'.format(idx_w - 1))
+            f.write('  always_comb begin\n')
+            f.write('    if (clearing)                                   cp_addr = clr_idx;\n')
+            f.write('    else if (cp_wr_en && !q_pend_valid)             cp_addr = wr_addr;\n')
+            f.write('    else if (q_pend_valid && q_pend_del && q_match) cp_addr = q_pend_addr;\n')
+            f.write('    else                                            cp_addr = q_addr;\n')
+            f.write('  end\n')
             f.write('  always_ff @(posedge clk) begin\n')
             f.write('    if (clearing) begin\n')
-            f.write("      mem_valid[clr_idx] <= 1'b0;\n")
+            f.write("      mem_valid[cp_addr] <= 1'b0;\n")
             f.write('      if (clr_idx == DEPTH-1) begin\n')
             f.write("        clearing <= 1'b0;\n")
             f.write('      end else begin\n')
             f.write("        clr_idx <= clr_idx + 1'b1;\n")
             f.write('      end\n')
             f.write('    end else if (cp_wr_en && !q_pend_valid) begin\n')
-            f.write('      mem_valid[wr_addr]  <= 1\'b1;\n')
+            f.write('      mem_valid[cp_addr]  <= 1\'b1;\n')
             for fname, _ in key_fields:
-                f.write(f'      mem_key_{fname}[wr_addr] <= cp_wr_key_{fname};\n')
-            f.write('      mem_action[wr_addr] <= cp_wr_action;\n')
+                f.write(f'      mem_key_{fname}[cp_addr] <= cp_wr_key_{fname};\n')
+            f.write('      mem_action[cp_addr] <= cp_wr_action;\n')
             for pname, _ in params:
-                f.write(f'      mem_p_{pname}[wr_addr] <= cp_wr_p_{pname};\n')
+                f.write(f'      mem_p_{pname}[cp_addr] <= cp_wr_p_{pname};\n')
             f.write('    end else if (q_pend_valid && q_pend_del && q_match) begin\n')
-            f.write("      mem_valid[q_pend_addr] <= 1'b0;\n")
+            f.write("      mem_valid[cp_addr] <= 1'b0;\n")
+            # The control-plane QUERY READ shares this port with the control-plane
+            # WRITE rather than sitting in its own always_ff. That is tidier and
+            # costs a few hundred logic elements less, but be clear about what it
+            # does NOT do: it does not stop Quartus duplicating the storage.
+            #
+            # MEASURED (quartus_fit, fiveTuple, Cyclone IV E): every memory here
+            # is mapped as Simple Dual Port -- one write port, one read port --
+            # so each instance can serve exactly ONE reader. This table has TWO
+            # readers, the per-packet lookup and this control-plane query, and
+            # they are not mutually exclusive in time: the lookup reads on every
+            # cycle, including whichever cycle a query lands on. Two
+            # simultaneous readers plus a writer is three accesses, an M9K has
+            # two ports, so Quartus instantiates the memory twice and that is
+            # correct of it. Merging the blocks changed the memory figure by
+            # exactly zero bits; so did muxing the address below.
+            #
+            # The duplication is therefore the price of runtime readback, not a
+            # coding mistake. Removing it means removing a reader:
+            #   * drop cp_query/delete for this table  -> one reader, one copy
+            #     (fiveTuple: 555 M9K -> ~358 of the 432 a DE2-115 has, i.e. it
+            #      fits, at the cost of not being able to read entries back)
+            #   * or let the query steal a lookup cycle, which needs a
+            #     lookup-valid/stall signal this module does not have today
+            # Both are design decisions, so neither is taken here unasked.
+            f.write('    end else if (cp_query_en && !q_pend_valid) begin\n')
+            f.write('      q_rd_valid   <= mem_valid[cp_addr];\n')
+            for fname, _ in key_fields:
+                f.write(f'      q_rd_key_{fname} <= mem_key_{fname}[cp_addr];\n')
+            f.write('      q_rd_action  <= mem_action[cp_addr];\n')
+            for pname, _ in params:
+                f.write(f'      q_rd_p_{pname} <= mem_p_{pname}[cp_addr];\n')
             f.write('    end\n')
             f.write('  end\n\n')
 

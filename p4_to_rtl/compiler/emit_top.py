@@ -603,6 +603,66 @@ def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None,
         })
         base += TABLE_AXIL_SZ
 
+      # ── Meter rate knobs ───────────────────────────────────────────────
+      # One window per Meter instance: the rate shift and the burst size. They
+      # are per INSTANCE, not per index -- one set of knobs for the whole
+      # bucket array -- which is a real restriction, stated in p4rtl.p4.
+      for mt in getattr(c, 'meters', []):
+        mname = mt.name
+        if mname in seen:
+            raise ValueError(f"'{mname}' is declared in both the {seen[mname]} and "
+                             f"{stage} controls -- extern names must be unique "
+                             f"across the pipeline")
+        seen[mname] = stage
+        result.append({
+            'tname': mname,
+            'stage': stage,
+            'base':  base,
+            'regs':  [('rate_shift', f'{mname}_cp_rate_shift', 5),
+                      ('burst',      f'{mname}_cp_burst',      16)],
+            'read_regs': [],
+            'idx_w': 0, 'act_w': 0, 'params': [],
+            'supports_query': False,
+            'is_meter': True,
+        })
+        base += TABLE_AXIL_SZ
+
+      # ── Digest drain ───────────────────────────────────────────────────
+      # The FIFO itself lives in the shell (see the digest section there);
+      # these are the words the control plane uses to drain it. `pop` is a
+      # write-to-advance, which is why it sits in `regs` and the data words
+      # in `read_regs`.
+      for dg in getattr(c, 'digests', []):
+        dname = dg.name
+        w = dg.total_width
+        if not w:
+            continue
+        if dname in seen:
+            raise ValueError(f"'{dname}' is declared in both the {seen[dname]} and "
+                             f"{stage} controls -- extern names must be unique "
+                             f"across the pipeline")
+        seen[dname] = stage
+        nwords = (w + 31) // 32
+        result.append({
+            'tname': dname,
+            'stage': stage,
+            'base':  base,
+            # Named 'commit' on purpose: that is the one register kind the
+            # decoder turns into a ONE-CYCLE pulse (auto-cleared every cycle,
+            # set only by a write to this word). A pop has to be a pulse -- a
+            # latched level would advance the read pointer every cycle it stayed
+            # set and drain the FIFO. The pulse arrives as {name}_cp_wr_en.
+            'regs':  [('commit', None, 1)],
+            'read_regs': ([('status', None, 32)] +
+                          [(f'data{i}', f'{dname}_cp_rd_data[{min(w-1, i*32+31)}:{i*32}]',
+                            min(32, w - i*32)) for i in range(nwords)]),
+            'idx_w': 0, 'act_w': 0, 'params': [],
+            'supports_query': False,
+            'is_digest': True,
+            'digest_width': w,
+        })
+        base += TABLE_AXIL_SZ
+
     # Replication member table. Not a P4 table -- it is the traffic manager's
     # own state -- but the control plane programs it the same way, so it reuses
     # the generic AXI4-Lite staging/write machinery. Marked is_mcast so the
@@ -678,6 +738,58 @@ def _emit_axil_decoder(f, regmap):
         f.write(f'  logic r_{ti["tname"]}_cp_wr_en;\n')
         if ti['supports_query']:
             f.write(f'  logic r_{ti["tname"]}_cp_query_en;\n')
+
+    # ── Digest FIFOs (one per Digest instance) ───────────────────────────────
+    # A small ring the control plane drains over AXI4-Lite. Deliberately simple:
+    # a digest that is not read fast enough DROPS the newest entry rather than
+    # stalling the packet path, because pack() must never apply backpressure to
+    # a packet -- it is a notification, not part of forwarding. The overflow is
+    # counted so the control plane can see it happened.
+    #
+    # Placed HERE, early, and not next to the other extern storage further down.
+    # Three things downstream need these names before that point: the AXI4-Lite
+    # read decoder (status), the read decoder's data words, and the u_proc
+    # instantiation (push/data). xvlog rejects every one of those as "used
+    # before its declaration" / "already implicitly declared"; iverilog accepted
+    # all of them, so it only appeared under xsim. Same declare-early rule as
+    # hdr_out and QCOUNT -- see docs/toolchain_constraints.md.
+    # Taken from the regmap rather than from the control blocks: this function
+    # only receives `regmap`, and the entries already carry what is needed.
+    for ti in [t for t in regmap if t.get('is_digest')]:
+        n, w = ti['tname'], ti['digest_width']
+        f.write(f'  // {n}: {w}-bit entries, depth 16, packed in the pipeline\n')
+        # An undeclared port connection becomes an implicit 1-BIT wire, which
+        # would silently truncate a 48-bit digest to one bit.
+        f.write(f'  wire        {n}_push;\n')
+        f.write(f'  wire [{w-1}:0] {n}_data;\n')
+        f.write(f'  logic [{w-1}:0] {n}_fifo [0:15];\n')
+        f.write(f'  logic [4:0] {n}_wr, {n}_rd;\n')
+        f.write(f'  logic [15:0] {n}_overflow;\n')
+        f.write(f'  wire {n}_full  = (({n}_wr - {n}_rd) == 5\'d16);\n')
+        f.write(f'  wire {n}_empty = ({n}_wr == {n}_rd);\n')
+        f.write(f'  wire [{w-1}:0] {n}_cp_rd_data = {n}_fifo[{n}_rd[3:0]];\n')
+        f.write(f'  always_ff @(posedge clk) begin\n')
+        f.write(f'    if (!rst_n) begin\n')
+        f.write(f'      {n}_wr <= 5\'d0; {n}_rd <= 5\'d0; {n}_overflow <= 16\'d0;\n')
+        f.write(f'    end else begin\n')
+        # {n}_push is already a registered one-cycle pulse, captured inside the
+        # processing module at the stage the pack() is in, so no gate is needed
+        # here (gating on out_valid instead sampled the data stages too late and
+        # read back as zeros).
+        f.write(f'      if ({n}_push) begin\n')
+        f.write(f'        if ({n}_full) {n}_overflow <= {n}_overflow + 16\'d1;\n')
+        f.write(f'        else begin\n')
+        f.write(f'          {n}_fifo[{n}_wr[3:0]] <= {n}_data;\n')
+        f.write(f'          {n}_wr <= {n}_wr + 5\'d1;\n')
+        f.write('        end\n')
+        f.write('      end\n')
+        # r_{n}_cp_wr_en, not the derived wire: the wire is declared after the
+        # decoder, and this block has to come before it.
+        f.write(f'      // r_{n}_cp_wr_en is the decoder\'s one-cycle commit pulse,\n')
+        f.write(f'      // used here as "pop one entry" -- see the regmap note.\n')
+        f.write(f'      if (r_{n}_cp_wr_en && !{n}_empty) {n}_rd <= {n}_rd + 5\'d1;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
     f.write('''
   // AXI4-Lite write channel state machine
@@ -835,7 +947,16 @@ def _emit_axil_decoder(f, regmap):
         n_write_words = _n_words(ti['regs'])
         for idx, rname, cp_sig, lo, take in _reg_words(ti['read_regs']):
             word_addr = (base + (n_write_words + idx) * 4) >> 2
-            if rname == 'query_status':
+            if rname == 'status' and ti.get('is_digest'):
+                # {overflow count, 11 spare, occupancy} -- one read tells the
+                # control plane how much is waiting AND whether anything was
+                # lost since it last looked.
+                # wr/rd are 5-bit, so their difference is already the 5-bit
+                # occupancy: 16 + 11 + 5 = 32. (A part-select of a
+                # concatenation -- {{...}}[4:0] -- is not legal Verilog, which
+                # is how the first attempt at this failed.)
+                expr = f"{{{tname}_overflow, 11'd0, ({tname}_wr - {tname}_rd)}}"
+            elif rname == 'query_status':
                 if ti.get('is_counter'):
                     expr = f'{{31\'d0, {tname}_cp_query_busy}}'
                 else:
@@ -2037,7 +2158,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write(f'  wire {tname}_cp_query_en  = r_{tname}_cp_query_en;\n')
             if not ti.get('is_counter'):
                 f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
-        if not ti.get('is_counter') and not ti.get('is_mcast'):
+        if not ti.get('is_counter') and not ti.get('is_mcast') \
+           and not ti.get('is_meter') and not ti.get('is_digest'):
             f.write(f'  wire {tname}_hit_out;\n')
 
     # Counter increment-request wires -- these connect u_proc's new
@@ -2119,7 +2241,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # cp_wr ports (tables only -- counters have no cp_wr/cp_query/hit_out
     # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
-        if ti.get('is_counter') or ti.get('is_mcast') or ti['stage'] != 'ingress':
+        if ti.get('is_counter') or ti.get('is_mcast') or ti.get('is_meter') \
+           or ti.get('is_digest') or ti['stage'] != 'ingress':
             continue
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -2139,6 +2262,14 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     for cnt in ig_counters:
         f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
         f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
+    # Meter rate knobs in, digest pushes out
+    for mt in getattr(ctrl, 'meters', []):
+        f.write(f'    .{mt.name}_cp_rate_shift ({mt.name}_cp_rate_shift),\n')
+        f.write(f'    .{mt.name}_cp_burst      ({mt.name}_cp_burst),\n')
+    for dg in getattr(ctrl, 'digests', []):
+        if dg.fields:
+            f.write(f'    .{dg.name}_push ({dg.name}_push),\n')
+            f.write(f'    .{dg.name}_data ({dg.name}_data),\n')
     f.write('    .out_valid (proc_out_valid),   // aligned with out_*/drop\n')
     f.write('    .valid_out (proc_valid_out),   // legacy registered-late valid, unused here\n')
     f.write('    .drop      (proc_drop)\n')
@@ -2201,7 +2332,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for fn in sorted(eg_std_outs):
             f.write(f'    .out_std_meta_{fn}  (eg_out_std_meta_{fn}),\n')
         for ti in regmap:
-            if ti.get('is_counter') or ti.get('is_mcast') or ti['stage'] != 'egress':
+            if ti.get('is_counter') or ti.get('is_mcast') or ti.get('is_meter') \
+               or ti.get('is_digest') or ti['stage'] != 'egress':
                 continue
             tname = ti['tname']
             f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -2220,6 +2352,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         for cnt in eg_counters:
             f.write(f'    .{cnt.name}_incr_en  ({cnt.name}_incr_en),\n')
             f.write(f'    .{cnt.name}_incr_idx ({cnt.name}_incr_idx),\n')
+        for mt in getattr(ectrl, 'meters', []):
+            f.write(f'    .{mt.name}_cp_rate_shift ({mt.name}_cp_rate_shift),\n')
+            f.write(f'    .{mt.name}_cp_burst      ({mt.name}_cp_burst),\n')
+        for dg in getattr(ectrl, 'digests', []):
+            if dg.fields:
+                f.write(f'    .{dg.name}_push ({dg.name}_push),\n')
+                f.write(f'    .{dg.name}_data ({dg.name}_data),\n')
         f.write('    .out_valid (eg_out_valid),   // aligned with out_*/drop\n')
         f.write('    .valid_out (eg_valid_out),\n')
         f.write('    .drop      (eg_drop)\n')

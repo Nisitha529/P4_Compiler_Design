@@ -109,6 +109,41 @@ If someone wants to retire one, the method is in `compiler_design.md`: revert it
 run `scripts/regress.sh`, and if it stalls use the heartbeat plus the per-net spin
 counter to name the oscillating net before concluding anything.
 
+## The declare-early rule, in practice
+
+It has now bitten five times, and **every time only under xvlog** — iverilog
+accepted all of them:
+
+| Identifier | Used by | Fixed by |
+|---|---|---|
+| `clearing` | the table's query pipeline | hoisting the declaration (`emit_table.py`) |
+| `hdr_out` | the length-changing output image | hoisting the declaration (`emit_top.py`) |
+| `QCOUNT` / `QSEL_W` | the multicast slot state | hoisting the localparams (`emit_top.py`) |
+| `saw_delta` | a testbench task | hoisting the declaration (`tb_lenprobe_top`) |
+| a Digest's `push`/`data`/`overflow`/`wr`/`rd` | `u_proc`'s port list, **and** the AXI4-Lite read decoder | emitting the whole FIFO before both |
+
+The digest case is the instructive one, because the obvious fix was not enough.
+Hoisting only `push`/`data` above the `u_proc` instantiation cleared that error
+and immediately produced the next one: the read decoder reads the FIFO's
+`overflow`/`wr`/`rd` for its status word, and that decoder is emitted *earlier
+still*. The whole block had to move ahead of both consumers.
+
+Two habits follow:
+
+- When adding state that the control plane can read, ask **where the decoder is
+  emitted** relative to it. The AXI4-Lite decoder comes early; most extern
+  storage comes late. Anything the decoder reads has to be declared before it.
+- xvlog reports only the **first** such error per module, so clearing one tells
+  you nothing about the next. Re-run until it is clean rather than assuming the
+  class is dealt with.
+
+And one process note: after any emitter change, **compile the generated file**
+rather than trusting the generator's exit status. A generation that stops partway
+leaves a truncated, syntactically-unbalanced `.sv`, and iverilog reports that as
+`syntax error` on the file's **last** line with `I give up` — which looks like a
+problem in whatever file came last on the command line, not like truncation. If a
+syntax error points at `endmodule`, check the file's length first.
+
 ## Diagnostics worth not filtering
 
 Two iverilog warnings were being discarded by the build scripts, and both carry

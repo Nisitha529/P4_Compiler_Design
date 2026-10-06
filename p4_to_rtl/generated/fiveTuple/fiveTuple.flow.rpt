@@ -1,0 +1,113 @@
+Flow report for fiveTuple
+Tue Oct  6 18:09:47 2026
+Quartus Prime Version 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
+
+
+---------------------
+; Table of Contents ;
+---------------------
+  1. Legal Notice
+  2. Flow Summary
+  3. Flow Settings
+  4. Flow Non-Default Global Settings
+  5. Flow Elapsed Time
+  6. Flow OS Summary
+  7. Flow Log
+  8. Flow Messages
+  9. Flow Suppressed Messages
+
+
+
+----------------
+; Legal Notice ;
+----------------
+Copyright (C) 2025  Altera Corporation. All rights reserved.
+Your use of Altera Corporation's design tools, logic functions 
+and other software and tools, and any partner logic 
+functions, and any output files from any of the foregoing 
+(including device programming or simulation files), and any 
+associated documentation or information are expressly subject 
+to the terms and conditions of the Altera Program License 
+Subscription Agreement, the Altera Quartus Prime License Agreement,
+the Altera IP License Agreement, or other applicable license
+agreement, including, without limitation, that your use is for
+the sole purpose of programming logic devices manufactured by
+Altera and sold by Altera or its authorized distributors.  Please
+refer to the Altera Software License Subscription Agreements 
+on the Quartus Prime software download page.
+
+
+
++--------------------------------------------------------------------------------------+
+; Flow Summary                                                                         ;
++------------------------------------+-------------------------------------------------+
+; Flow Status                        ; Flow Failed - Tue Oct  6 18:09:46 2026          ;
+; Quartus Prime Version              ; 25.1std.0 Build 1129 10/21/2025 SC Lite Edition ;
+; Revision Name                      ; fiveTuple                                       ;
+; Top-level Entity Name              ; fiveTuple_top                                   ;
+; Family                             ; Cyclone IV E                                    ;
+; Device                             ; EP4CE115F29C7                                   ;
+; Timing Models                      ; Final                                           ;
+; Total logic elements               ; 71,015 / 114,480 ( 62 % )                       ;
+;     Total combinational functions  ; 59,880 / 114,480 ( 52 % )                       ;
+;     Dedicated logic registers      ; 30,623 / 114,480 ( 27 % )                       ;
+; Total registers                    ; 30623                                           ;
+; Total pins                         ; 698 / 529 ( 132 % )                             ;
+; Total virtual pins                 ; 0                                               ;
+; Total memory bits                  ; 4,546,560 / 3,981,312 ( 114 % )                 ;
+; Embedded Multiplier 9-bit elements ; 0 / 532 ( 0 % )                                 ;
+; Total PLLs                         ; 0 / 4 ( 0 % )                                   ;
++------------------------------------+-------------------------------------------------+
+
+
++-----------------------------------------+
+; Flow Settings                           ;
++-------------------+---------------------+
+; Option            ; Setting             ;
++-------------------+---------------------+
+; Start date & time ; 10/06/2026 18:04:34 ;
+; Main task         ; Compilation         ;
+; Revision Name     ; fiveTuple           ;
++-------------------+---------------------+
+
+
++---------------------------------------------------------------------------------------------------+
+; Flow Non-Default Global Settings                                                                  ;
++-----------------------+--------------------------------+---------------+-------------+------------+
+; Assignment Name       ; Value                          ; Default Value ; Entity Name ; Section Id ;
++-----------------------+--------------------------------+---------------+-------------+------------+
+; COMPILER_SIGNATURE_ID ; 40350041432727.179129007449129 ; --            ; --          ; --         ;
+; TOP_LEVEL_ENTITY      ; fiveTuple_top                  ; fiveTuple     ; --          ; --         ;
+; VERILOG_MACRO         ; SYNTHESIS=1                    ; --            ; --          ; --         ;
++-----------------------+--------------------------------+---------------+-------------+------------+
+
+
++--------------------------------------------------------------------------------------------------------------------------+
+; Flow Elapsed Time                                                                                                        ;
++----------------------+--------------+-------------------------+---------------------+------------------------------------+
+; Module Name          ; Elapsed Time ; Average Processors Used ; Peak Virtual Memory ; Total CPU Time (on all processors) ;
++----------------------+--------------+-------------------------+---------------------+------------------------------------+
+; Analysis & Synthesis ; 00:04:07     ; 1.0                     ; 1237 MB             ; 00:04:18                           ;
+; Fitter               ; 00:00:58     ; 1.0                     ; 1328 MB             ; 00:00:59                           ;
+; Total                ; 00:05:05     ; --                      ; --                  ; 00:05:17                           ;
++----------------------+--------------+-------------------------+---------------------+------------------------------------+
+
+
++-----------------------------------------------------------------------------------+
+; Flow OS Summary                                                                   ;
++----------------------+--------------------+---------+------------+----------------+
+; Module Name          ; Machine Hostname   ; OS Name ; OS Version ; Processor type ;
++----------------------+--------------------+---------+------------+----------------+
+; Analysis & Synthesis ; nisitha-LOQ-15IRX9 ; Ubuntu  ; 22         ; x86_64         ;
+; Fitter               ; nisitha-LOQ-15IRX9 ; Ubuntu  ; 22         ; x86_64         ;
++----------------------+--------------------+---------+------------+----------------+
+
+
+------------
+; Flow Log ;
+------------
+quartus_map --read_settings_files=on fiveTuple
+quartus_fit --read_settings_files=on fiveTuple
+
+
+

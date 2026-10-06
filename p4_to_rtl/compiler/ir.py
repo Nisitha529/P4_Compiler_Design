@@ -229,6 +229,37 @@ class CounterDecl:
         self.counter_type = counter_type  # 'PACKETS' | 'BYTES' | 'PACKETS_AND_BYTES'
 
 
+class MeterDecl:
+    """A `Meter<IdxT>(n_meters) name;` extern declaration (p4rtl.p4).
+
+    Single-rate two-colour. Per-index state is a token bucket; the rate (CIR)
+    and burst (CBS) are programmed over AXI4-Lite and are per INSTANCE, not per
+    index -- one set of knobs for the whole array. That is a real restriction
+    and it is stated in the architecture file rather than hidden here.
+    """
+    def __init__(self, name, size, index_width=None):
+        self.name        = name
+        self.size        = size           # n_meters
+        self.index_width = index_width    # the declared index type's width
+
+
+class DigestDecl:
+    """A `Digest<T>() name;` extern declaration (p4rtl.p4).
+
+    `pack(data)` pushes one entry into a FIFO the control plane drains over
+    AXI4-Lite. It never affects the packet, so it needs no pipeline stage and
+    no result -- which is what makes it the cheapest extern here.
+    `fields` is the list of (name, width) packed into one entry, in order.
+    """
+    def __init__(self, name, fields):
+        self.name   = name
+        self.fields = fields              # list[(field_name, width)]
+
+    @property
+    def total_width(self):
+        return sum(w for _, w in self.fields)
+
+
 class UserExternDecl:
     """A UserExtern<I, O>(fixed_latency_in_cycles) name; extern declaration.
 
@@ -282,6 +313,8 @@ class ControlBlock:
         self.counters   = []     # list[CounterDecl]
         self.hashes     = []     # list[HashDecl]
         self.user_externs = []   # list[UserExternDecl]
+        self.meters     = []     # list[MeterDecl]
+        self.digests    = []     # list[DigestDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -306,6 +339,12 @@ class ControlBlock:
 
     def add_user_extern(self, ue):
         self.user_externs.append(ue)
+
+    def add_meter(self, m):
+        self.meters.append(m)
+
+    def add_digest(self, d):
+        self.digests.append(d)
 
 
 # ============================================================

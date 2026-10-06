@@ -1,0 +1,14 @@
+Analysis & Synthesis Status : Successful - Tue Oct  6 18:08:46 2026
+Quartus Prime Version : 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
+Revision Name : fiveTuple
+Top-level Entity Name : fiveTuple_top
+Family : Cyclone IV E
+Total logic elements : 71,014
+    Total combinational functions : 59,879
+    Dedicated logic registers : 30,623
+Total registers : 30623
+Total pins : 698
+Total virtual pins : 0
+Total memory bits : 4,546,560
+Embedded Multiplier 9-bit elements : 0
+Total PLLs : 0
