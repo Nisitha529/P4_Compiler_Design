@@ -66,6 +66,17 @@ def emit_counter_module(cnt, output_path):
             f.write(f',\n  output logic [63:0]       cp_query_{sub}_value')
         f.write('\n);\n\n')
 
+        # The query state is declared BEFORE the per-sub blocks because port A
+        # below reads q_pend_addr and writes q_rd_*: the query shares that port
+        # with the writes rather than having one of its own.
+        f.write('  // ── Control-plane query state ─────────────────────────────────────────\n')
+        f.write('  logic q_pend_valid;\n')
+        f.write('  logic q_rd_fired;    // the shared-port read actually went through\n')
+        f.write(f'  logic [{idx_w-1}:0] q_pend_addr;\n')
+        for sub, _ in subs:
+            f.write(f'  logic [63:0] q_rd_{sub};\n')
+        f.write('\n')
+
         for sub, delta in subs:
             f.write(f'  // {sub} sub-counter: {cnt.data_width}-bit value per index, real\n')
             f.write('  // block-RAM-safe registered read-modify-write (never a bare\n')
@@ -101,14 +112,29 @@ def emit_counter_module(cnt, output_path):
             f.write(f'  logic [63:0]       {sub}_b_new;\n')
             f.write(f'  wire  [63:0]       {sub}_cur = ({sub}_b_v && {sub}_b_idx == {sub}_a_idx) ? {sub}_b_new : {sub}_mem_q;\n')
             f.write(f'  wire  [63:0]       {sub}_nxt = {sub}_cur + {delta_expr[sub]};\n\n')
+            # ── Split into TWO PORTS so the memory needs ONE copy ─────────────
+            # The increment path alone is a read AND a write every cycle at
+            # different addresses, so it already occupies both ports of a block
+            # RAM; the control-plane query was a third access and Quartus
+            # duplicated the storage to serve it (measured: 2x on fiveTuple).
+            #
+            # Port A is therefore made BIDIRECTIONAL -- it writes when there is
+            # something to write and otherwise serves the query read -- and port
+            # B keeps the read-modify-write read. Same two rules as the tables
+            # (see emit_table.py): exactly two branches, and the write branch
+            # must also drive the port's read output, or the inference falls back
+            # to simple dual port and duplicates again.
+            #
+            # The cost is that a query waits for a cycle with no write. That is
+            # bounded in practice -- a write only happens on the cycle after a
+            # packet was counted, never back-to-back for several cycles -- and
+            # cp_query_busy stays asserted until the read has actually gone
+            # through, so a polling driver cannot read a stale value.
+            f.write('  // The pipeline registers: no memory access here.\n')
             f.write('  always_ff @(posedge clk) begin\n')
             f.write(f'    if ({sub}_clearing) begin\n')
-            f.write(f"      {sub}_mem[{sub}_clr_idx] <= 64'd0;\n")
-            f.write(f'      if ({sub}_clr_idx == DEPTH-1) begin\n')
-            f.write(f"        {sub}_clearing <= 1'b0;\n")
-            f.write('      end else begin\n')
-            f.write(f"        {sub}_clr_idx <= {sub}_clr_idx + 1'b1;\n")
-            f.write('      end\n')
+            f.write(f'      if ({sub}_clr_idx == DEPTH-1) {sub}_clearing <= 1\'b0;\n')
+            f.write(f"      else                          {sub}_clr_idx <= {sub}_clr_idx + 1'b1;\n")
             f.write(f"      {sub}_a_v <= 1'b0; {sub}_b_v <= 1'b0;\n")
             f.write('    end else begin\n')
             f.write('      // stage A\n')
@@ -116,37 +142,67 @@ def emit_counter_module(cnt, output_path):
             f.write(f'      {sub}_a_idx <= incr_idx;\n')
             if sub == 'byte':
                 f.write('      byte_a_len  <= pkt_byte_len;\n')
-            f.write(f'      {sub}_mem_q <= {sub}_mem[incr_idx];\n')
             f.write('      // stage B\n')
             f.write(f'      {sub}_b_v <= {sub}_a_v;\n')
             f.write(f'      if ({sub}_a_v) begin\n')
-            f.write(f'        {sub}_mem[{sub}_a_idx] <= {sub}_nxt;\n')
             f.write(f'        {sub}_b_idx <= {sub}_a_idx;\n')
             f.write(f'        {sub}_b_new <= {sub}_nxt;\n')
             f.write('      end\n')
             f.write('    end\n')
             f.write('  end\n\n')
+            f.write('  // Port A: bidirectional -- the clear sweep and the increment\n')
+            f.write('  // write-back, or else the control-plane query read.\n')
+            f.write(f'  wire {sub}_wr = {sub}_clearing || {sub}_a_v;\n')
+            f.write(f'  wire [63:0] {sub}_wr_data = {sub}_clearing ? 64\'d0 : {sub}_nxt;\n')
+            f.write(f'  logic [{idx_w-1}:0] {sub}_pa_addr;\n')
+            f.write('  always_comb begin\n')
+            f.write(f'    if      ({sub}_clearing) {sub}_pa_addr = {sub}_clr_idx;\n')
+            f.write(f'    else if ({sub}_a_v)      {sub}_pa_addr = {sub}_a_idx;\n')
+            f.write(f'    else                     {sub}_pa_addr = q_pend_addr;\n')
+            f.write('  end\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write(f'    if ({sub}_wr) begin\n')
+            f.write(f'      {sub}_mem[{sub}_pa_addr] <= {sub}_wr_data;\n')
+            f.write(f'      q_rd_{sub}               <= {sub}_wr_data;\n')
+            f.write('    end else begin\n')
+            f.write(f'      q_rd_{sub}               <= {sub}_mem[{sub}_pa_addr];\n')
+            f.write('    end\n')
+            f.write('  end\n\n')
+            f.write('  // Port B: the read-modify-write read. NO reset -- a reset on a\n')
+            f.write('  // memory\'s read-output register blocks true-dual-port inference\n')
+            f.write('  // (measured; see emit_table.py). Unused while clearing, because\n')
+            f.write(f'  // {sub}_a_v is held low then.\n')
+            f.write(f'  always_ff @(posedge clk) {sub}_mem_q <= {sub}_mem[incr_idx];\n\n')
 
-        # ── Control-plane query pipeline (read-only, 2-stage) ────────────────
+        # ── Control-plane query (read-only, shares port A with the writes) ───
+        # The read itself is issued by the port-A block above, on any cycle that
+        # has no write. This block only tracks WHEN that happened, so the result
+        # can never be read stale: cp_query_busy stays asserted until the read
+        # has actually gone through and its data has landed.
         clearing_expr = ' || '.join(f'{sub}_clearing' for sub, _ in subs)
-        f.write('  // Control-plane query, read-only: a read-only variant of exact-match\n')
-        f.write('  // tables\' own CP query pipeline (emit_table.py) -- registered port-B\n')
-        f.write('  // read, sticky result held until the next query, no key-tag compare\n')
-        f.write('  // (direct-indexed, not hashed) and no delete branch.\n')
-        f.write('  logic q_pend_valid;\n')
-        f.write(f'  logic [{idx_w-1}:0] q_pend_addr;\n')
-        for sub, _ in subs:
-            f.write(f'  logic [63:0] q_rd_{sub};\n')
-        f.write('\n  always_ff @(posedge clk) begin\n')
+        wr_expr       = ' || '.join(f'{sub}_wr' for sub, _ in subs)
+        f.write('  // Control-plane query, read-only: counters are queryable but not\n')
+        f.write('  // operator-settable, so there is no write or delete path. Unlike the\n')
+        f.write('  // exact-match tables, this read does NOT get a port of its own -- the\n')
+        f.write('  // increment path needs a concurrent read AND write on every cycle it\n')
+        f.write('  // is active, which is both ports of a block RAM -- so it borrows the\n')
+        f.write('  // write port on a cycle with nothing to write. That is what keeps this\n')
+        f.write('  // memory to ONE copy; a port of its own cost a duplicate of every\n')
+        f.write('  // counter (measured on fiveTuple: 128 M9K blocks instead of 64).\n')
+        f.write(f'  wire q_can_read = q_pend_valid && !({wr_expr});\n')
+        f.write('  always_ff @(posedge clk) begin\n')
         f.write("    if (!rst_n) begin\n")
         f.write("      q_pend_valid <= 1'b0;\n")
-        f.write(f'    end else if (cp_query_en && !q_pend_valid && !({clearing_expr})) begin\n')
-        f.write("      q_pend_valid <= 1'b1;\n")
-        f.write('      q_pend_addr  <= cp_query_idx;\n')
-        for sub, _ in subs:
-            f.write(f'      q_rd_{sub}   <= {sub}_mem[cp_query_idx];\n')
+        f.write("      q_rd_fired   <= 1'b0;\n")
         f.write('    end else begin\n')
-        f.write("      q_pend_valid <= 1'b0;\n")
+        f.write('      // One cycle behind q_can_read: that is when q_rd_* holds the data.\n')
+        f.write('      q_rd_fired <= q_can_read;\n')
+        f.write(f'      if (cp_query_en && !q_pend_valid && !({clearing_expr})) begin\n')
+        f.write("        q_pend_valid <= 1'b1;\n")
+        f.write('        q_pend_addr  <= cp_query_idx;\n')
+        f.write('      end else if (q_rd_fired) begin\n')
+        f.write("        q_pend_valid <= 1'b0;\n")
+        f.write('      end\n')
         f.write('    end\n')
         f.write('  end\n')
         f.write('  assign cp_query_busy = q_pend_valid;\n\n')
@@ -156,7 +212,7 @@ def emit_counter_module(cnt, output_path):
         for sub, _ in subs:
             f.write(f'  logic [63:0] q_{sub}_r;\n')
         f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (q_pend_valid) begin\n')
+        f.write('    if (q_rd_fired) begin\n')
         for sub, _ in subs:
             f.write(f'      q_{sub}_r <= q_rd_{sub};\n')
         f.write('    end\n')

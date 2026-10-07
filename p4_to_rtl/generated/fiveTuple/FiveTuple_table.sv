@@ -208,56 +208,144 @@ module FiveTuple_table #(
   // low-probability edge case, since DEPTH cycles is microseconds of real
   // wall-clock time, not something realistic control-plane software would
   // race against.
-  // Synchronous write (control plane) -- extended, not duplicated, to add
-  // the delete-commit branch AND the power-on clear above: this is the one
-  // place mem_valid needs multiple writers, and it must stay a single
-  // always_ff with if/else-if so at most one branch can ever drive the
-  // array per cycle. The plain write is additionally gated !q_pend_valid so
-  // a write colliding with an in-flight query/delete is dropped here rather
-  // than corrupting anything -- the AXI4-Lite decoder is responsible for
-  // never letting that collision reach this port in the first place (see
-  // cp_query_busy-gated backpressure on the write channel).
+  // -- Control-plane port (TRUE DUAL PORT, port A) -----------------------
+  // This port both WRITES and READS the entry memories; the per-packet
+  // lookup further down is port B and only reads. Two ports, one access
+  // each per cycle, so every memory needs exactly ONE copy.
+  //
+  // The SHAPE is load-bearing, and was arrived at by measuring quartus_map
+  // on an 8192x32 array (Cyclone IV E):
+  //   * EXACTLY TWO branches, write or read. Four branches -- clear, write,
+  //     delete, query-read -- defeat RAM inference completely: Quartus
+  //     gives up and tries to build the array from registers ("Cannot
+  //     convert all sets of registers into RAM megafunctions"). So the
+  //     three WRITE conditions merge into one cp_wr with a muxed address
+  //     and muxed write data.
+  //   * the write branch must ALSO drive this port's read output. That is
+  //     how read-during-write behaviour gets declared. Without it the port
+  //     infers write-only, the query read becomes a SECOND reader, and
+  //     Quartus duplicates every memory to serve it: 524,288 bits for a
+  //     262,144-bit array. With it, one True Dual Port copy -- half the
+  //     memory, and runtime readback is kept.
+  //   * the power-on clear SWEEP is its own block below: it only moves
+  //     counters, and must stay out of this template.
+  //
+  // A write colliding with an in-flight query/delete is dropped here rather
+  // than corrupting anything; the AXI4-Lite decoder is responsible for
+  // never letting that collision reach this port (cp_query_busy-gated
+  // backpressure on the write channel).
+  wire cp_plain_wr = cp_wr_en && !q_pend_valid;
+  wire cp_del_wr   = q_pend_valid && q_pend_del && q_match;
+  wire cp_wr       = clearing || cp_plain_wr || cp_del_wr;
+  // Only a real entry write stores valid=1; the clear sweep and a delete
+  // both store 0. The key/action/parameter memories are written on all
+  // three, which is harmless: a cleared or deleted entry has valid=0, and
+  // every lookup and every query gates on valid.
+  wire cp_wr_valid = cp_plain_wr;
   logic [12:0] cp_addr;
   always_comb begin
-    if (clearing)                                   cp_addr = clr_idx;
-    else if (cp_wr_en && !q_pend_valid)             cp_addr = wr_addr;
-    else if (q_pend_valid && q_pend_del && q_match) cp_addr = q_pend_addr;
-    else                                            cp_addr = q_addr;
+    if      (clearing)     cp_addr = clr_idx;
+    else if (cp_plain_wr)  cp_addr = wr_addr;
+    // q_pend_addr for the WHOLE time a query is in flight, not just on the
+    // delete cycle: the read branch re-reads every non-write cycle, and
+    // holding the latched address keeps q_rd_* stable even if the control
+    // plane moves the query key inputs underneath it.
+    else if (q_pend_valid) cp_addr = q_pend_addr;
+    else                   cp_addr = q_addr;
   end
+  // The clear sweep: counters only, deliberately not in a RAM block.
   always_ff @(posedge clk) begin
     if (clearing) begin
-      mem_valid[cp_addr] <= 1'b0;
-      if (clr_idx == DEPTH-1) begin
-        clearing <= 1'b0;
-      end else begin
-        clr_idx <= clr_idx + 1'b1;
-      end
-    end else if (cp_wr_en && !q_pend_valid) begin
-      mem_valid[cp_addr]  <= 1'b1;
+      if (clr_idx == DEPTH-1) clearing <= 1'b0;
+      else                    clr_idx  <= clr_idx + 1'b1;
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
+      mem_valid[cp_addr] <= cp_wr_valid;
+      q_rd_valid         <= cp_wr_valid;
+    end else begin
+      q_rd_valid         <= mem_valid[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_key_src[cp_addr] <= cp_wr_key_src;
+      q_rd_key_src         <= cp_wr_key_src;
+    end else begin
+      q_rd_key_src         <= mem_key_src[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_key_dst[cp_addr] <= cp_wr_key_dst;
+      q_rd_key_dst         <= cp_wr_key_dst;
+    end else begin
+      q_rd_key_dst         <= mem_key_dst[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_key_protocol[cp_addr] <= cp_wr_key_protocol;
+      q_rd_key_protocol         <= cp_wr_key_protocol;
+    end else begin
+      q_rd_key_protocol         <= mem_key_protocol[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_key_table_key_sport[cp_addr] <= cp_wr_key_table_key_sport;
+      q_rd_key_table_key_sport         <= cp_wr_key_table_key_sport;
+    end else begin
+      q_rd_key_table_key_sport         <= mem_key_table_key_sport[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_key_table_key_dport[cp_addr] <= cp_wr_key_table_key_dport;
+      q_rd_key_table_key_dport         <= cp_wr_key_table_key_dport;
+    end else begin
+      q_rd_key_table_key_dport         <= mem_key_table_key_dport[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_action[cp_addr] <= cp_wr_action;
+      q_rd_action         <= cp_wr_action;
+    end else begin
+      q_rd_action         <= mem_action[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_p_counter_index[cp_addr] <= cp_wr_p_counter_index;
+      q_rd_p_counter_index         <= cp_wr_p_counter_index;
+    end else begin
+      q_rd_p_counter_index         <= mem_p_counter_index[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_p_pcp[cp_addr] <= cp_wr_p_pcp;
+      q_rd_p_pcp         <= cp_wr_p_pcp;
+    end else begin
+      q_rd_p_pcp         <= mem_p_pcp[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_p_cfi[cp_addr] <= cp_wr_p_cfi;
+      q_rd_p_cfi         <= cp_wr_p_cfi;
+    end else begin
+      q_rd_p_cfi         <= mem_p_cfi[cp_addr];
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (cp_wr) begin
       mem_p_vid[cp_addr] <= cp_wr_p_vid;
-    end else if (q_pend_valid && q_pend_del && q_match) begin
-      mem_valid[cp_addr] <= 1'b0;
-    end else if (cp_query_en && !q_pend_valid) begin
-      q_rd_valid   <= mem_valid[cp_addr];
-      q_rd_key_src <= mem_key_src[cp_addr];
-      q_rd_key_dst <= mem_key_dst[cp_addr];
-      q_rd_key_protocol <= mem_key_protocol[cp_addr];
-      q_rd_key_table_key_sport <= mem_key_table_key_sport[cp_addr];
-      q_rd_key_table_key_dport <= mem_key_table_key_dport[cp_addr];
-      q_rd_action  <= mem_action[cp_addr];
-      q_rd_p_counter_index <= mem_p_counter_index[cp_addr];
-      q_rd_p_pcp <= mem_p_pcp[cp_addr];
-      q_rd_p_cfi <= mem_p_cfi[cp_addr];
-      q_rd_p_vid <= mem_p_vid[cp_addr];
+      q_rd_p_vid         <= cp_wr_p_vid;
+    end else begin
+      q_rd_p_vid         <= mem_p_vid[cp_addr];
     end
   end
 
@@ -280,26 +368,27 @@ module FiveTuple_table #(
   logic [11:0] p_r_vid;
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      valid_r <= 1'b0;
-    end else begin
-      valid_r     <= clearing ? 1'b0 : mem_valid[lkp_addr];
-      key_r_src     <= lkp_src;
-      mem_key_r_src <= mem_key_src[lkp_addr];
-      key_r_dst     <= lkp_dst;
-      mem_key_r_dst <= mem_key_dst[lkp_addr];
-      key_r_protocol     <= lkp_protocol;
-      mem_key_r_protocol <= mem_key_protocol[lkp_addr];
-      key_r_table_key_sport     <= lkp_table_key_sport;
-      mem_key_r_table_key_sport <= mem_key_table_key_sport[lkp_addr];
-      key_r_table_key_dport     <= lkp_table_key_dport;
-      mem_key_r_table_key_dport <= mem_key_table_key_dport[lkp_addr];
-      action_id_r <= mem_action[lkp_addr];
-      p_r_counter_index <= mem_p_counter_index[lkp_addr];
-      p_r_pcp <= mem_p_pcp[lkp_addr];
-      p_r_cfi <= mem_p_cfi[lkp_addr];
-      p_r_vid <= mem_p_vid[lkp_addr];
-    end
+    if (!rst_n) valid_r <= 1'b0;
+    else        valid_r <= clearing ? 1'b0 : mem_valid[lkp_addr];
+  end
+  // No reset here on purpose -- see above. Garbage in these registers
+  // before the first lookup is unobservable: hit is 0 until valid_r is.
+  always_ff @(posedge clk) begin
+    key_r_src     <= lkp_src;
+    mem_key_r_src <= mem_key_src[lkp_addr];
+    key_r_dst     <= lkp_dst;
+    mem_key_r_dst <= mem_key_dst[lkp_addr];
+    key_r_protocol     <= lkp_protocol;
+    mem_key_r_protocol <= mem_key_protocol[lkp_addr];
+    key_r_table_key_sport     <= lkp_table_key_sport;
+    mem_key_r_table_key_sport <= mem_key_table_key_sport[lkp_addr];
+    key_r_table_key_dport     <= lkp_table_key_dport;
+    mem_key_r_table_key_dport <= mem_key_table_key_dport[lkp_addr];
+    action_id_r <= mem_action[lkp_addr];
+    p_r_counter_index <= mem_p_counter_index[lkp_addr];
+    p_r_pcp <= mem_p_pcp[lkp_addr];
+    p_r_cfi <= mem_p_cfi[lkp_addr];
+    p_r_vid <= mem_p_vid[lkp_addr];
   end
 
   logic hit_c; assign hit_c = valid_r && (mem_key_r_src == key_r_src) && (mem_key_r_dst == key_r_dst) && (mem_key_r_protocol == key_r_protocol) && (mem_key_r_table_key_sport == key_r_table_key_sport) && (mem_key_r_table_key_dport == key_r_table_key_dport);

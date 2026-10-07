@@ -833,78 +833,93 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
             # The declarations themselves are hoisted above the query pipeline,
             # which references `clearing` -- see there for why.
 
-            f.write('  // Synchronous write (control plane) -- extended, not duplicated, to add\n')
-            f.write('  // the delete-commit branch AND the power-on clear above: this is the one\n')
-            f.write('  // place mem_valid needs multiple writers, and it must stay a single\n')
-            f.write('  // always_ff with if/else-if so at most one branch can ever drive the\n')
-            f.write('  // array per cycle. The plain write is additionally gated !q_pend_valid so\n')
-            f.write('  // a write colliding with an in-flight query/delete is dropped here rather\n')
-            f.write('  // than corrupting anything -- the AXI4-Lite decoder is responsible for\n')
-            f.write('  // never letting that collision reach this port in the first place (see\n')
-            f.write('  // cp_query_busy-gated backpressure on the write channel).\n')
-            # ONE address for this whole port, so the write and the query read
-            # present a single address expression rather than one each. This was
-            # tried as a fix for the storage duplication and is NOT one -- see
-            # the measured note below -- but it is the honest way to express "one
-            # port, used by whichever control-plane operation is live", and it
-            # came out slightly cheaper in logic.
-            f.write('  logic [{}:0] cp_addr;\n'.format(idx_w - 1))
+            f.write('  // -- Control-plane port (TRUE DUAL PORT, port A) -----------------------\n')
+            f.write('  // This port both WRITES and READS the entry memories; the per-packet\n')
+            f.write('  // lookup further down is port B and only reads. Two ports, one access\n')
+            f.write('  // each per cycle, so every memory needs exactly ONE copy.\n')
+            f.write('  //\n')
+            f.write('  // The SHAPE is load-bearing, and was arrived at by measuring quartus_map\n')
+            f.write('  // on an 8192x32 array (Cyclone IV E):\n')
+            f.write('  //   * EXACTLY TWO branches, write or read. Four branches -- clear, write,\n')
+            f.write('  //     delete, query-read -- defeat RAM inference completely: Quartus\n')
+            f.write('  //     gives up and tries to build the array from registers ("Cannot\n')
+            f.write('  //     convert all sets of registers into RAM megafunctions"). So the\n')
+            f.write('  //     three WRITE conditions merge into one cp_wr with a muxed address\n')
+            f.write('  //     and muxed write data.\n')
+            f.write('  //   * the write branch must ALSO drive this port\'s read output. That is\n')
+            f.write('  //     how read-during-write behaviour gets declared. Without it the port\n')
+            f.write('  //     infers write-only, the query read becomes a SECOND reader, and\n')
+            f.write('  //     Quartus duplicates every memory to serve it: 524,288 bits for a\n')
+            f.write('  //     262,144-bit array. With it, one True Dual Port copy -- half the\n')
+            f.write('  //     memory, and runtime readback is kept.\n')
+            f.write('  //   * the power-on clear SWEEP is its own block below: it only moves\n')
+            f.write('  //     counters, and must stay out of this template.\n')
+            f.write('  //\n')
+            f.write('  // A write colliding with an in-flight query/delete is dropped here rather\n')
+            f.write('  // than corrupting anything; the AXI4-Lite decoder is responsible for\n')
+            f.write('  // never letting that collision reach this port (cp_query_busy-gated\n')
+            f.write('  // backpressure on the write channel).\n')
+            f.write('  wire cp_plain_wr = cp_wr_en && !q_pend_valid;\n')
+            f.write('  wire cp_del_wr   = q_pend_valid && q_pend_del && q_match;\n')
+            f.write('  wire cp_wr       = clearing || cp_plain_wr || cp_del_wr;\n')
+            f.write('  // Only a real entry write stores valid=1; the clear sweep and a delete\n')
+            f.write('  // both store 0. The key/action/parameter memories are written on all\n')
+            f.write('  // three, which is harmless: a cleared or deleted entry has valid=0, and\n')
+            f.write('  // every lookup and every query gates on valid.\n')
+            f.write('  wire cp_wr_valid = cp_plain_wr;\n')
+            f.write(f'  logic [{idx_w-1}:0] cp_addr;\n')
             f.write('  always_comb begin\n')
-            f.write('    if (clearing)                                   cp_addr = clr_idx;\n')
-            f.write('    else if (cp_wr_en && !q_pend_valid)             cp_addr = wr_addr;\n')
-            f.write('    else if (q_pend_valid && q_pend_del && q_match) cp_addr = q_pend_addr;\n')
-            f.write('    else                                            cp_addr = q_addr;\n')
+            f.write('    if      (clearing)     cp_addr = clr_idx;\n')
+            f.write('    else if (cp_plain_wr)  cp_addr = wr_addr;\n')
+            f.write('    // q_pend_addr for the WHOLE time a query is in flight, not just on the\n')
+            f.write('    // delete cycle: the read branch re-reads every non-write cycle, and\n')
+            f.write('    // holding the latched address keeps q_rd_* stable even if the control\n')
+            f.write('    // plane moves the query key inputs underneath it.\n')
+            f.write('    else if (q_pend_valid) cp_addr = q_pend_addr;\n')
+            f.write('    else                   cp_addr = q_addr;\n')
             f.write('  end\n')
+            f.write('  // The clear sweep: counters only, deliberately not in a RAM block.\n')
             f.write('  always_ff @(posedge clk) begin\n')
             f.write('    if (clearing) begin\n')
-            f.write("      mem_valid[cp_addr] <= 1'b0;\n")
-            f.write('      if (clr_idx == DEPTH-1) begin\n')
-            f.write("        clearing <= 1'b0;\n")
-            f.write('      end else begin\n')
-            f.write("        clr_idx <= clr_idx + 1'b1;\n")
-            f.write('      end\n')
-            f.write('    end else if (cp_wr_en && !q_pend_valid) begin\n')
-            f.write('      mem_valid[cp_addr]  <= 1\'b1;\n')
-            for fname, _ in key_fields:
-                f.write(f'      mem_key_{fname}[cp_addr] <= cp_wr_key_{fname};\n')
-            f.write('      mem_action[cp_addr] <= cp_wr_action;\n')
-            for pname, _ in params:
-                f.write(f'      mem_p_{pname}[cp_addr] <= cp_wr_p_{pname};\n')
-            f.write('    end else if (q_pend_valid && q_pend_del && q_match) begin\n')
-            f.write("      mem_valid[cp_addr] <= 1'b0;\n")
-            # The control-plane QUERY READ shares this port with the control-plane
-            # WRITE rather than sitting in its own always_ff. That is tidier and
-            # costs a few hundred logic elements less, but be clear about what it
-            # does NOT do: it does not stop Quartus duplicating the storage.
-            #
-            # MEASURED (quartus_fit, fiveTuple, Cyclone IV E): every memory here
-            # is mapped as Simple Dual Port -- one write port, one read port --
-            # so each instance can serve exactly ONE reader. This table has TWO
-            # readers, the per-packet lookup and this control-plane query, and
-            # they are not mutually exclusive in time: the lookup reads on every
-            # cycle, including whichever cycle a query lands on. Two
-            # simultaneous readers plus a writer is three accesses, an M9K has
-            # two ports, so Quartus instantiates the memory twice and that is
-            # correct of it. Merging the blocks changed the memory figure by
-            # exactly zero bits; so did muxing the address below.
-            #
-            # The duplication is therefore the price of runtime readback, not a
-            # coding mistake. Removing it means removing a reader:
-            #   * drop cp_query/delete for this table  -> one reader, one copy
-            #     (fiveTuple: 555 M9K -> ~358 of the 432 a DE2-115 has, i.e. it
-            #      fits, at the cost of not being able to read entries back)
-            #   * or let the query steal a lookup cycle, which needs a
-            #     lookup-valid/stall signal this module does not have today
-            # Both are design decisions, so neither is taken here unasked.
-            f.write('    end else if (cp_query_en && !q_pend_valid) begin\n')
-            f.write('      q_rd_valid   <= mem_valid[cp_addr];\n')
-            for fname, _ in key_fields:
-                f.write(f'      q_rd_key_{fname} <= mem_key_{fname}[cp_addr];\n')
-            f.write('      q_rd_action  <= mem_action[cp_addr];\n')
-            for pname, _ in params:
-                f.write(f'      q_rd_p_{pname} <= mem_p_{pname}[cp_addr];\n')
+            f.write("      if (clr_idx == DEPTH-1) clearing <= 1'b0;\n")
+            f.write("      else                    clr_idx  <= clr_idx + 1'b1;\n")
             f.write('    end\n')
-            f.write('  end\n\n')
+            f.write('  end\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (cp_wr) begin\n')
+            f.write('      mem_valid[cp_addr] <= cp_wr_valid;\n')
+            f.write('      q_rd_valid         <= cp_wr_valid;\n')
+            f.write('    end else begin\n')
+            f.write('      q_rd_valid         <= mem_valid[cp_addr];\n')
+            f.write('    end\n')
+            f.write('  end\n')
+            for fname, _ in key_fields:
+                f.write('  always_ff @(posedge clk) begin\n')
+                f.write('    if (cp_wr) begin\n')
+                f.write(f'      mem_key_{fname}[cp_addr] <= cp_wr_key_{fname};\n')
+                f.write(f'      q_rd_key_{fname}         <= cp_wr_key_{fname};\n')
+                f.write('    end else begin\n')
+                f.write(f'      q_rd_key_{fname}         <= mem_key_{fname}[cp_addr];\n')
+                f.write('    end\n')
+                f.write('  end\n')
+            f.write('  always_ff @(posedge clk) begin\n')
+            f.write('    if (cp_wr) begin\n')
+            f.write('      mem_action[cp_addr] <= cp_wr_action;\n')
+            f.write('      q_rd_action         <= cp_wr_action;\n')
+            f.write('    end else begin\n')
+            f.write('      q_rd_action         <= mem_action[cp_addr];\n')
+            f.write('    end\n')
+            f.write('  end\n')
+            for pname, _ in params:
+                f.write('  always_ff @(posedge clk) begin\n')
+                f.write('    if (cp_wr) begin\n')
+                f.write(f'      mem_p_{pname}[cp_addr] <= cp_wr_p_{pname};\n')
+                f.write(f'      q_rd_p_{pname}         <= cp_wr_p_{pname};\n')
+                f.write('    end else begin\n')
+                f.write(f'      q_rd_p_{pname}         <= mem_p_{pname}[cp_addr];\n')
+                f.write('    end\n')
+                f.write('  end\n')
+            f.write('\n')
 
         # Opt-in tag-compare split (--target-freq-mhz): n_stages/split track
         # whether the tag-compare needs its own register between "compare"
@@ -927,21 +942,39 @@ def _emit_exact_match_table(table, act_ids, params, act_id_w, depth, fwmap, outp
             f.write(f'  logic [{pw-1}:0] p_r_{pname};\n')
         f.write('\n')
 
+        # ── Lookup port (port B) ──────────────────────────────────────────────
+        # Split into a RESET half and a RESET-FREE half, and the split is what
+        # halves this table's memory.
+        #
+        # MEASURED (quartus_map, Cyclone IV E, 8192x32): a reset branch on a
+        # memory's read-output register stops Quartus inferring TRUE dual port
+        # for that memory. It falls back to simple dual port -- one write port,
+        # one read port -- which cannot also serve the control-plane read, so it
+        # DUPLICATES the storage: 524,288 bits for a 262,144-bit array. Removing
+        # the reset from that register gives one True Dual Port copy instead.
+        # (Tested four ways: the reset is the cause, not the `clearing` ternary.)
+        #
+        # valid_r keeps its reset, because `hit` is derived from it and has to be
+        # a defined 0 after reset. It is one bit wide, so at worst it costs one
+        # block. Everything WIDE -- the key copies, the action id, the action
+        # parameters -- is reset-free, which is safe because every consumer of
+        # those gates on `hit`, and `hit` gates on valid_r.
         f.write('  always_ff @(posedge clk) begin\n')
-        f.write('    if (!rst_n) begin\n')
-        f.write('      valid_r <= 1\'b0;\n')
-        f.write('    end else begin\n')
+        f.write('    if (!rst_n) valid_r <= 1\'b0;\n')
         if enable_query:
-            f.write('      valid_r     <= clearing ? 1\'b0 : mem_valid[lkp_addr];\n')
+            f.write('    else        valid_r <= clearing ? 1\'b0 : mem_valid[lkp_addr];\n')
         else:
-            f.write('      valid_r     <= mem_valid[lkp_addr];\n')
+            f.write('    else        valid_r <= mem_valid[lkp_addr];\n')
+        f.write('  end\n')
+        f.write('  // No reset here on purpose -- see above. Garbage in these registers\n')
+        f.write('  // before the first lookup is unobservable: hit is 0 until valid_r is.\n')
+        f.write('  always_ff @(posedge clk) begin\n')
         for fname, _ in key_fields:
-            f.write(f'      key_r_{fname}     <= lkp_{fname};\n')
-            f.write(f'      mem_key_r_{fname} <= mem_key_{fname}[lkp_addr];\n')
-        f.write('      action_id_r <= mem_action[lkp_addr];\n')
+            f.write(f'    key_r_{fname}     <= lkp_{fname};\n')
+            f.write(f'    mem_key_r_{fname} <= mem_key_{fname}[lkp_addr];\n')
+        f.write('    action_id_r <= mem_action[lkp_addr];\n')
         for pname, _ in params:
-            f.write(f'      p_r_{pname} <= mem_p_{pname}[lkp_addr];\n')
-        f.write('    end\n')
+            f.write(f'    p_r_{pname} <= mem_p_{pname}[lkp_addr];\n')
         f.write('  end\n\n')
 
         tag_match = ' && '.join(f'(mem_key_r_{fname} == key_r_{fname})' for fname, _ in key_fields) or "1'b1"

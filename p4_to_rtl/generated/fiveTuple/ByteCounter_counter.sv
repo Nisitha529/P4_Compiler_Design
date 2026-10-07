@@ -25,6 +25,12 @@ module ByteCounter_counter #(
   output logic [63:0]       cp_query_byte_value
 );
 
+  // ── Control-plane query state ─────────────────────────────────────────
+  logic q_pend_valid;
+  logic q_rd_fired;    // the shared-port read actually went through
+  logic [12:0] q_pend_addr;
+  logic [63:0] q_rd_byte;
+
   // byte sub-counter: 64-bit value per index, real
   // block-RAM-safe registered read-modify-write (never a bare
   // combinational `assign` read -- Quartus does not infer BRAM for that
@@ -52,48 +58,73 @@ module ByteCounter_counter #(
   wire  [63:0]       byte_cur = (byte_b_v && byte_b_idx == byte_a_idx) ? byte_b_new : byte_mem_q;
   wire  [63:0]       byte_nxt = byte_cur + {48'd0, byte_a_len};
 
+  // The pipeline registers: no memory access here.
   always_ff @(posedge clk) begin
     if (byte_clearing) begin
-      byte_mem[byte_clr_idx] <= 64'd0;
-      if (byte_clr_idx == DEPTH-1) begin
-        byte_clearing <= 1'b0;
-      end else begin
-        byte_clr_idx <= byte_clr_idx + 1'b1;
-      end
+      if (byte_clr_idx == DEPTH-1) byte_clearing <= 1'b0;
+      else                          byte_clr_idx <= byte_clr_idx + 1'b1;
       byte_a_v <= 1'b0; byte_b_v <= 1'b0;
     end else begin
       // stage A
       byte_a_v   <= incr_fire && incr_req;
       byte_a_idx <= incr_idx;
       byte_a_len  <= pkt_byte_len;
-      byte_mem_q <= byte_mem[incr_idx];
       // stage B
       byte_b_v <= byte_a_v;
       if (byte_a_v) begin
-        byte_mem[byte_a_idx] <= byte_nxt;
         byte_b_idx <= byte_a_idx;
         byte_b_new <= byte_nxt;
       end
     end
   end
 
-  // Control-plane query, read-only: a read-only variant of exact-match
-  // tables' own CP query pipeline (emit_table.py) -- registered port-B
-  // read, sticky result held until the next query, no key-tag compare
-  // (direct-indexed, not hashed) and no delete branch.
-  logic q_pend_valid;
-  logic [12:0] q_pend_addr;
-  logic [63:0] q_rd_byte;
+  // Port A: bidirectional -- the clear sweep and the increment
+  // write-back, or else the control-plane query read.
+  wire byte_wr = byte_clearing || byte_a_v;
+  wire [63:0] byte_wr_data = byte_clearing ? 64'd0 : byte_nxt;
+  logic [12:0] byte_pa_addr;
+  always_comb begin
+    if      (byte_clearing) byte_pa_addr = byte_clr_idx;
+    else if (byte_a_v)      byte_pa_addr = byte_a_idx;
+    else                     byte_pa_addr = q_pend_addr;
+  end
+  always_ff @(posedge clk) begin
+    if (byte_wr) begin
+      byte_mem[byte_pa_addr] <= byte_wr_data;
+      q_rd_byte               <= byte_wr_data;
+    end else begin
+      q_rd_byte               <= byte_mem[byte_pa_addr];
+    end
+  end
 
+  // Port B: the read-modify-write read. NO reset -- a reset on a
+  // memory's read-output register blocks true-dual-port inference
+  // (measured; see emit_table.py). Unused while clearing, because
+  // byte_a_v is held low then.
+  always_ff @(posedge clk) byte_mem_q <= byte_mem[incr_idx];
+
+  // Control-plane query, read-only: counters are queryable but not
+  // operator-settable, so there is no write or delete path. Unlike the
+  // exact-match tables, this read does NOT get a port of its own -- the
+  // increment path needs a concurrent read AND write on every cycle it
+  // is active, which is both ports of a block RAM -- so it borrows the
+  // write port on a cycle with nothing to write. That is what keeps this
+  // memory to ONE copy; a port of its own cost a duplicate of every
+  // counter (measured on fiveTuple: 128 M9K blocks instead of 64).
+  wire q_can_read = q_pend_valid && !(byte_wr);
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       q_pend_valid <= 1'b0;
-    end else if (cp_query_en && !q_pend_valid && !(byte_clearing)) begin
-      q_pend_valid <= 1'b1;
-      q_pend_addr  <= cp_query_idx;
-      q_rd_byte   <= byte_mem[cp_query_idx];
+      q_rd_fired   <= 1'b0;
     end else begin
-      q_pend_valid <= 1'b0;
+      // One cycle behind q_can_read: that is when q_rd_* holds the data.
+      q_rd_fired <= q_can_read;
+      if (cp_query_en && !q_pend_valid && !(byte_clearing)) begin
+        q_pend_valid <= 1'b1;
+        q_pend_addr  <= cp_query_idx;
+      end else if (q_rd_fired) begin
+        q_pend_valid <= 1'b0;
+      end
     end
   end
   assign cp_query_busy = q_pend_valid;
@@ -102,7 +133,7 @@ module ByteCounter_counter #(
   // check !cp_query_busy then read at leisure, no single-cycle window.
   logic [63:0] q_byte_r;
   always_ff @(posedge clk) begin
-    if (q_pend_valid) begin
+    if (q_rd_fired) begin
       q_byte_r <= q_rd_byte;
     end
   end

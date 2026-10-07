@@ -76,15 +76,16 @@ module myTunnel_exact_table #(
   logic [8:0] p_r_port;
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      valid_r <= 1'b0;
-    end else begin
-      valid_r     <= mem_valid[lkp_addr];
-      key_r_dst_id     <= lkp_dst_id;
-      mem_key_r_dst_id <= mem_key_dst_id[lkp_addr];
-      action_id_r <= mem_action[lkp_addr];
-      p_r_port <= mem_p_port[lkp_addr];
-    end
+    if (!rst_n) valid_r <= 1'b0;
+    else        valid_r <= mem_valid[lkp_addr];
+  end
+  // No reset here on purpose -- see above. Garbage in these registers
+  // before the first lookup is unobservable: hit is 0 until valid_r is.
+  always_ff @(posedge clk) begin
+    key_r_dst_id     <= lkp_dst_id;
+    mem_key_r_dst_id <= mem_key_dst_id[lkp_addr];
+    action_id_r <= mem_action[lkp_addr];
+    p_r_port <= mem_p_port[lkp_addr];
   end
 
   logic hit_c; assign hit_c = valid_r && (mem_key_r_dst_id == key_r_dst_id);

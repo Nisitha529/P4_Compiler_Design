@@ -118,10 +118,22 @@ module tb_PacketCounter_standalone;
 
     // -- T4: query-vs-increment same-cycle collision -------------------------
     // Issue a query for the same index on the EXACT edge stage B writes
-    // pkt_mem[idx] <= new value. Documented, accepted behavior (same class
-    // as exact-match tables' own CP-query-vs-write collision window): the
-    // query's registered read is a non-blocking sample of the SAME cycle's
-    // pre-write memory content, so it reads the PRE-increment value.
+    // pkt_mem[idx] <= new value.
+    //
+    // CHANGED 2026-10-07, deliberately. This used to read the PRE-increment
+    // value, because the query had a block-RAM read port of its own and its
+    // registered read sampled the same cycle's pre-write content. That private
+    // port cost a DUPLICATE COPY of every counter memory (fiveTuple: 128 M9K
+    // blocks instead of 64), because the increment path already needs a
+    // concurrent read and write -- both ports -- on every active cycle.
+    //
+    // The query now BORROWS the write port on a cycle that has nothing to
+    // write, and cp_query_busy stays asserted until that read has landed. So a
+    // query colliding with an increment no longer samples underneath it: it
+    // waits, and then reads the POST-increment value. For a statistics counter
+    // that is the better guarantee -- you can be stale by however many packets
+    // are in flight, but you never read a value that was already superseded at
+    // the moment you asked.
     $display("\n== T4: query/increment same-cycle collision ==");
     begin
       @(negedge clk);
@@ -137,7 +149,7 @@ module tb_PacketCounter_standalone;
       cp_query_en = 0;
       while (cp_query_busy) @(posedge clk);
       #1;
-      chk("T4: same-cycle query reads pre-increment value (0)", cp_query_pkt_value == 64'd0);
+      chk("T4: a query colliding with an increment waits and reads post-increment (1)", cp_query_pkt_value == 64'd1);
     end
     cp_query(3'd6);
     chk("T4: a later query correctly sees the applied increment (1)", cp_query_pkt_value == 64'd1);

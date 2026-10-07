@@ -498,47 +498,73 @@ p4test renames `MeterColor_t c;` to `c_0` and records the original in `@name`,
 so with only the first, the local was declared as `c` while every expression
 still said `c_0`.
 
-### The table memory duplication: measured, and NOT fixed
+### Table memory: halved by inferring TRUE dual port (2026-10-07)
 
-Worth recording because two plausible explanations were both wrong.
+Every table memory used to be instantiated **twice**, which put `fiveTuple` over
+the DE2-115: 555 M9K blocks against 432. It is now one copy each, and **runtime
+readback is kept** -- nothing was given up.
 
-`quartus_fit` on `fiveTuple_top` (Cyclone IV E, EP4CE115):
+| | before | after |
+|---|---:|---:|
+| M9K blocks | 555 / 432 (128 %) | **423 / 432 (98 %)** |
+| Memory bits | 4,546,560 (114 %) | **3,465,216 (87 %)** |
+| Logic elements | 71,015 (62 %) | **51,652 (45 %)** |
+| RAM modes | 27 x Simple Dual Port | **10 x True Dual Port** + 9 Simple |
 
-| | used | available | |
-|---|---:|---:|---|
-| Logic elements | 71,015 | 114,480 | 62 % |
-| **M9K blocks** | **555** | **432** | **128 % — does not fit** |
-| Memory bits | 4,546,560 | 3,981,312 | 114 % |
+The logic saving was a side effect: the duplicate memories' address and control
+logic went with them, and the reset-free registers below need no reset network.
 
-Every memory is instantiated **twice**, and `logical == implementation` bits for
-all of them, so there is **no granularity waste**: the doubling is the entire
-problem. Both attempted fixes changed the memory figure by **exactly zero bits**:
+**What was actually wrong.** An M9K can be *simple* dual port (one write port,
+one read port) or *true* dual port (two ports, each read **or** write). A table
+needs one write and two reads -- the per-packet lookup and the control-plane
+query -- which is three users but only **two accesses per cycle**, because the
+two control-plane users never coincide. That fits true dual port exactly. Quartus
+was choosing simple dual port, so each instance could serve only one reader and
+it duplicated the storage to serve the other.
 
-1. merging the control-plane query read into the write block (fewer accessor
-   blocks) — no change;
-2. muxing the control-plane port to a single address expression — no change
-   (it did save ~400 logic elements, so it was kept).
+Two things were preventing the inference, and **both** have to be right:
 
-The reason is in the fitter report: every RAM is mapped **Simple Dual Port** —
-one write port, one read port — so an instance serves exactly **one** reader.
-These tables have **two** readers, the per-packet lookup and the control-plane
-query, and they are *not* mutually exclusive in time: the lookup reads on every
-cycle, including whichever cycle a query lands on. Two simultaneous readers plus
-a writer is three accesses; an M9K has two ports. Quartus duplicating the storage
-is correct, and no amount of HDL rearrangement removes it.
+1. **The control-plane port must be exactly two branches, write or read, and the
+   write branch must also drive that port's read output.** That last part is how
+   read-during-write behaviour gets declared; without it the port infers
+   write-only and the query read becomes a second reader. Four branches (clear /
+   write / delete / query-read) defeat inference *completely* -- Quartus gives up
+   and tries to build the array from registers ("Cannot convert all sets of
+   registers into RAM megafunctions"). The three write conditions are therefore
+   merged into one `cp_wr` with a muxed address and muxed write data, and the
+   power-on clear sweep moved to its own block.
+2. **No reset on the lookup port's WIDE read-output registers.** A reset branch
+   on a memory's read-output register stops true-dual-port inference on its own.
+   `valid_r` keeps its reset (it feeds `hit`, which must be a defined 0 after
+   reset) and is one bit wide; the key copies, action id and parameters are
+   reset-free, which is safe because every consumer gates on `hit`.
 
-**So the duplication is the price of runtime readback.** Removing it means
-removing a reader, and both options are design decisions:
+Isolated on an 8192x32 array, which is how the cause was pinned down:
 
-- **drop `cp_query`/`delete` per table** — one reader, one copy. Estimated
-  555 → ~358 M9K of 432, i.e. **it fits**, at the cost of not being able to read
-  entries back. The natural shape is an opt-out flag per table.
-- **let the query steal a lookup cycle** — needs a lookup-valid/stall signal the
-  table module does not have today.
+| probe | result |
+|---|---|
+| two-branch CP port, no reset on the read register | 262,144 bits -- 1 x True Dual Port |
+| same, **plus a reset** on the read register | 524,288 bits -- 2 x Simple Dual Port |
+| reset removed, `clearing ? ... :` ternary kept | 262,144 -- single, so the ternary is innocent |
+| reset on `valid_r` only, wide registers reset-free | 270,336 -- single |
 
-Neither is taken unasked. The P4's own `size = 8192` table plus two 8192-entry
-64-bit counters is also simply a large request for this part; halving those in
-the program fits too, and that is the program author's call.
+**Still outstanding: the counters.** They are duplicated by the same mechanism
+(the 9 remaining Simple Dual Port instances include 4 counter copies, ~64
+blocks). They are a harder case: their memory sees two writes (increment
+write-back and the power-on clear) and two reads (the read-modify-write and the
+control-plane query), and increments happen on most cycles, so a query read in a
+two-branch template would have to **wait for a cycle with no increment** and hold
+`cp_query_busy` until it got one. That is extra logic rather than a re-shape, and
+the current 98 % memory figure leaves little headroom, so it is the obvious next
+saving.
+
+**Two process notes from getting this wrong twice first.** The earlier
+conclusion recorded here -- that the duplication was the unavoidable price of
+runtime readback -- was wrong, and it was reached by reasoning about port counts
+instead of testing a template. A 15-line probe plus `quartus_map` settled it in
+minutes. And `quartus_map` alone is not enough for memory questions: it reports a
+pre-fit estimate with `AUTO` block types and double-counts instances. Only
+`quartus_fit` gives real M9K counts.
 
 ## 9. Sharp edges — read before you write RTL generators
 
