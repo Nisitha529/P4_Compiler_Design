@@ -38,6 +38,12 @@ module feprobe_top #(
     output logic                      s_axil_rvalid,
     input  logic                      s_axil_rready,
 
+    // FeatureExport record streams (never back-pressure the packet path)
+    output logic [63:0] tcn_feed_tdata,
+    output logic tcn_feed_tvalid,
+    input  logic tcn_feed_tready
+,
+
     // Metadata sideband (valid while m_axis_tvalid for the packet)
     output logic [15:0] out_meta_flow_id,
     output logic [15:0] out_meta_seen,
@@ -224,8 +230,49 @@ module feprobe_top #(
   logic [8:0] r_fwd_cp_wr_p_p;
   logic [15:0] r_fwd_cp_query_key_etype;
   logic r_fwd_cp_query_del;
+  logic [0:0] r_tcn_feed_cp_enable;
   logic r_fwd_cp_wr_en;
   logic r_fwd_cp_query_en;
+  logic r_tcn_feed_cp_wr_en;
+  // tcn_feed: 64-bit records, staging depth 8
+  wire        tcn_feed_push;
+  wire [63:0] tcn_feed_data;
+  logic [63:0] tcn_feed_ring [0:7];
+  logic [3:0] tcn_feed_wr, tcn_feed_rd;
+  logic [31:0] tcn_feed_pushed, tcn_feed_dropped;
+  logic [3:0] tcn_feed_hiwater;
+  wire [3:0] tcn_feed_occ  = tcn_feed_wr - tcn_feed_rd;
+  wire tcn_feed_full  = (tcn_feed_occ == 4'd8);
+  wire tcn_feed_empty = (tcn_feed_wr == tcn_feed_rd);
+  // tvalid follows "ring not empty", which is exactly the protocol:
+  // once raised it stays raised until the entry is taken.
+  assign tcn_feed_tvalid = !tcn_feed_empty;
+  assign tcn_feed_tdata  = tcn_feed_ring[tcn_feed_rd[2:0]];
+  wire tcn_feed_take = tcn_feed_tvalid && tcn_feed_tready;
+  // A global enable the host can use to stop the feed, and a
+  // one-cycle stats clear (the decoder's commit-pulse trick).
+  wire tcn_feed_accept = tcn_feed_push && r_tcn_feed_cp_enable[0] && !tcn_feed_full;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      tcn_feed_wr <= '0; tcn_feed_rd <= '0;
+      tcn_feed_pushed <= 32'd0; tcn_feed_dropped <= 32'd0; tcn_feed_hiwater <= '0;
+    end else begin
+      if (r_tcn_feed_cp_wr_en) begin   // clear_stats
+        tcn_feed_pushed <= 32'd0; tcn_feed_dropped <= 32'd0; tcn_feed_hiwater <= '0;
+      end
+      if (tcn_feed_accept) begin
+        tcn_feed_ring[tcn_feed_wr[2:0]] <= tcn_feed_data;
+        tcn_feed_wr     <= tcn_feed_wr + 1'b1;
+        if (!r_tcn_feed_cp_wr_en) tcn_feed_pushed <= tcn_feed_pushed + 32'd1;
+      end else if (tcn_feed_push && r_tcn_feed_cp_enable[0]) begin
+        // full: drop the NEWEST record, never the packet
+        if (!r_tcn_feed_cp_wr_en) tcn_feed_dropped <= tcn_feed_dropped + 32'd1;
+      end
+      if (tcn_feed_take) tcn_feed_rd <= tcn_feed_rd + 1'b1;
+      if (!r_tcn_feed_cp_wr_en && tcn_feed_occ > tcn_feed_hiwater) tcn_feed_hiwater <= tcn_feed_occ;
+    end
+  end
+
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -260,9 +307,11 @@ module feprobe_top #(
       axil_st <= AXIL_IDLE;
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
+      r_tcn_feed_cp_wr_en <= 1'b0;
     end else begin
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
+      r_tcn_feed_cp_wr_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -281,6 +330,8 @@ module feprobe_top #(
               14'd5: r_fwd_cp_query_key_etype <= s_axil_wdata[15:0]; // query_key_etype
               14'd6: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b0; end // fwd query
               14'd7: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b1; end // fwd delete
+              14'd64: r_tcn_feed_cp_enable <= s_axil_wdata[0:0]; // enable
+              14'd65: r_tcn_feed_cp_wr_en <= 1'b1; // tcn_feed commit
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -319,6 +370,9 @@ module feprobe_top #(
               14'd8: r_rdata <= {30'd0, fwd_cp_query_hit, fwd_cp_query_busy}; // fwd query_status
               14'd9: r_rdata <= {30'd0, fwd_cp_query_action_id}; // fwd query_action_id
               14'd10: r_rdata <= {23'd0, fwd_cp_query_p_p}; // fwd query_p_p
+              14'd66: r_rdata <= tcn_feed_pushed; // tcn_feed pushed
+              14'd67: r_rdata <= tcn_feed_dropped; // tcn_feed dropped
+              14'd68: r_rdata <= {12'd0, tcn_feed_hiwater, 12'd0, tcn_feed_occ}; // tcn_feed status
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;
@@ -341,6 +395,8 @@ module feprobe_top #(
   wire fwd_cp_query_en  = r_fwd_cp_query_en;
   wire fwd_cp_query_del = r_fwd_cp_query_del;
   wire fwd_hit_out;
+  wire [0:0] tcn_feed_cp_enable = r_tcn_feed_cp_enable;
+  wire tcn_feed_cp_wr_en = r_tcn_feed_cp_wr_en;
 
   processing_generated u_proc (
     .clk       (clk),
@@ -376,6 +432,8 @@ module feprobe_top #(
     .fwd_cp_query_action_id (fwd_cp_query_action_id),
     .fwd_cp_query_p_p (fwd_cp_query_p_p),
     .fwd_hit_out  (fwd_hit_out),
+    .tcn_feed_push (tcn_feed_push),
+    .tcn_feed_data (tcn_feed_data),
     .out_valid (proc_out_valid),   // aligned with out_*/drop
     .valid_out (proc_valid_out),   // legacy registered-late valid, unused here
     .drop      (proc_drop)

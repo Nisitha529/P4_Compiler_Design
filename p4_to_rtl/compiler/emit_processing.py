@@ -2183,6 +2183,33 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     return i
             return 0
 
+        # ── Register read-after-write distance ─────────────────────────
+        # p4rtl.p4 promises this number and nothing computed it, so a program
+        # could rely on a guarantee no one had checked. A packet reads a
+        # register at stage R and writes it back at stage W, so a later packet
+        # sees that write only once its own read has reached stage R -- i.e.
+        # when it entered the pipeline at least (W - R + 1) packets later.
+        # Anything closer reads the PRE-update value.
+        #
+        # It matters most for exactly the per-flow read-modify-write a feature
+        # feed does (last-seen timestamp, per-flow packet index): a burst of
+        # same-flow packets is what a scan or a flood looks like, and that is
+        # precisely when the packets are closest together.
+        for _reg in registers:
+            _rs = _reg_read_stage(_reg.name)
+            _ws = reg_write_stage.get(_reg.name, 0)
+            if not any(_stmts_contain_write(stg, _reg.name) for stg in stages):
+                _reg.raw_distance = 0      # never written: no hazard
+                print(f"[INFO] Register '{_reg.name}': read-only, no RAW hazard")
+                continue
+            _reg.raw_distance = max(1, _ws - _rs + 1)
+            print(f"[INFO] Register '{_reg.name}': RAW distance "
+                  f"{_reg.raw_distance} packet(s) (read stage {_rs}, "
+                  f"write-back stage {_ws})"
+                  + ("" if _reg.raw_distance == 1 else
+                     " -- two packets closer than this may both read the "
+                     "pre-update value"))
+
         def _ue_apply_stage(ue_name):
             for i, stg in enumerate(stages):
                 if _stmts_contain_call(stg, f'{ue_name}.apply'):

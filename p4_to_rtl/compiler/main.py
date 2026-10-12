@@ -320,7 +320,7 @@ def debug_ir(ir):
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
                   axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
-                  register_ram=False, nslot=4, tm_qlimit=None):
+                  register_ram=False, nslot=4, tm_qlimit=None, fe_stage_depth=8):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -504,7 +504,7 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
         emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot,
-                 tm_qlimit=tm_qlimit)
+                 tm_qlimit=tm_qlimit, fe_stage_depth=fe_stage_depth)
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
         # The top's payload path is pkt_beat_buf (emit_fifo.py); it is a
         # generic module emitted next to the top so every XSA app carries its
@@ -669,6 +669,15 @@ def main():
               "pipeline latency at the cost of NSLOT x header-region registers."),
     )
     parser.add_argument(
+        "--fe-stage-depth", type=int, default=8, metavar="N",
+        help=("FeatureExport staging FIFO depth, in records (default 8). This is "
+              "the only buffering the compiler owns, and it exists so the stream "
+              "port can honour 'tvalid holds until tready' without ever stalling "
+              "the packet path -- not for throughput. The deep buffer between the "
+              "port and the consumer belongs outside the compiler (its depth, "
+              "clock and memory type are system choices)."),
+    )
+    parser.add_argument(
         "--board",
         choices=available_boards(),
         default=None,
@@ -775,6 +784,7 @@ def main():
         self_test=args.self_test,
         register_ram=args.register_ram,
         nslot=args.nslot,
+        fe_stage_depth=args.fe_stage_depth,
         tm_qlimit=args.tm_qlimit,
     )
 

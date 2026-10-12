@@ -427,7 +427,7 @@ def _writeback_bytes(f, inst_name, base_expr, hdr_type, out_pfx, cond_expr, ind,
 # ── AXI4-Lite register map ─────────────────────────────────────────────────────
 
 def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None,
-                       mcast_groups=0, mcast_qcount=1):
+                       mcast_groups=0, mcast_qcount=1, fe_stage_depth=8):
     """
     Return list of table register-map entries, ingress control first, then
     (P4RtlPipeline) the egress control's, each tagged 'stage' so the
@@ -627,6 +627,36 @@ def _build_axil_regmap(ctrl, amap, fwmap, ectrl=None, eamap=None,
         })
         base += TABLE_AXIL_SZ
 
+      # ── FeatureExport statistics ───────────────────────────────────────
+      # The records leave by their own stream port, so nothing here carries
+      # data. What the host needs is the loss rate and whether the consumer is
+      # keeping up: pushed vs dropped gives the first, occupancy and the high
+      # watermark the second. `enable` lets the host stop the feed, and
+      # clear_stats is the decoder's one-cycle commit pulse.
+      for fe in getattr(c, 'feature_exports', []):
+        fname = fe.name
+        if fname in seen:
+            raise ValueError(f"'{fname}' is declared in both the {seen[fname]} and "
+                             f"{stage} controls -- extern names must be unique "
+                             f"across the pipeline")
+        seen[fname] = stage
+        result.append({
+            'tname': fname,
+            'stage': stage,
+            'base':  base,
+            'regs':  [('enable', f'{fname}_cp_enable', 1),
+                      ('commit', None, 1)],      # commit == clear_stats pulse
+            'read_regs': [('pushed',   f'{fname}_pushed',  32),
+                          ('dropped',  f'{fname}_dropped', 32),
+                          ('status',   None,                32)],
+            'idx_w': 0, 'act_w': 0, 'params': [],
+            'supports_query': False,
+            'is_feature_export': True,
+            'fe_width': fe.padded_width,
+            'fe_depth': fe_stage_depth,
+        })
+        base += TABLE_AXIL_SZ
+
       # ── Digest drain ───────────────────────────────────────────────────
       # The FIFO itself lives in the shell (see the digest section there);
       # these are the words the control plane uses to drain it. `pop` is a
@@ -738,6 +768,71 @@ def _emit_axil_decoder(f, regmap):
         f.write(f'  logic r_{ti["tname"]}_cp_wr_en;\n')
         if ti['supports_query']:
             f.write(f'  logic r_{ti["tname"]}_cp_query_en;\n')
+
+    # ── FeatureExport staging FIFOs ──────────────────────────────────────────
+    # One small ring per instance, between the pipeline's push and the
+    # AXI4-Stream master port.
+    #
+    # It exists because of the stream protocol, not for throughput: once tvalid
+    # is asserted it may NOT be withdrawn until tready is seen, so "just drop
+    # when tready is low" is not implementable without storage. A few entries
+    # also absorb the normal case of a consumer that is briefly busy.
+    #
+    # When the ring is full the NEWEST record is dropped and counted. The packet
+    # path is never told. fe_*_tready influences nothing except this ring --
+    # it must not reach s_axis_tready or the slot ring, and the testbench holds
+    # it low for an entire run to prove that.
+    #
+    # Placed here, early, for the same reason as the Digest FIFOs: the
+    # AXI4-Lite read decoder below reports these counters, and the u_proc
+    # instantiation drives push/data, so every one of these names is needed
+    # before those points. xvlog rejects a late declaration that iverilog
+    # accepts (docs/toolchain_constraints.md).
+    for ti in [t for t in regmap if t.get('is_feature_export')]:
+        n  = ti['tname']
+        w  = ti['fe_width']          # padded, byte-multiple
+        d  = ti['fe_depth']
+        aw = max(1, (d - 1).bit_length())
+        f.write(f'  // {n}: {w}-bit records, staging depth {d}\n')
+        f.write(f'  wire        {n}_push;\n')
+        f.write(f'  wire [{w-1}:0] {n}_data;\n')
+        f.write(f'  logic [{w-1}:0] {n}_ring [0:{d-1}];\n')
+        f.write(f'  logic [{aw}:0] {n}_wr, {n}_rd;\n')
+        f.write(f'  logic [31:0] {n}_pushed, {n}_dropped;\n')
+        f.write(f'  logic [{aw}:0] {n}_hiwater;\n')
+        f.write(f'  wire [{aw}:0] {n}_occ  = {n}_wr - {n}_rd;\n')
+        f.write(f"  wire {n}_full  = ({n}_occ == {aw + 1}'d{d});\n")
+        f.write(f'  wire {n}_empty = ({n}_wr == {n}_rd);\n')
+        f.write('  // tvalid follows "ring not empty", which is exactly the protocol:\n')
+        f.write('  // once raised it stays raised until the entry is taken.\n')
+        f.write(f'  assign {n}_tvalid = !{n}_empty;\n')
+        f.write(f'  assign {n}_tdata  = {n}_ring[{n}_rd[{aw-1}:0]];\n')
+        f.write(f'  wire {n}_take = {n}_tvalid && {n}_tready;\n')
+        f.write(f'  // A global enable the host can use to stop the feed, and a\n')
+        f.write(f'  // one-cycle stats clear (the decoder\'s commit-pulse trick).\n')
+        # r_<n>_cp_enable, not the derived wire: the wire is emitted with the
+        # other regmap wires further down, and this block comes before them.
+        f.write(f'  wire {n}_accept = {n}_push && r_{n}_cp_enable[0] && !{n}_full;\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n) begin\n')
+        f.write(f"      {n}_wr <= '0; {n}_rd <= '0;\n")
+        f.write(f"      {n}_pushed <= 32'd0; {n}_dropped <= 32'd0; {n}_hiwater <= '0;\n")
+        f.write('    end else begin\n')
+        f.write(f'      if (r_{n}_cp_wr_en) begin   // clear_stats\n')
+        f.write(f"        {n}_pushed <= 32'd0; {n}_dropped <= 32'd0; {n}_hiwater <= '0;\n")
+        f.write('      end\n')
+        f.write(f'      if ({n}_accept) begin\n')
+        f.write(f'        {n}_ring[{n}_wr[{aw-1}:0]] <= {n}_data;\n')
+        f.write(f"        {n}_wr     <= {n}_wr + 1'b1;\n")
+        f.write(f'        if (!r_{n}_cp_wr_en) {n}_pushed <= {n}_pushed + 32\'d1;\n')
+        f.write(f'      end else if ({n}_push && r_{n}_cp_enable[0]) begin\n')
+        f.write(f'        // full: drop the NEWEST record, never the packet\n')
+        f.write(f'        if (!r_{n}_cp_wr_en) {n}_dropped <= {n}_dropped + 32\'d1;\n')
+        f.write('      end\n')
+        f.write(f"      if ({n}_take) {n}_rd <= {n}_rd + 1'b1;\n")
+        f.write(f'      if (!r_{n}_cp_wr_en && {n}_occ > {n}_hiwater) {n}_hiwater <= {n}_occ;\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
 
     # ── Digest FIFOs (one per Digest instance) ───────────────────────────────
     # A small ring the control plane drains over AXI4-Lite. Deliberately simple:
@@ -947,7 +1042,16 @@ def _emit_axil_decoder(f, regmap):
         n_write_words = _n_words(ti['regs'])
         for idx, rname, cp_sig, lo, take in _reg_words(ti['read_regs']):
             word_addr = (base + (n_write_words + idx) * 4) >> 2
-            if rname == 'status' and ti.get('is_digest'):
+            if rname == 'status' and ti.get('is_feature_export'):
+                # {high watermark, occupancy}, each zero-extended to 16 bits.
+                # The pad is a LITERAL computed here, not a part-select of a
+                # concatenation -- {...}[7:0] is not legal Verilog, and it is
+                # the same slip that broke the Digest status word first time.
+                _ow = max(1, (ti['fe_depth'] - 1).bit_length()) + 1
+                _pad = 16 - _ow
+                expr = (f"{{{_pad}'d0, {tname}_hiwater, "
+                        f"{_pad}'d0, {tname}_occ}}")
+            elif rname == 'status' and ti.get('is_digest'):
                 # {overflow count, 11 spare, occupancy} -- one read tells the
                 # control plane how much is waiting AND whether anything was
                 # lost since it last looked.
@@ -1185,7 +1289,7 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
 def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4,
-             tm_qlimit=None):
+             tm_qlimit=None, fe_stage_depth=8):
     """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
 
     axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
@@ -1255,7 +1359,8 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
     _mc = 'mcast_group' in _collect_std_meta_outputs(ctrl)
     regmap = _build_axil_regmap(ctrl, amap, fwmap, ectrl=ectrl, eamap=eamap,
                                 mcast_groups=(MCAST_GROUPS if _mc else 0),
-                                mcast_qcount=(TM_QUEUES if _mc else 1))
+                                mcast_qcount=(TM_QUEUES if _mc else 1),
+                                fe_stage_depth=fe_stage_depth)
 
     # Determine which headers are non-stack and appear in emit list
     emit_list = (ir.pipeline.deparser.emit_list
@@ -1271,7 +1376,8 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       emit_insts, total_hdr_bytes,
                       axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
                       board, verify_terms=verify_terms, nslot=nslot,
-                      ectrl=ectrl, tm_qlimit=tm_qlimit)
+                      ectrl=ectrl, tm_qlimit=tm_qlimit,
+                  fe_stage_depth=fe_stage_depth)
 
 
 def _build_fwmap(ir):
@@ -1311,7 +1417,8 @@ def _write_ram_style_pragma(f, board):
 def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
                   ctrl, amap, fwmap, regmap, emit_insts, total_hdr_bytes,
                   axi_data_width, beat_bytes, max_pkt_bytes, hdr_idx_w,
-                  board=None, verify_terms=None, nslot=4, ectrl=None, tm_qlimit=None):
+                  board=None, verify_terms=None, nslot=4, ectrl=None, tm_qlimit=None,
+                  fe_stage_depth=8):
 
     BEAT_W     = axi_data_width
     KEEP_W     = beat_bytes
@@ -1543,6 +1650,26 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('    output logic [1:0]                s_axil_rresp,\n')
     f.write('    output logic                      s_axil_rvalid,\n')
     f.write('    input  logic                      s_axil_rready')
+    # ── FeatureExport: one AXI4-Stream MASTER per instance ────────────────────
+    # The record feed for an on-chip consumer (the TCN accelerator). A stream
+    # port, not AXI4-Lite: a control-plane drain costs dozens of bus cycles per
+    # entry, which cannot keep up with per-packet records, and AXI4-Lite cannot
+    # be wired to a hardware consumer at all.
+    #
+    # tready is an INPUT and is allowed to sit low indefinitely. It must never
+    # reach s_axis_tready or the slot ring -- the packet path does not wait for
+    # this consumer, ever. The shell's staging FIFO absorbs a short stall and
+    # drops the newest record beyond that.
+    _fe_all = [(fe, 'ingress') for fe in getattr(ctrl, 'feature_exports', [])]
+    if ectrl is not None:
+        _fe_all += [(fe, 'egress') for fe in getattr(ectrl, 'feature_exports', [])]
+    if _fe_all:
+        f.write(',\n\n    // FeatureExport record streams (never back-pressure the packet path)\n')
+        for i, (fe, _stg) in enumerate(_fe_all):
+            comma = ',' if i < len(_fe_all) - 1 else ''
+            f.write(f'    output logic [{fe.padded_width-1}:0] {fe.name}_tdata,\n')
+            f.write(f'    output logic {fe.name}_tvalid,\n')
+            f.write(f'    input  logic {fe.name}_tready{comma}\n')
     # Metadata sideband. User metadata is the only channel an XSA app has for a
     # per-packet decision -- xsa.p4's standard_metadata_t has no egress_spec /
     # egress_port / ingress_port at all -- so it has to leave the shell. Exposed
@@ -2159,7 +2286,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             if not ti.get('is_counter'):
                 f.write(f'  wire {tname}_cp_query_del = r_{tname}_cp_query_del;\n')
         if not ti.get('is_counter') and not ti.get('is_mcast') \
-           and not ti.get('is_meter') and not ti.get('is_digest'):
+           and not ti.get('is_meter') and not ti.get('is_digest') \
+           and not ti.get('is_feature_export'):
             f.write(f'  wire {tname}_hit_out;\n')
 
     # Counter increment-request wires -- these connect u_proc's new
@@ -2242,7 +2370,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # ports on processing_generated; see the incr_en/incr_idx loop below)
     for ti in regmap:
         if ti.get('is_counter') or ti.get('is_mcast') or ti.get('is_meter') \
-           or ti.get('is_digest') or ti['stage'] != 'ingress':
+           or ti.get('is_digest') or ti.get('is_feature_export') \
+           or ti['stage'] != 'ingress':
             continue
         tname = ti['tname']
         f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -2270,6 +2399,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if dg.fields:
             f.write(f'    .{dg.name}_push ({dg.name}_push),\n')
             f.write(f'    .{dg.name}_data ({dg.name}_data),\n')
+    for fe in getattr(ctrl, 'feature_exports', []):
+        f.write(f'    .{fe.name}_push ({fe.name}_push),\n')
+        f.write(f'    .{fe.name}_data ({fe.name}_data),\n')
     f.write('    .out_valid (proc_out_valid),   // aligned with out_*/drop\n')
     f.write('    .valid_out (proc_valid_out),   // legacy registered-late valid, unused here\n')
     f.write('    .drop      (proc_drop)\n')
@@ -2333,7 +2465,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write(f'    .out_std_meta_{fn}  (eg_out_std_meta_{fn}),\n')
         for ti in regmap:
             if ti.get('is_counter') or ti.get('is_mcast') or ti.get('is_meter') \
-               or ti.get('is_digest') or ti['stage'] != 'egress':
+               or ti.get('is_digest') or ti.get('is_feature_export') \
+               or ti['stage'] != 'egress':
                 continue
             tname = ti['tname']
             f.write(f'    .{tname}_cp_wr_en  ({tname}_cp_wr_en),\n')
@@ -2359,6 +2492,9 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             if dg.fields:
                 f.write(f'    .{dg.name}_push ({dg.name}_push),\n')
                 f.write(f'    .{dg.name}_data ({dg.name}_data),\n')
+        for fe in getattr(ectrl, 'feature_exports', []):
+            f.write(f'    .{fe.name}_push ({fe.name}_push),\n')
+            f.write(f'    .{fe.name}_data ({fe.name}_data),\n')
         f.write('    .out_valid (eg_out_valid),   // aligned with out_*/drop\n')
         f.write('    .valid_out (eg_valid_out),\n')
         f.write('    .drop      (eg_drop)\n')

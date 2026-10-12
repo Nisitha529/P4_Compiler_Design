@@ -218,6 +218,11 @@ class RegisterDecl:
         self.data_width  = data_width
         self.size        = size
         self.index_width = index_width
+        # Filled in by emit_processing once pipeline stages are assigned: how
+        # many packets apart two accesses must be for the second to see the
+        # first's write. 0 means the register is never written (no hazard).
+        # p4rtl.p4's Register comment promises this number.
+        self.raw_distance = None
 
 
 class CounterDecl:
