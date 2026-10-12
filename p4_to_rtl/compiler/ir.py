@@ -260,6 +260,38 @@ class DigestDecl:
         return sum(w for _, w in self.fields)
 
 
+class FeatureExportDecl:
+    """A `FeatureExport<T>() name;` extern declaration (p4rtl.p4).
+
+    `push(data)` hands one fixed-width record to an AXI4-Stream master port on
+    the generated top level, for an on-chip consumer. Same never-stall contract
+    as DigestDecl; the drain differs.
+
+    `fields` is a list of (name, width) in record order, ONE PER ++ OPERAND --
+    not Digest's single ('data', w). That per-field layout is the point: it is
+    what lets the record's bit positions be reported to the host and to whatever
+    decodes the stream, instead of being hard-coded in two places that can drift.
+    """
+    def __init__(self, name, fields):
+        self.name   = name
+        self.fields = fields              # list[(field_name, width)]
+
+    @property
+    def total_width(self):
+        return sum(w for _, w in self.fields)
+
+    @property
+    def padded_width(self):
+        """Record width rounded up to a byte multiple.
+
+        AXI4-Stream infrastructure (and xpm_fifo_axis) expect tdata to be a
+        whole number of bytes, so the port pads up; the pad bits are the low
+        bits and are always zero.
+        """
+        w = self.total_width
+        return ((w + 7) // 8) * 8
+
+
 class UserExternDecl:
     """A UserExtern<I, O>(fixed_latency_in_cycles) name; extern declaration.
 
@@ -315,6 +347,7 @@ class ControlBlock:
         self.user_externs = []   # list[UserExternDecl]
         self.meters     = []     # list[MeterDecl]
         self.digests    = []     # list[DigestDecl]
+        self.feature_exports = []  # list[FeatureExportDecl]
 
     def add_statement(self, stmt):
         self.statements.append(stmt)
@@ -345,6 +378,9 @@ class ControlBlock:
 
     def add_digest(self, d):
         self.digests.append(d)
+
+    def add_feature_export(self, fe):
+        self.feature_exports.append(fe)
 
 
 # ============================================================

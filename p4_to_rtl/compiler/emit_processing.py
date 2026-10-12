@@ -231,7 +231,7 @@ def _map_cond(cond, cmap=None):
     if cmap:
         for name, sv_lit in cmap.items():
             cond = re.sub(r'\b' + re.escape(name) + r'\b', sv_lit, cond)
-    return cond
+    return _sv_concat(_sv_literals(cond))
 
 
 def _collect_digest_packs(ctrl):
@@ -274,6 +274,196 @@ def _digest_expr_width(expr, fwmap):
     return None
 
 
+def _collect_feature_pushes(ctrl):
+    """[(instance_name, pushed_expr)] for every `<inst>.push(x)` in this control,
+    including inside action bodies and nested if/else."""
+    out = []
+
+    def _scan(stmts):
+        for st in stmts:
+            if isinstance(st, ExternCall) and st.name.endswith('.push') and st.args:
+                out.append((st.name.rsplit('.', 1)[0], st.args[0].strip()))
+            elif isinstance(st, IfStatement):
+                _scan(st.then_body); _scan(st.else_body)
+
+    _scan(ctrl.statements)
+    for a in ctrl.actions:
+        _scan(a.body)
+    return out
+
+
+def _leaf_name(expr):
+    """A short, stable field name for one operand of a record.
+
+    hdr.ipv4.ttl                        -> ipv4_ttl
+    meta.flow_id                        -> flow_id
+    standard_metadata.packet_length     -> packet_length
+    standard_metadata.ingress_timestamp[31:0] -> ingress_timestamp_31_0
+    31w0                                -> pad
+    """
+    e = expr.strip()
+    m = re.match(r'^(.*?)\s*\[\s*(\d+)\s*:\s*(\d+)\s*\]$', e)
+    suffix = ''
+    if m:
+        e = m.group(1).strip()
+        suffix = f'_{m.group(2)}_{m.group(3)}'
+    # A literal operand, in either spelling (see _leaf_width). Zero is almost
+    # always padding; anything else is a constant tag the record carries.
+    m = re.match(r"^(\d+)(?:w|'[hdbo])(.+)$", e)
+    if m:
+        try:
+            is_zero = int(m.group(2), 0 if m.group(2).lower().startswith('0x') else 16
+                          if m.group(1) and "'h" in e else 10) == 0
+        except ValueError:
+            is_zero = m.group(2).strip('0xXhHdDbB') == ''
+        return ('pad' if is_zero else 'const') + suffix
+    m = re.match(r'^hdr\.(\w+)\.(\w+)$', e)
+    if m:
+        return f'{m.group(1)}_{m.group(2)}{suffix}'
+    m = re.match(r'^(?:meta|standard_metadata)\.(\w+)$', e)
+    if m:
+        return m.group(1) + suffix
+    return re.sub(r'\W+', '_', e).strip('_') + suffix
+
+
+def _leaf_width(expr, fwmap):
+    """Width of one record operand, or None if it cannot be sized.
+
+    Extends _digest_expr_width with bit slices (`x[31:0]`), which a record
+    routinely needs -- the TCN feed takes the low 32 bits of a 64-bit timestamp.
+    """
+    e = expr.strip()
+    m = re.match(r'^(.*?)\s*\[\s*(\d+)\s*:\s*(\d+)\s*\]$', e)
+    if m:
+        hi, lo = int(m.group(2)), int(m.group(3))
+        return (hi - lo + 1) if hi >= lo else None
+    # Literals reach here in EITHER form. P4's own `8w0xA5` survives in some
+    # positions, but a constant that p4test copy-propagated out of a metadata
+    # assignment has already been converted to SystemVerilog (`8'hA5`) by the
+    # ingester, so both spellings have to be sized.
+    m = re.match(r"^(\d+)'[hdbo]", e)
+    if m:
+        return int(m.group(1))
+    return _digest_expr_width(e, fwmap)
+
+
+def _record_fields(expr, fwmap):
+    """The per-field layout of a pushed record, in record order.
+
+    Returns [(name, width)] or None if any operand cannot be sized. One entry
+    per `++` operand: that layout is what gets reported to the host and to
+    whatever decodes the stream, so it must not be guessed at.
+    """
+    fields, used = [], {}
+    for part in _split_top_concat(expr):
+        w = _leaf_width(part, fwmap)
+        if w is None:
+            return None
+        # Names must be unique: they identify the field to the host and to
+        # whatever decodes the stream. Collisions are normal rather than
+        # exceptional, because p4test copy-propagates metadata assignments --
+        # `meta.flow_id = hdr.eth.etype; push(meta.flow_id ++ hdr.eth.etype)`
+        # reaches here as the same expression twice.
+        base = _leaf_name(part)
+        used[base] = used.get(base, 0) + 1
+        fields.append((base if used[base] == 1 else f'{base}_{used[base]}', w))
+    return fields
+
+
+def _split_top_concat(e):
+    """Split an expression on TOP-LEVEL `++` only, respecting parentheses.
+
+    P4's `++` is bit concatenation and binds tighter than comparison, so
+    `(a ++ b) == c` must not be split inside the parens. Returns a single-element
+    list when there is no top-level `++`, so callers can treat both cases alike.
+    """
+    parts, depth, start = [], 0, 0
+    i = 0
+    while i < len(e):
+        c = e[i]
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        elif depth == 0 and e.startswith('++', i):
+            parts.append(e[start:i])
+            i += 2
+            start = i
+            continue
+        i += 1
+    parts.append(e[start:])
+    return [p.strip() for p in parts]
+
+
+def _sv_concat(e):
+    """Rewrite `a ++ b ++ c` as SystemVerilog `{a, b, c}`, at every nesting depth.
+
+    Recurses into parentheses first: `(a ++ b) == c` has no TOP-level `++`, so a
+    top-level-only rewrite would leave that `++` in the generated SystemVerilog,
+    which does not compile. Left unchanged when there is no `++` anywhere, so
+    this is safe to call on every expression. Operands are NOT mapped here --
+    callers run the usual field substitutions over the whole string first, which
+    leaves `++` untouched.
+    """
+    out, i = [], 0
+    while i < len(e):
+        if e[i] == '(':
+            depth, j = 0, i
+            while j < len(e):
+                if e[j] == '(':
+                    depth += 1
+                elif e[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if j >= len(e):           # unbalanced: leave the rest alone
+                out.append(e[i:])
+                break
+            out.append('(' + _sv_concat(e[i + 1:j]) + ')')
+            i = j + 1
+        else:
+            out.append(e[i])
+            i += 1
+    flat = ''.join(out)
+    parts = _split_top_concat(flat)
+    if len(parts) == 1:
+        return flat
+    return '{' + ', '.join(parts) + '}'
+
+
+def _sv_literals(e):
+    """Width-prefixed P4 literals to SV: `8w0` -> `8'd0`, `16w0x8100` -> `16'h8100`.
+
+    Needed once expressions can carry literals through to the RTL (a padding
+    operand in a concatenation is the common case). A SystemVerilog identifier
+    cannot start with a digit, so this token shape is always a literal.
+    """
+    def _one(m):
+        bits = int(m.group(1))
+        raw  = m.group(2)
+        if raw.lower().startswith('0x'):
+            val = int(raw, 16)
+            return f"{bits}'h{val:0{max(1, (bits + 3) // 4)}X}"
+        return f"{bits}'d{int(raw)}"
+    return re.sub(r'\b(\d+)w(0[xX][0-9a-fA-F]+|\d+)\b', _one, e)
+
+
+def _concat_width(e, fwmap):
+    """Total width of an expression, summing a top-level concatenation.
+
+    Returns None if any operand cannot be sized, so a caller can report it
+    rather than emit a silently mis-sized record.
+    """
+    total = 0
+    for part in _split_top_concat(e):
+        w = _digest_expr_width(part, fwmap)
+        if w is None:
+            return None
+        total += w
+    return total
+
+
 def _map_expr(e, cmap=None):
     # MeterColor_t is the only enum a program can read in an expression, and the
     # RTL encodes it in one bit. Without this the enum name leaked through into
@@ -286,7 +476,7 @@ def _map_expr(e, cmap=None):
     if cmap:
         for name, sv_lit in cmap.items():
             e = re.sub(r'\b' + re.escape(name) + r'\b', sv_lit, e)
-    return e
+    return _sv_concat(_sv_literals(e))
 
 
 # ============================================================
@@ -681,6 +871,14 @@ def _emit_extern_stub(f, stmt, ind, pmap, cmap, stack_info=None, extern_ctx=None
             f.write(f"{ind}{obj}_exec_en  = 1'b1;\n")
             f.write(f'{ind}{obj}_exec_idx = {idx};\n')
             f.write(f'{ind}{dest} = {obj}_colour;\n')
+            return
+        # FeatureExport.push(record): hand one record to the shell's staging
+        # FIFO, which drains out of the AXI4-Stream port. Must not touch the
+        # packet and must never stall it, so there is nothing else to emit.
+        if method == 'push' and len(stmt.args) >= 1:
+            data = _subst(stmt.args[0], pmap, cmap)
+            f.write(f"{ind}{obj}_push_c = 1'b1;\n")
+            f.write(f'{ind}{obj}_data_c = {data};\n')
             return
         # Digest.pack(data): push one entry to the control-plane FIFO. It must
         # not touch the packet, so there is nothing else to emit.
@@ -1670,6 +1868,42 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     dg.fields = []
                 else:
                     dg.fields = [('data', widths.pop())]
+
+        # FeatureExport: same recovery, but the record's FIELD LAYOUT is kept,
+        # one entry per ++ operand. A silently missing or mis-shaped TCN feed
+        # would waste a whole experiment run, so an unsizable push is a hard
+        # ERROR here rather than the [WARN] Digest gets.
+        feature_exports = getattr(ctrl, 'feature_exports', [])
+        if feature_exports:
+            _pushes = _collect_feature_pushes(ctrl)
+            for fe in feature_exports:
+                # DISTINCT expressions, not raw hits: p4test lifts apply-block
+                # statements into hidden actions, so a single push() is present
+                # both in ctrl.statements and in that action's body and would
+                # otherwise look like two sites. (The Digest path hides this by
+                # collapsing widths into a set.)
+                exprs = sorted({e for (nm, e) in _pushes if nm == fe.name})
+                if not exprs:
+                    raise ValueError(
+                        f"FeatureExport '{fe.name}' is declared but never pushed. "
+                        f"Either push a record to it or remove the declaration -- "
+                        f"an export that silently produces nothing is worse than "
+                        f"a compile error.")
+                if len(exprs) > 1:
+                    raise ValueError(
+                        f"FeatureExport '{fe.name}' has {len(exprs)} push() sites. "
+                        f"One fixed record shape per instance is supported, because "
+                        f"the stream carries no tag to tell shapes apart. Use a "
+                        f"second FeatureExport instance, or build one record and "
+                        f"push it from a single place.")
+                layout = _record_fields(exprs[0], fwmap)
+                if layout is None:
+                    raise ValueError(
+                        f"FeatureExport '{fe.name}': could not size every operand of "
+                        f"push({exprs[0]}). Supported operands are a header field, a "
+                        f"metadata field, a standard_metadata field, a bit slice of "
+                        f"one, or a width-prefixed literal, combined with ++.")
+                fe.fields = layout
         if meters:
             f.write('\n  // Meter rate knobs (AXI4-Lite programmable, per INSTANCE not per index)\n')
             for mt in meters:
@@ -1681,6 +1915,13 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 w = dg.total_width or 1
                 f.write(f'  output logic        {dg.name}_push,\n')
                 f.write(f'  output logic [{w-1}:0] {dg.name}_data,\n')
+        if feature_exports:
+            f.write('\n  // FeatureExport pushes. The staging FIFO and the AXI4-Stream\n')
+            f.write('  // master port live in the shell; this module just produces records.\n')
+            f.write('  // tdata is padded up to a byte multiple, pad bits in the LOW bits.\n')
+            for fe in feature_exports:
+                f.write(f'  output logic        {fe.name}_push,\n')
+                f.write(f'  output logic [{fe.padded_width-1}:0] {fe.name}_data,\n')
 
         # Two valid outputs, deliberately. `valid_out` is registered one cycle
         # AFTER the last stage, while every out_* / drop is combinational from
@@ -1879,6 +2120,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                               for mt in getattr(ctrl, 'meters', [])}
         digest_push_stage  = {dg.name: _extern_stage(f'{dg.name}.pack')
                               for dg in getattr(ctrl, 'digests', [])}
+        fe_push_stage      = {fe.name: _extern_stage(f'{fe.name}.push')
+                              for fe in getattr(ctrl, 'feature_exports', [])}
 
         def _table_contains_count(tbl, cnt_name):
             for aname in tbl.actions:
@@ -2266,6 +2509,52 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 f.write(f'  assign      {n}_colour  = !({n}_debt_now < {n}_cp_burst);\n')
             f.write('\n')
 
+        # ── FeatureExport push outputs ─────────────────────────────────
+        # Deliberately identical in shape to the Digest block above, because
+        # both of the bugs fixed there would otherwise come straight back:
+        #   * an UNGATED push repeats the same record every idle cycle, since
+        #     _push_c is combinational from stage registers that hold after a
+        #     packet drains (it overflowed a 16-deep FIFO inside one packet);
+        #   * gating on the module's out_valid instead of the push's OWN stage
+        #     samples the record stages too late and reads back as all zeros.
+        # So: registered one-cycle pulse, captured at the push's own stage valid.
+        #
+        # A packet the ingress DROPS still produces a record. That is on purpose
+        # for intrusion detection -- a dropped attack packet is still evidence --
+        # and it needs no gate here. A program that wants the opposite says so in
+        # P4 (`if (standard_metadata.drop == 0) { feed.push(...); }`), which is
+        # clearer than an annotation and needs no compiler support.
+        if feature_exports:
+            f.write('  // ── FeatureExport push outputs ───────────────────────────────────────\n')
+            for fe in feature_exports:
+                n  = fe.name
+                w  = fe.total_width
+                pw = fe.padded_width
+                st = fe_push_stage.get(n, 0)
+                fvalid = 'valid_in' if st == 0 else f'valid_s{st}'
+                f.write(f'  // {n}: {w}-bit record padded to {pw}, pushed in stage {st}\n')
+                f.write(f'  // record layout, high bits first:\n')
+                _lsb = w
+                for _fn, _fw in fe.fields:
+                    _lsb -= _fw
+                    f.write(f'  //   [{_lsb + _fw - 1}:{_lsb}] {_fn} ({_fw}b)\n')
+                if pw != w:
+                    f.write(f'  //   [{pw - w - 1}:0] (pad to a byte multiple, always 0)\n')
+                f.write(f'  logic        {n}_push_c;\n')
+                f.write(f'  logic [{w-1}:0] {n}_data_c;\n')
+                f.write(f'  always_ff @(posedge clk) begin\n')
+                f.write(f"    if (!rst_n) {n}_push <= 1'b0;\n")
+                f.write('    else begin\n')
+                f.write(f'      {n}_push <= {n}_push_c && {fvalid};\n')
+                if pw != w:
+                    f.write(f'      if ({n}_push_c && {fvalid}) '
+                            f"{n}_data <= {{{n}_data_c, {pw - w}'d0}};\n")
+                else:
+                    f.write(f'      if ({n}_push_c && {fvalid}) {n}_data <= {n}_data_c;\n')
+                f.write('    end\n')
+                f.write('  end\n')
+            f.write('\n')
+
         # ── Digest defaults ────────────────────────────────────────────
         # Driven low every cycle unless a pack() fires, so a held stage cannot
         # push the same entry forever (the same trap the register writes had).
@@ -2532,6 +2821,10 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     if dg.fields and digest_push_stage.get(dg.name, 0) == 0:
                         buf.write(f'    {dg.name}_push_c = 1\'b0;\n')
                         buf.write(f'    {dg.name}_data_c = \'0;\n')
+                for fe in feature_exports:
+                    if fe_push_stage.get(fe.name, 0) == 0:
+                        buf.write(f'    {fe.name}_push_c = 1\'b0;\n')
+                        buf.write(f'    {fe.name}_data_c = \'0;\n')
                 if std_meta_outs:
                     buf.write('\n    // Standard metadata defaults\n')
                     for fname in sorted(std_meta_outs):

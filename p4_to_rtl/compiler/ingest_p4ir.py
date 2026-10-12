@@ -12,7 +12,7 @@ from ir import (
     ParserState, ParserSelect, Extract, Verify,
     Table, TableKey, Action, ActionParam, Assignment, ExternCall,
     ControlBlock, Deparser, LocalVar, RegisterDecl, CounterDecl,
-    IfStatement, TableApply, ChecksumUpdate, HashDecl, UserExternDecl, MeterDecl, DigestDecl)
+    IfStatement, TableApply, ChecksumUpdate, HashDecl, UserExternDecl, MeterDecl, DigestDecl, FeatureExportDecl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -919,6 +919,20 @@ def _parse_control_body(body_text, ctrl_name):
         canon = name_map.get(local_name, canon)
         digests.append(DigestDecl(canon, []))
 
+    # ── FeatureExport externs ────────────────────────────────────────────────
+    # Match: @ann FeatureExport<T>() name;
+    # Same shape as Digest: T only names the type, so the record's FIELD LAYOUT
+    # is recovered from the push() call site (its ++ operands), not from here.
+    feature_exports = []
+    for m in re.finditer(
+        r'(' + _ANN + r')\bFeatureExport\s*<\s*([\w.<>]+)\s*>\s*\(\s*\)\s+(\w+)\s*;', text
+    ):
+        ann_text   = m.group(1)
+        local_name = m.group(3)
+        canon = _extract_name_annotation(ann_text) or local_name
+        canon = name_map.get(local_name, canon)
+        feature_exports.append(FeatureExportDecl(canon, []))
+
     # ── Checksum<H> hash externs ─────────────────────────────────────────────
     # Match: @ann Checksum<bit<W>>(HashAlgorithm_t.ALGO) name;
     # (xsa.p4's generic hash extern -- distinct from InternetChecksum. Only the
@@ -1045,6 +1059,7 @@ def _parse_control_body(body_text, ctrl_name):
             tables_out.append((local_name, tbl, False, None))
 
     return (local_vars, registers, counters, hashes, user_externs, meters, digests,
+            feature_exports,
             actions_out, tables_out, apply_text, name_map)
 
 
@@ -1264,6 +1279,7 @@ def _ingest_control(text, ctrl_name, stage, ir):
     if not ctrl_body:
         return None
     (local_vars, registers, counters, hashes, user_externs, meters, digests,
+     feature_exports,
      actions_raw, tables_raw, apply_text, name_map) = \
         _parse_control_body(ctrl_body, ctrl_name)
 
@@ -1289,6 +1305,9 @@ def _ingest_control(text, ctrl_name, stage, ir):
 
     for dg in digests:
         ctrl.add_digest(dg)
+
+    for fe in feature_exports:
+        ctrl.add_feature_export(fe)
 
     # Build action lookup dicts
     actions_by_local = {}

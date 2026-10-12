@@ -101,6 +101,33 @@ extern Digest<T> {
     void pack(in T data);
 }
 
+// ── FeatureExport: stream a record to an ON-CHIP consumer ──────────────────
+// IMPLEMENTED. push() hands one fixed-width record to an AXI4-Stream master
+// port on the generated top level, for a consumer inside the FPGA (the TCN
+// accelerator this exists for) rather than for the control plane.
+//
+// It is Digest's contract with a different drain. Like Digest it NEVER stalls
+// the packet: the shell holds a small staging FIFO, and if the consumer is not
+// ready and that FIFO is full, the NEWEST record is dropped and counted. Unlike
+// Digest, the drain is a stream port, not AXI4-Lite -- a digest costs dozens of
+// bus cycles per entry to read out, which cannot keep up with per-packet
+// records, and AXI4-Lite cannot be wired to a hardware consumer at all.
+//
+// What the compiler does NOT own, deliberately: the deep buffer between this
+// port and the consumer, its clock crossing, and its memory type. Those are
+// system choices (BRAM vs URAM vs DDR, and the consumer's clock is not this
+// pipeline's), and the natural implementation is vendor-specific, whereas this
+// compiler's output is vendor-neutral SystemVerilog. Same split as UserExtern:
+// the compiler produces records at packet rate, follows the stream protocol at
+// its port, and counts what it drops; the integration owns everything past it.
+//
+// One push() site per instance, with a fixed record shape. Build the record
+// with ++ so each field's bit position is known and reported.
+extern FeatureExport<T> {
+    FeatureExport();
+    void push(in T data);
+}
+
 // ── Hashing / checksums (unchanged from xsa.p4) ─────────────────────────────
 enum HashAlgorithm_t { CRC32, CRC16, ONES_COMPLEMENT16 }
 extern Checksum<H> {

@@ -41,7 +41,11 @@ module tb_load_balance_p4rtl_stream;
   int cyc = 0;
   always @(posedge clk) cyc++;
 
-  localparam int TB_BEAT_BYTES = 32;
+  // A PARAMETER, not a localparam, so the same testbench can be elaborated
+  // against a 512-bit build:  iverilog -P<tb>.TB_BEAT_BYTES=64
+  parameter  int TB_BEAT_BYTES = 32;
+  // Mirrors the shell's own MAX_PKT_BEATS * BEAT_BYTES.
+  localparam int TB_MAX_PKT_BYTES = 256 * TB_BEAT_BYTES;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
@@ -277,9 +281,15 @@ module tb_load_balance_p4rtl_stream;
     run_stream("T7 fifo-full", 8, 2048, 0, 0, 2000);
     chk("T7: input was actually back-pressured (FIFO filled)", in_stall_cycles > 100);
 
-    $display("\n== T8: oversize 9000B packet (> MAX_PKT_BYTES 8192) then a 64B one: truncate cleanly, next intact ==");
-    sizes.delete(); sizes.push_back(9000); sizes.push_back(64); sizes.push_back(256); sizes.push_back(64);
-    trunc_to = 8192;
+    // The shell's limit is MAX_PKT_BEATS (256) * BEAT_BYTES, so it MOVES with the
+    // bus width: 8192 B at 256 bits, 16384 B at 512. A hardcoded 9000/8192 here
+    // silently stopped testing anything at 512 bits -- 9000 is not oversize there,
+    // so the packet passed through intact and the truncation check failed.
+    $display("\n== T8: oversize packet (> MAX_PKT_BYTES %0d) then a 64B one: truncate cleanly, next intact ==",
+             TB_MAX_PKT_BYTES);
+    sizes.delete(); sizes.push_back(TB_MAX_PKT_BYTES + 808); sizes.push_back(64);
+    sizes.push_back(256); sizes.push_back(64);
+    trunc_to = TB_MAX_PKT_BYTES;
     run_stream("T8 oversize", 4, 0, 0, 0, 2000);
     trunc_to = 0; sizes.delete();
 

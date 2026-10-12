@@ -1,0 +1,16 @@
+{
+  "name": "vcu118",
+  "display_name": "Xilinx VCU118 (Virtex UltraScale+ VU9P)",
+  "vendor": "xilinx",
+  "toolchain": "vivado",
+  "device_family": "Virtex UltraScale+",
+  "constraint_format": "xdc",
+  "ram_style_pragma": "(* ram_style = \"block\" *)",
+  "fsm_encoding_pragma": "(* fsm_encoding = \"one_hot\" *)",
+  "device_part": "xcvu9p-flga2104-2L-e",
+  "device_part_verified": false,
+  "device_part_note": "xcvu9p-flga2104-2L-e is the part on the standard VCU118 evaluation board and matches the existing P4_CMAC_QDMA Vivado projects on this machine, but it has NOT been confirmed against the board's own silkscreen/datasheet here. Confirm before building a bitstream.",
+  "notes": "Added for the TCN feature-export work: the first target where --axi-data-width 512 and 100G line rate are the point. Pragma text is the same as zybo's (the compiler's Xilinx defaults), so RTL for this board differs from --board-unset only in the constraint skeleton. shift_reg_pragma keeps the per-stage forwarding chains as flip-flops rather than SRLs, same motivation as de2-115's altshift_taps case. NOT synthesis-verified: no VU9P synthesis has been run from this compiler, and timing_model.py's DEVICE_FACTOR['ultrascale-plus'] = 0.6 is still a public-doc estimate, so any Fmax or throughput claim for this board is unsupported until a real run replaces it. uram_style_pragma is provided for large Register arrays but is not yet emitted by any emitter -- wiring it up is separate work.",
+  "shift_reg_pragma": "(* shreg_extract = \"no\" *)",
+  "uram_style_pragma": "(* ram_style = \"ultra\" *)"
+}

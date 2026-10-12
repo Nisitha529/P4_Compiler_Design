@@ -41,7 +41,9 @@ module tb_load_balance_p4rtl_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  // A PARAMETER, not a localparam, so the same testbench can be elaborated
+  // against a 512-bit build:  iverilog -P<tb>.TB_BEAT_BYTES=64
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
