@@ -52,6 +52,43 @@ def words_from_map(doc):
     return out
 
 
+# e.g.  2'd1: begin // set_port
+ACTION = r"\d+'d(\d+)\s*:\s*begin\s*//\s*{}\b"
+
+
+def action_ids_from_rtl(app):
+    """{action_name: id} as the generated case statements actually number them."""
+    text = ''
+    for fn in (f'{app}_processing_generated.sv', 'processing_generated.sv',
+               'egress_processing_generated.sv'):
+        path = os.path.join(GEN, app, fn)
+        if os.path.isfile(path):
+            text += open(path).read()
+    return text
+
+
+def check_actions(app, doc, text):
+    """The map's action IDs must be the hardware's, not the list positions.
+
+    They are genuinely different: NoAction is pinned to 0 and the rest are
+    numbered from 1 in declared order, so position and id disagree for almost
+    every table. A host that used the position would select the wrong action.
+    """
+    problems = []
+    for t in doc.get('tables', []):
+        for a in t.get('actions', []):
+            if a['name'] == 'NoAction':
+                if a.get('id') != 0:
+                    problems.append(f"{t['name']}.NoAction: map id {a.get('id')}, "
+                                    f"the hardware always uses 0")
+                continue
+            m = re.search(ACTION.format(re.escape(a['name'])), text)
+            if m and int(m.group(1)) != a.get('id'):
+                problems.append(f"{t['name']}.{a['name']}: map id {a.get('id')}, "
+                                f"RTL case label {m.group(1)}")
+    return problems
+
+
 def check(app):
     top = os.path.join(GEN, app, f'{app}_top.sv')
     mapf = os.path.join(GEN, app, f'{app}_cp_map.json')
@@ -61,7 +98,7 @@ def check(app):
     doc = json.load(open(mapf))
     mp = words_from_map(doc)
 
-    problems = []
+    problems = check_actions(app, doc, action_ids_from_rtl(app))
     for key, addr in sorted(mp.items()):
         if key not in rtl:
             problems.append(f"map has {key[0]}.{key[1]} @ word {addr}, "

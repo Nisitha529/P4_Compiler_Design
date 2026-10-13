@@ -1,6 +1,6 @@
 {
   "app": "fiveTuple",
-  "compiler_git": "6c501b7",
+  "compiler_git": "8004ded",
   "axi_data_width": 256,
   "clock_hz": null,
   "axil": {
@@ -45,52 +45,81 @@
       "keys": [
         {
           "field": "hdr.ipv4.src",
-          "match": "exact"
+          "match": "exact",
+          "width": 32,
+          "word": 2,
+          "query_word": 12
         },
         {
           "field": "hdr.ipv4.dst",
-          "match": "exact"
+          "match": "exact",
+          "width": 32,
+          "word": 3,
+          "query_word": 13
         },
         {
           "field": "hdr.ipv4.protocol",
-          "match": "exact"
+          "match": "exact",
+          "width": 8,
+          "word": 4,
+          "query_word": 14
         },
         {
           "field": "table_key_sport",
-          "match": "exact"
+          "match": "exact",
+          "width": 16,
+          "word": 5,
+          "query_word": 15
         },
         {
           "field": "table_key_dport",
-          "match": "exact"
+          "match": "exact",
+          "width": 16,
+          "word": 6,
+          "query_word": 16
         }
       ],
       "actions": [
         {
           "name": "InsertVLAN",
+          "id": 1,
           "params": [
             {
               "name": "counter_index",
-              "width": 13
+              "width": 13,
+              "word": 7
             },
             {
               "name": "pcp",
-              "width": 3
+              "width": 3,
+              "word": 8
             },
             {
               "name": "cfi",
-              "width": 1
+              "width": 1,
+              "word": 9
             },
             {
               "name": "vid",
-              "width": 12
+              "width": 12,
+              "word": 10
             }
           ]
         },
         {
           "name": "NoAction",
+          "id": 0,
           "params": []
         }
-      ]
+      ],
+      "addressing": {
+        "scheme": "hash",
+        "hash": "xor-fold",
+        "ways": 1,
+        "index_bits": 13,
+        "key_bits": 104,
+        "note": "the slot is chosen by XOR-folding the concatenated key down to index_bits; wr_idx is NOT used. With ways=1 two keys that fold to the same index overwrite each other, so a writer must check for collisions itself."
+      }
     }
   ],
   "counters": [

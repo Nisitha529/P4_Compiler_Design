@@ -60,7 +60,8 @@ module egress_processing_generated (
 
   // Register read wires (isolated via assign)
   logic [31:0] byte_cnt_reg_rd_byte_cnt;
-  assign byte_cnt_reg_rd_byte_cnt = byte_cnt_reg_mem[4'(std_meta_egress_port)];
+  wire [3:0] byte_cnt_reg_rd_addr_byte_cnt = 4'(std_meta_egress_port);   // truncated to 16 entries, as the write address is
+  assign byte_cnt_reg_rd_byte_cnt = byte_cnt_reg_mem[byte_cnt_reg_rd_addr_byte_cnt];
 
   // Metadata outputs (final value after the last stage)
   assign out_meta_byte_total = meta_byte_total_w;

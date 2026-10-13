@@ -769,6 +769,18 @@ def _emit_axil_decoder(f, regmap):
         f.write(f'  logic r_{ti["tname"]}_cp_wr_en;\n')
         if ti['supports_query']:
             f.write(f'  logic r_{ti["tname"]}_cp_query_en;\n')
+    # A FeatureExport's `enable` is the one control-plane register that is read
+    # CONTINUOUSLY rather than only after a commit, so unlike a table's key or
+    # parameter registers it needs a defined reset value -- without one the feed
+    # came up X in simulation and undefined on hardware, and a testbench that
+    # writes it before use hides that completely.
+    #
+    # It resets ENABLED. A FeatureExport cannot affect the packet path, so a
+    # live feed with nothing draining it is harmless (records are dropped and
+    # counted, which is more informative on bring-up than silence), and a board
+    # then works without host configuration. The reset value is reported in
+    # <app>_cp_map.json so the consumer side need not guess.
+    _fe_enables = [t['tname'] for t in regmap if t.get('is_feature_export')]
 
     # ── FeatureExport staging FIFOs ──────────────────────────────────────────
     # One small ring per instance, between the pipeline's push and the
@@ -942,6 +954,8 @@ def _emit_axil_decoder(f, regmap):
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) begin\n')
     f.write('      axil_st <= AXIL_IDLE;\n')
+    for _n in _fe_enables:
+        f.write(f"      r_{_n}_cp_enable <= 1'b1;   // feed enabled out of reset\n")
     for ti in regmap:
         f.write(f'      r_{ti["tname"]}_cp_wr_en <= 1\'b0;\n')
         if ti['supports_query']:
@@ -1388,7 +1402,7 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
         if cp_map_path:
             from emit_cp_map import emit_cp_map
             emit_cp_map(ir, app_name, cp_map_path, regmap, ctrl, amap,
-                        ectrl=ectrl, eamap=eamap,
+                        fwmap=fwmap, ectrl=ectrl, eamap=eamap,
                         axi_data_width=axi_data_width, clock_hz=clock_hz,
                         repo_root=os.path.dirname(os.path.abspath(__file__)))
 

@@ -134,7 +134,8 @@ module processing_generated (
 
   // Register read wires (isolated via assign)
   logic [31:0] last_ts_rd_meta_prev;
-  assign last_ts_rd_meta_prev = last_ts_mem[eth_etype];
+  wire [9:0] last_ts_rd_addr_meta_prev = eth_etype;   // truncated to 1024 entries, as the write address is
+  assign last_ts_rd_meta_prev = last_ts_mem[last_ts_rd_addr_meta_prev];
 
   // Table lookup result wires
   logic        fwd_hit;

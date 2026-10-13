@@ -415,6 +415,15 @@ bit manipulation, `isValid`/`setValid`/`setInvalid`, `InternetChecksum`,
 `standard_metadata` as its architecture declares it, and (P4RTL) the full
 traffic manager.
 
+**Externs, all implemented:**
+
+| Extern | Notes |
+|---|---|
+| `Meter` | single-rate two-colour, one debit bucket per index, AXI4-Lite rate/burst — §8b |
+| `Digest` | 16-deep FIFO drained over AXI4-Lite; drops newest and counts — §8b |
+| `FeatureExport` | one record per `push()` out an AXI4-Stream master; staging FIFO drops newest and counts; AXI4-Lite statistics. For an ON-CHIP consumer — the deep buffer, its clock crossing and its memory type are deliberately outside the compiler |
+| `++` (bit concatenation) | in expressions at any nesting depth; width-prefixed literals converted too |
+
 **Not supported, on purpose:**
 
 | Gap | Why |
@@ -422,10 +431,6 @@ traffic manager.
 | Dynamic header stacks (`hdr.x.next`, `.last`, `push_front`) | explicitly descoped |
 | Anything that **changes packet length** (`setValid` on a new header, header push) | the header/payload split is at a fixed beat boundary; needs a byte shifter |
 | `range` match kind | no demand; `exact`/`lpm`/`ternary` are what the emitters implement |
-| `Meter` | **implemented** -- single-rate two-colour, one debit bucket per index, AXI4-Lite rate/burst (§8b) |
-| `Digest` | **implemented** -- 16-deep FIFO drained over AXI4-Lite, drops newest and counts (§8b) |
-| `FeatureExport` | **implemented** -- one record per `push()` out an AXI4-Stream master, staging FIFO drops newest and counts, AXI4-Lite statistics. For an ON-CHIP consumer; the deep buffer, its clock crossing and its memory type are deliberately outside the compiler |
-| `++` (bit concatenation) | **implemented** in expressions, at any nesting depth; width-prefixed literals are converted too |
 | `clone`, `recirculate`, `resubmit` | need packet replication paths the shell does not have |
 | A v1model top-level shell | v1model apps stay module-level; new work targets P4RTL |
 

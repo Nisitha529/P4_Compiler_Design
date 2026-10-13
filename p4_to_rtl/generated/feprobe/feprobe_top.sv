@@ -305,6 +305,7 @@ module feprobe_top #(
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       axil_st <= AXIL_IDLE;
+      r_tcn_feed_cp_enable <= 1'b1;   // feed enabled out of reset
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
       r_tcn_feed_cp_wr_en <= 1'b0;

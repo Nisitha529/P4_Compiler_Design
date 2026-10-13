@@ -1,6 +1,6 @@
 {
   "app": "ioprobe",
-  "compiler_git": "6c501b7",
+  "compiler_git": "8004ded",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {
@@ -31,24 +31,38 @@
       "keys": [
         {
           "field": "standard_metadata.ingress_port",
-          "match": "exact"
+          "match": "exact",
+          "width": 9,
+          "word": 2,
+          "query_word": 5
         }
       ],
       "actions": [
         {
           "name": "fwd",
+          "id": 1,
           "params": [
             {
               "name": "port",
-              "width": 9
+              "width": 9,
+              "word": 3
             }
           ]
         },
         {
           "name": "NoAction",
+          "id": 0,
           "params": []
         }
-      ]
+      ],
+      "addressing": {
+        "scheme": "hash",
+        "hash": "xor-fold",
+        "ways": 1,
+        "index_bits": 4,
+        "key_bits": 9,
+        "note": "the slot is chosen by XOR-folding the concatenated key down to index_bits; wr_idx is NOT used. With ways=1 two keys that fold to the same index overwrite each other, so a writer must check for collisions itself."
+      }
     }
   ],
   "counters": [],

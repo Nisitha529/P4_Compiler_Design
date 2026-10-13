@@ -760,6 +760,16 @@ def main():
             f"supported width ({MAX_AXI_DATA_W}) -- see --help for why this "
             f"ceiling exists."
         )
+    # The staging ring holds `d` entries but is indexed with the low bits of a
+    # pointer, so a non-power-of-two depth addresses slots that do not exist:
+    # depth 6 indexes 0..7, and depth 1 indexes 0..1. Same check --nslot gets,
+    # and for the same reason.
+    if args.fe_stage_depth < 2 or (args.fe_stage_depth & (args.fe_stage_depth - 1)):
+        parser.error(
+            f"--fe-stage-depth must be a power of 2 and >= 2 "
+            f"(got {args.fe_stage_depth}). The staging ring is indexed by the "
+            f"low bits of its pointers, so any other depth addresses entries "
+            f"that do not exist.")
 
     board = None
     if args.board is not None:

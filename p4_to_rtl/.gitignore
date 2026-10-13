@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+
+# Quartus / Vivado build outputs
+db/
+incremental_db/
+*.map.rpt
+*.fit.rpt
+*.map.summary
+*.fit.summary
+*.map.smsg
+*.fit.smsg
+*.qpf
+*.sld
+output_files/
+xsim.dir/
+*.jou
+*.pb
+*.wdb
+
+# simulation artefacts
+*.vcd
+*.vvp

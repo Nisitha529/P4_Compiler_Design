@@ -52,7 +52,8 @@ module processing_generated (
 
   // Register read wires (isolated via assign)
   logic [0:0] bloom_1_rd_meta_v1;
-  assign bloom_1_rd_meta_v1 = bloom_1_mem[eth_dst[31:0]];
+  wire [11:0] bloom_1_rd_addr_meta_v1 = eth_dst[31:0];   // truncated to 4096 entries, as the write address is
+  assign bloom_1_rd_meta_v1 = bloom_1_mem[bloom_1_rd_addr_meta_v1];
 
   // Metadata outputs (final value after the last stage)
   assign out_meta_v1 = meta_v1_w;

@@ -274,6 +274,27 @@ def _digest_expr_width(expr, fwmap):
     return None
 
 
+def _rd_addr_wire(f, reg_name, dest_id, addr_expr, reg_obj):
+    """Emit a TRUNCATED read-address wire and return its name.
+
+    The write path truncates for free -- `<reg>_wr_addr` is declared
+    [addr_w-1:0], so assigning a wider expression to it narrows it. The read
+    path had no such signal and indexed the array with the full-width
+    expression, so a 16-bit index into a 1024-entry array read out of range:
+    X in simulation, undefined in hardware. Any program whose index is wider
+    than the array needs this -- a flow hash feeding a per-flow register is
+    exactly that shape.
+    Slicing in place is not an option: `(a + b)[9:0]` is not legal Verilog,
+    which is why this is a named wire rather than a suffix.
+    """
+    size = getattr(reg_obj, 'size', 0) or 1
+    aw = max(1, math.ceil(math.log2(size))) if size > 1 else 1
+    name = f'{reg_name}_rd_addr_{dest_id}'
+    f.write(f'  wire [{aw-1}:0] {name} = {addr_expr};'
+            f'   // truncated to {size} entries, as the write address is\n')
+    return name
+
+
 def _collect_feature_pushes(ctrl):
     """[(instance_name, pushed_expr)] for every `<inst>.push(x)` in this control,
     including inside action bodies and nested if/else."""
@@ -307,6 +328,12 @@ def _leaf_name(expr):
     if m:
         e = m.group(1).strip()
         suffix = f'_{m.group(2)}_{m.group(3)}'
+    # A size cast: name the field after what is being cast, so a record field
+    # built from `(bit<16>)smeta.deq_qdepth` is called deq_qdepth and not
+    # something derived from the cast syntax.
+    m = re.match(r"^\d+'\s*\((.*)\)$", e)
+    if m:
+        return _leaf_name(m.group(1)) + suffix
     # A literal operand, in either spelling (see _leaf_width). Zero is almost
     # always padding; anything else is a constant tag the record carries.
     m = re.match(r"^(\d+)(?:w|'[hdbo])(.+)$", e)
@@ -337,6 +364,13 @@ def _leaf_width(expr, fwmap):
     if m:
         hi, lo = int(m.group(2)), int(m.group(3))
         return (hi - lo + 1) if hi >= lo else None
+    # A SIZE CAST states its own width: p4test renders P4's `(bit<16>)x` as
+    # `16'(x)`, which is how a program narrows a wide standard_metadata field
+    # (deq_qdepth is bit<19>) to fit a record. Checked before the literal rule
+    # below, since both start with digits and a quote.
+    m = re.match(r"^(\d+)'\s*\(", e)
+    if m:
+        return int(m.group(1))
     # Literals reach here in EITHER form. P4's own `8w0xA5` survives in some
     # positions, but a constant that p4test copy-propagated out of a metadata
     # assignment has already been converted to SystemVerilog (`8'hA5`) by the
@@ -2202,10 +2236,21 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 _reg.raw_distance = 0      # never written: no hazard
                 print(f"[INFO] Register '{_reg.name}': read-only, no RAW hazard")
                 continue
-            _reg.raw_distance = max(1, _ws - _rs + 1)
+            # +1 for an asynchronous read, +2 for a synchronous one.
+            # MEASURED, not derived: with --register-ram the read ADDRESS is
+            # presented a stage early and the memory is sampled at that earlier
+            # clock edge, so the read observes the array as of stage R-1 rather
+            # than R. tb_rawprobe shows the real boundary is 4 where the
+            # async-read formula predicts 3 (RAW_D=4 passes, RAW_D=3 fails), so
+            # reporting W-R+1 for both modes understated the hazard by one
+            # packet -- which is the direction that matters, because a program
+            # trusting it would space packets too closely.
+            _bump = 2 if register_ram else 1
+            _reg.raw_distance = max(1, _ws - _rs + _bump)
             print(f"[INFO] Register '{_reg.name}': RAW distance "
                   f"{_reg.raw_distance} packet(s) (read stage {_rs}, "
-                  f"write-back stage {_ws})"
+                  f"write-back stage {_ws}"
+                  f"{', synchronous read' if register_ram else ''})"
                   + ("" if _reg.raw_distance == 1 else
                      " -- two packets closer than this may both read the "
                      "pre-update value"))
@@ -2650,11 +2695,14 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                         # boundary).
                         addr_expr = _stage_text(_map_expr(raw_addr),
                                                 max(0, read_stage - 1))
-                        reg_read_ports.append((reg_name, dest_id, addr_expr))
+                        reg_read_ports.append(
+                            (reg_name, dest_id, _rd_addr_wire(f, reg_name, dest_id,
+                                                              addr_expr, reg_obj)))
                     else:
                         addr_expr = _stage_text(_map_expr(raw_addr), read_stage)
+                        _a = _rd_addr_wire(f, reg_name, dest_id, addr_expr, reg_obj)
                         f.write(f'  assign {reg_name}_rd_{dest_id} = '
-                                f'{reg_name}_mem[{addr_expr}];\n')
+                                f'{reg_name}_mem[{_a}];\n')
                 f.write('\n')
 
         # ── UserExtern instances ───────────────────────────────────────

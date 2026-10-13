@@ -19,6 +19,7 @@ import os
 import subprocess
 
 from emit_top import _reg_words, _n_words, AXIL_ADDR_W, AXIL_DATA_W, TABLE_AXIL_SZ
+from emit_table import _action_ids, _key_width, _field_basename
 
 
 def _git_rev(repo_root):
@@ -51,7 +52,7 @@ def _words_for(ti):
     return words
 
 
-def _table_entry(ti, tbl, amap):
+def _table_entry(ti, tbl, amap, fwmap):
     """The P4-level view of a table, next to its register words.
 
     `keys` and `actions` come from the IR, because the regmap only keeps the
@@ -67,22 +68,59 @@ def _table_entry(ti, tbl, amap):
         'words': _words_for(ti),
     }
     if tbl is not None:
+        # The ACTION ID the hardware uses, not the list position. They differ:
+        # _action_ids pins NoAction to 0 and numbers the rest from 1 in declared
+        # order, so for `actions = { set_port; drop_it; NoAction; }` the ids are
+        # 1, 2, 0 while the list positions are 0, 1, 2. A host that wrote the
+        # position would select NoAction when it meant set_port -- exactly the
+        # class of mistake this file exists to prevent.
+        ids = _action_ids(tbl)
+        words = out['words']
         out['size'] = tbl.size
-        out['keys'] = [{'field': k.field, 'match': k.match_type} for k in tbl.keys]
+        out['keys'] = [{
+            'field': k.field,
+            'match': k.match_type,
+            'width': _key_width(k.field, fwmap),
+            # Which bus word carries this key, so a caller does not have to
+            # infer it from the spelling of the name.
+            'word':      words.get(f'key_{_field_basename(k.field)}'),
+            'query_word': words.get(f'query_key_{_field_basename(k.field)}'),
+        } for k in tbl.keys]
         acts = []
         for araw in tbl.actions:
             aname = araw.strip().rstrip('()')
             action = amap.get(aname)
             acts.append({
                 'name': aname,
-                'params': ([{'name': p.name, 'width': p.width}
+                'id':   ids.get(aname),
+                'params': ([{'name': p.name, 'width': p.width,
+                             'word': words.get(f'p_{p.name}')}
                             for p in action.params] if action else []),
             })
         out['actions'] = acts
+        # How an entry's slot is chosen. For an exact-match table the hardware
+        # HASHES the key and wr_idx is ignored, so two keys that collide
+        # silently overwrite each other -- a caller has to model that before it
+        # writes, which it cannot do unless the map says so.
+        if out['supports_query'] or ti.get('is_exact'):
+            out['addressing'] = {
+                'scheme':    'hash',
+                'hash':      'xor-fold',
+                'ways':      ti.get('ways', 1),
+                'index_bits': ti.get('idx_w'),
+                'key_bits':  sum((k['width'] or 0) for k in out['keys']),
+                'note': 'the slot is chosen by XOR-folding the concatenated key '
+                        'down to index_bits; wr_idx is NOT used. With ways=1 two '
+                        'keys that fold to the same index overwrite each other, '
+                        'so a writer must check for collisions itself.',
+            }
+        else:
+            out['addressing'] = {'scheme': 'direct', 'index_word': words.get('wr_idx'),
+                                 'index_bits': ti.get('idx_w')}
     return out
 
 
-def emit_cp_map(ir, app_name, output_path, regmap, ctrl, amap,
+def emit_cp_map(ir, app_name, output_path, regmap, ctrl, amap, fwmap=None,
                 ectrl=None, eamap=None, axi_data_width=None, clock_hz=None,
                 repo_root=None):
     """Write <app>_cp_map.json. Returns the dict it wrote."""
@@ -150,13 +188,18 @@ def emit_cp_map(ir, app_name, output_path, regmap, ctrl, amap,
                  'width':        fe.total_width if fe else None,
                  'tdata_width':  ti.get('fe_width'),
                  'stage_depth':  ti.get('fe_depth'),
+                 # The feed comes up ENABLED out of reset. Recorded because the
+                 # consumer side would otherwise have to guess, and "no records
+                 # and nothing says why" is the hardest bring-up failure to
+                 # diagnose.
+                 'enable_reset': 1,
                  'fields': fields,
                  'words': _words_for(ti),
                  'note': 'records leave by the AXI4-Stream port <name>_t*, not '
                          'over AXI4-Lite; these words are statistics only'})
         else:
             tbl, am = tables_by_name.get(ti['tname'], (None, {}))
-            doc['tables'].append(_table_entry(ti, tbl, am))
+            doc['tables'].append(_table_entry(ti, tbl, am, fwmap))
 
     for c in (ctrl, ectrl):
         if c is None:

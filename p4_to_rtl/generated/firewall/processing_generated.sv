@@ -988,9 +988,11 @@ module processing_generated (
 
   // Register read wires (isolated via assign)
   logic [0:0] bloom_filter_1_rd_reg_val_one_0;
-  assign bloom_filter_1_rd_reg_val_one_0 = bloom_filter_1_mem[reg_pos_one_0__st4];
+  wire [11:0] bloom_filter_1_rd_addr_reg_val_one_0 = reg_pos_one_0__st4;   // truncated to 4096 entries, as the write address is
+  assign bloom_filter_1_rd_reg_val_one_0 = bloom_filter_1_mem[bloom_filter_1_rd_addr_reg_val_one_0];
   logic [0:0] bloom_filter_2_rd_reg_val_two_0;
-  assign bloom_filter_2_rd_reg_val_two_0 = bloom_filter_2_mem[reg_pos_two_0__st4];
+  wire [11:0] bloom_filter_2_rd_addr_reg_val_two_0 = reg_pos_two_0__st4;   // truncated to 4096 entries, as the write address is
+  assign bloom_filter_2_rd_reg_val_two_0 = bloom_filter_2_mem[bloom_filter_2_rd_addr_reg_val_two_0];
 
   // Table lookup result wires
   logic        ipv4_lpm_hit;
