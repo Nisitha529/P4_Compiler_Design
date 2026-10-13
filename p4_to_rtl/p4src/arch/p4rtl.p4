@@ -57,7 +57,12 @@ extern UserExtern<I, O> {
 
 // ── Stateful storage with DEFINED hazard semantics ──────────────────────────
 // A read returns the value committed by any packet that entered the pipeline
-// at least REGISTER_RAW_DISTANCE packets earlier (see proposal §5.3). Two
+// at least REGISTER_RAW_DISTANCE packets earlier. That number is no longer
+// aspirational: the compiler computes it per instance from the assigned
+// pipeline stages and prints it, e.g.
+//   [INFO] Register 'last_ts': RAW distance 3 packet(s)
+//          (read stage 0, write-back stage 2)
+// (see p4src/apps/rawprobe.p4, and proposal §5.3 for the model). Two
 // packets closer than that may observe stale data; a program that needs
 // atomic read-modify-write across back-to-back packets must use a UserExtern
 // with its own bypass logic. Making that rule explicit is the whole point.
