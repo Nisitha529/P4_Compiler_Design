@@ -1,0 +1,244 @@
+{
+  "app": "load_balance_p4rtl",
+  "compiler_git": "45f32c4",
+  "axi_data_width": 256,
+  "clock_hz": null,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "ecmp_group",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": false,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_dstAddr": 2,
+        "wr_pfx_len": 3,
+        "p_ecmp_base": 4,
+        "p_ecmp_mask": 5,
+        "commit": 6
+      },
+      "size": 64,
+      "keys": [
+        {
+          "field": "hdr.ipv4.dstAddr",
+          "match": "lpm",
+          "width": 32,
+          "words": [
+            2
+          ],
+          "query_words": [],
+          "pfx_len_words": [
+            3
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_ecmp_select",
+          "id": 1,
+          "params": [
+            {
+              "name": "ecmp_base",
+              "width": 14,
+              "words": [
+                4
+              ]
+            },
+            {
+              "name": "ecmp_mask",
+              "width": 16,
+              "words": [
+                5
+              ]
+            }
+          ]
+        },
+        {
+          "name": "drop_pkt",
+          "id": 2,
+          "params": []
+        },
+        {
+          "name": "NoAction",
+          "id": 0,
+          "params": []
+        }
+      ],
+      "addressing": {
+        "scheme": "priority",
+        "priority": "lowest_index_wins",
+        "index_word": 0,
+        "index_bits": 6,
+        "size": 64,
+        "ordering": "caller-ordered: insert MOST SPECIFIC first (longest prefix / most mask bits set at the lowest index). The hardware does not sort and does not compare prefix lengths -- it returns the lowest matching index."
+      }
+    },
+    {
+      "name": "ecmp_nhop",
+      "stage": "ingress",
+      "base": "0x0100",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 64,
+        "wr_action": 65,
+        "key_ecmp_select": 66,
+        "p_nhop_dmac_w0": 67,
+        "p_nhop_dmac_w1": 68,
+        "p_nhop_ipv4": 69,
+        "p_port": 70,
+        "commit": 71,
+        "query_key_ecmp_select": 72,
+        "query_commit": 73,
+        "delete_commit": 74,
+        "query_status": 75,
+        "query_action_id": 76,
+        "query_p_nhop_dmac_w0": 77,
+        "query_p_nhop_dmac_w1": 78,
+        "query_p_nhop_ipv4": 79,
+        "query_p_port": 80
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "meta.ecmp_select",
+          "match": "exact",
+          "width": 14,
+          "words": [
+            66
+          ],
+          "query_words": [
+            72
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_nhop",
+          "id": 1,
+          "params": [
+            {
+              "name": "nhop_dmac",
+              "width": 48,
+              "words": [
+                67,
+                68
+              ]
+            },
+            {
+              "name": "nhop_ipv4",
+              "width": 32,
+              "words": [
+                69
+              ]
+            },
+            {
+              "name": "port",
+              "width": 9,
+              "words": [
+                70
+              ]
+            }
+          ]
+        },
+        {
+          "name": "drop_pkt",
+          "id": 2,
+          "params": []
+        },
+        {
+          "name": "NoAction",
+          "id": 0,
+          "params": []
+        }
+      ],
+      "addressing": {
+        "scheme": "hash",
+        "hash": "xor-fold",
+        "ways": 1,
+        "index_bits": 4,
+        "key_bits": 14,
+        "note": "the slot is chosen by XOR-folding the concatenated key down to index_bits; wr_idx is NOT used. With ways=1 two keys that fold to the same index overwrite each other, so a writer must check for collisions itself."
+      }
+    },
+    {
+      "name": "send_frame",
+      "stage": "egress",
+      "base": "0x0200",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 128,
+        "wr_action": 129,
+        "key_egress_port": 130,
+        "p_smac_w0": 131,
+        "p_smac_w1": 132,
+        "commit": 133,
+        "query_key_egress_port": 134,
+        "query_commit": 135,
+        "delete_commit": 136,
+        "query_status": 137,
+        "query_action_id": 138,
+        "query_p_smac_w0": 139,
+        "query_p_smac_w1": 140
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "standard_metadata.egress_port",
+          "match": "exact",
+          "width": 9,
+          "words": [
+            130
+          ],
+          "query_words": [
+            134
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "name": "rewrite_mac",
+          "id": 1,
+          "params": [
+            {
+              "name": "smac",
+              "width": 48,
+              "words": [
+                131,
+                132
+              ]
+            }
+          ]
+        },
+        {
+          "name": "drop_pkt",
+          "id": 2,
+          "params": []
+        },
+        {
+          "name": "NoAction",
+          "id": 0,
+          "params": []
+        }
+      ],
+      "addressing": {
+        "scheme": "hash",
+        "hash": "xor-fold",
+        "ways": 1,
+        "index_bits": 4,
+        "key_bits": 9,
+        "note": "the slot is chosen by XOR-folding the concatenated key down to index_bits; wr_idx is NOT used. With ways=1 two keys that fold to the same index overwrite each other, so a writer must check for collisions itself."
+      }
+    }
+  ],
+  "counters": [],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [],
+  "registers": []
+}

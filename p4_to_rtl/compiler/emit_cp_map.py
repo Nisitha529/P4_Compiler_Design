@@ -52,6 +52,24 @@ def _words_for(ti):
     return words
 
 
+def _field_words(words, prefix, width):
+    """Bus words carrying one key or parameter, least-significant word first.
+
+    A field wider than the bus does NOT get one word: `_reg_words` splits it
+    into <name>_w0, <name>_w1, ... So a 48-bit MAC lives in two words, and a map
+    that reported a single `word` reported null for it -- leaving a host unable
+    to write a MAC at all. Always a list, so a caller writes the same loop for
+    every field regardless of width.
+    """
+    if prefix in words:
+        return [words[prefix]]
+    out, i = [], 0
+    while f'{prefix}_w{i}' in words:
+        out.append(words[f'{prefix}_w{i}'])
+        i += 1
+    return out
+
+
 def _table_entry(ti, tbl, amap, fwmap):
     """The P4-level view of a table, next to its register words.
 
@@ -77,15 +95,26 @@ def _table_entry(ti, tbl, amap, fwmap):
         ids = _action_ids(tbl)
         words = out['words']
         out['size'] = tbl.size
-        out['keys'] = [{
-            'field': k.field,
-            'match': k.match_type,
-            'width': _key_width(k.field, fwmap),
-            # Which bus word carries this key, so a caller does not have to
-            # infer it from the spelling of the name.
-            'word':      words.get(f'key_{_field_basename(k.field)}'),
-            'query_word': words.get(f'query_key_{_field_basename(k.field)}'),
-        } for k in tbl.keys]
+        keys = []
+        for k in tbl.keys:
+            kb = _field_basename(k.field)
+            entry = {
+                'field': k.field,
+                'match': k.match_type,
+                'width': _key_width(k.field, fwmap),
+                # Lists, least-significant word first -- see _field_words.
+                'words':       _field_words(words, f'key_{kb}', 0),
+                'query_words': _field_words(words, f'query_key_{kb}', 0),
+            }
+            # An LPM key is written with a prefix length, a ternary key with a
+            # mask. Without the link a caller can see the word exists but not
+            # which key it belongs to, and with several keys that is a guess.
+            if k.match_type == 'lpm':
+                entry['pfx_len_words'] = _field_words(words, 'wr_pfx_len', 0)
+            elif k.match_type == 'ternary':
+                entry['mask_words'] = _field_words(words, f'wr_mask_{kb}', 0)
+            keys.append(entry)
+        out['keys'] = keys
         acts = []
         for araw in tbl.actions:
             aname = araw.strip().rstrip('()')
@@ -94,7 +123,7 @@ def _table_entry(ti, tbl, amap, fwmap):
                 'name': aname,
                 'id':   ids.get(aname),
                 'params': ([{'name': p.name, 'width': p.width,
-                             'word': words.get(f'p_{p.name}')}
+                             'words': _field_words(words, f'p_{p.name}', p.width)}
                             for p in action.params] if action else []),
             })
         out['actions'] = acts
@@ -113,6 +142,25 @@ def _table_entry(ti, tbl, amap, fwmap):
                         'down to index_bits; wr_idx is NOT used. With ways=1 two '
                         'keys that fold to the same index overwrite each other, '
                         'so a writer must check for collisions itself.',
+            }
+        elif any(k['match'] in ('lpm', 'ternary') for k in out['keys']):
+            # A priority table, NOT simply "direct". Every entry is compared and
+            # the LOWEST INDEX WINS (emit_table.py's priority-match tree), so
+            # where an entry is placed decides which of two matching entries
+            # takes effect. Software therefore has to order its own inserts;
+            # nothing in the hardware sorts them. Writing a /16 into a slot
+            # below an existing /24 silently breaks forwarding for that prefix,
+            # which is exactly the kind of mistake a generated entry makes.
+            out['addressing'] = {
+                'scheme':      'priority',
+                'priority':    'lowest_index_wins',
+                'index_word':  words.get('wr_idx'),
+                'index_bits':  ti.get('idx_w'),
+                'size':        tbl.size,
+                'ordering': 'caller-ordered: insert MOST SPECIFIC first (longest '
+                            'prefix / most mask bits set at the lowest index). The '
+                            'hardware does not sort and does not compare prefix '
+                            'lengths -- it returns the lowest matching index.',
             }
         else:
             out['addressing'] = {'scheme': 'direct', 'index_word': words.get('wr_idx'),
