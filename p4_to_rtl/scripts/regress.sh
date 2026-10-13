@@ -95,6 +95,16 @@ for app in "${apps[@]}"; do
     echo
   done
 done
+# Any <app>_cp_map.json in the tree is checked against its decoder. The map's
+# whole value is that host software can trust it, so a drift between the two has
+# to fail here rather than on hardware. Silent when no map has been generated.
+if ! python3 "$R/scripts/check_cp_map.py" > "$O/cp_map.log" 2>&1; then
+  echo "-----"; echo "CONTROL-PLANE MAP MISMATCH:"; sed 's/^/  /' "$O/cp_map.log"
+  bad="$bad cp_map"
+elif ! grep -q "no <app>_cp_map.json found" "$O/cp_map.log"; then
+  echo "-----"; grep -c '^ok ' "$O/cp_map.log" | xargs -I{} echo "cp_map: {} map(s) match their decoder"
+fi
+
 echo "-----"
 echo "TOTAL (${sims[0]}): $tot_p passed, $tot_f failed"
 if [ -n "$bad" ]; then echo "PROBLEMS:$bad"; echo "logs: $O"; exit 1; fi

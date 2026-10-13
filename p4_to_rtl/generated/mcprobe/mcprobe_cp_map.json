@@ -1,0 +1,124 @@
+{
+  "app": "mcprobe",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": 250000000,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "l2",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_etype": 2,
+        "p_port": 3,
+        "p_grp": 4,
+        "commit": 5,
+        "query_key_etype": 6,
+        "query_commit": 7,
+        "delete_commit": 8,
+        "query_status": 9,
+        "query_action_id": 10,
+        "query_p_port": 11,
+        "query_p_grp": 12
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "hdr.eth.etype",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "fwd",
+          "params": [
+            {
+              "name": "port",
+              "width": 9
+            }
+          ]
+        },
+        {
+          "name": "mcast",
+          "params": [
+            {
+              "name": "grp",
+              "width": 16
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    },
+    {
+      "name": "port_smac",
+      "stage": "egress",
+      "base": "0x0100",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 64,
+        "wr_action": 65,
+        "key_egress_port": 66,
+        "p_smac_w0": 67,
+        "p_smac_w1": 68,
+        "commit": 69,
+        "query_key_egress_port": 70,
+        "query_commit": 71,
+        "delete_commit": 72,
+        "query_status": 73,
+        "query_action_id": 74,
+        "query_p_smac_w0": 75,
+        "query_p_smac_w1": 76
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "standard_metadata.egress_port",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_smac",
+          "params": [
+            {
+              "name": "smac",
+              "width": 48
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [],
+  "registers": [],
+  "mcast": [
+    {
+      "name": "mcast",
+      "base": "0x0200",
+      "words": {
+        "wr_idx": 128,
+        "wr_mask": 129,
+        "commit": 130
+      }
+    }
+  ]
+}

@@ -32,6 +32,7 @@ Each table is allocated 256 bytes (0x100) of address space.
 """
 
 import math
+import os
 import re
 from collections import defaultdict, deque
 
@@ -967,27 +968,28 @@ def _emit_axil_decoder(f, regmap):
         base  = ti['base']
         for idx, rname, cp_sig, lo, take in _reg_words(ti['regs']):
             word_addr = (base + idx * 4) >> 2
+            _mk = f'cpmap:{tname}.{rname}'   # see scripts/check_cp_map.py
             if rname == 'commit':
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
-                        f"r_{tname}_cp_wr_en <= 1'b1; // {tname} commit\n")
+                        f"r_{tname}_cp_wr_en <= 1'b1; // {tname} commit [{_mk}]\n")
             elif rname == 'query_commit':
                 if ti.get('is_counter'):
                     f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
-                            f"r_{tname}_cp_query_en <= 1'b1; // {tname} query\n")
+                            f"r_{tname}_cp_query_en <= 1'b1; // {tname} query [{_mk}]\n")
                 else:
                     f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
                             f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b0; "
-                            f"end // {tname} query\n")
+                            f"end // {tname} query [{_mk}]\n")
             elif rname == 'delete_commit':
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: begin "
                         f"r_{tname}_cp_query_en <= 1'b1; r_{tname}_cp_query_del <= 1'b1; "
-                        f"end // {tname} delete\n")
+                        f"end // {tname} delete [{_mk}]\n")
             else:
                 dst = f"r_{cp_sig}" if lo == 0 and take == AXIL_DATA_W else f"r_{cp_sig}[{lo+take-1}:{lo}]"
                 if lo == 0 and take < AXIL_DATA_W:
                     dst = f"r_{cp_sig}"      # narrow reg: whole thing, no slice needed
                 f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: "
-                        f"{dst} <= s_axil_wdata[{take-1}:0]; // {rname}\n")
+                        f"{dst} <= s_axil_wdata[{take-1}:0]; // {rname} [{_mk}]\n")
 
     f.write('              default: ; // ignore unknown address\n')
     f.write('            endcase\n')
@@ -1067,7 +1069,8 @@ def _emit_axil_decoder(f, regmap):
                     expr = f'{{30\'d0, {tname}_cp_query_hit, {tname}_cp_query_busy}}'
             else:
                 expr = _rdata_expr(cp_sig, lo, take)
-            f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: r_rdata <= {expr}; // {tname} {rname}\n")
+            f.write(f"              {AXIL_ADDR_W-2}'d{word_addr}: r_rdata <= {expr}; "
+                    f"// {tname} {rname} [cpmap:{tname}.{rname}]\n")
     f.write("              default: r_rdata <= 32'd0;\n")
     f.write('            endcase\n')
     f.write('            axil_rst <= AXIL_R_DATA;\n')
@@ -1289,7 +1292,7 @@ def _has_var_pred_on_non_dynamic(var_pred, inst_map):
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
 def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4,
-             tm_qlimit=None, fe_stage_depth=8):
+             tm_qlimit=None, fe_stage_depth=8, cp_map_path=None, clock_hz=None):
     """Generate {app_name}_top.sv with AXI4-Stream and AXI4-Lite interfaces.
 
     axi_data_width: AXI4-Stream TDATA width in bits (default 256). Must be a
@@ -1378,6 +1381,16 @@ def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board
                       board, verify_terms=verify_terms, nslot=nslot,
                       ectrl=ectrl, tm_qlimit=tm_qlimit,
                   fe_stage_depth=fe_stage_depth)
+
+        # The machine-readable register map, built from the SAME regmap the
+        # decoder above was generated from -- see emit_cp_map.py for why that
+        # matters. Opt-in: nothing else in the tree depends on the file.
+        if cp_map_path:
+            from emit_cp_map import emit_cp_map
+            emit_cp_map(ir, app_name, cp_map_path, regmap, ctrl, amap,
+                        ectrl=ectrl, eamap=eamap,
+                        axi_data_width=axi_data_width, clock_hz=clock_hz,
+                        repo_root=os.path.dirname(os.path.abspath(__file__)))
 
 
 def _build_fwmap(ir):

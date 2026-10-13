@@ -1,0 +1,107 @@
+{
+  "app": "feprobe",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": 250000000,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "fwd",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_etype": 2,
+        "p_p": 3,
+        "commit": 4,
+        "query_key_etype": 5,
+        "query_commit": 6,
+        "delete_commit": 7,
+        "query_status": 8,
+        "query_action_id": 9,
+        "query_p_p": 10
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "hdr.eth.etype",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_port",
+          "params": [
+            {
+              "name": "p",
+              "width": 9
+            }
+          ]
+        },
+        {
+          "name": "drop_it",
+          "params": []
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [
+    {
+      "name": "tcn_feed",
+      "stage": "ingress",
+      "base": "0x0100",
+      "width": 64,
+      "tdata_width": 64,
+      "stage_depth": 8,
+      "fields": [
+        {
+          "name": "eth_etype",
+          "lsb": 48,
+          "width": 16
+        },
+        {
+          "name": "packet_length",
+          "lsb": 32,
+          "width": 16
+        },
+        {
+          "name": "eth_dst_15_0",
+          "lsb": 16,
+          "width": 16
+        },
+        {
+          "name": "const",
+          "lsb": 8,
+          "width": 8
+        },
+        {
+          "name": "parsed_bytes_7_0",
+          "lsb": 0,
+          "width": 8
+        }
+      ],
+      "words": {
+        "enable": 64,
+        "commit": 65,
+        "pushed": 66,
+        "dropped": 67,
+        "status": 68
+      },
+      "note": "records leave by the AXI4-Stream port <name>_t*, not over AXI4-Lite; these words are statistics only"
+    }
+  ],
+  "registers": []
+}

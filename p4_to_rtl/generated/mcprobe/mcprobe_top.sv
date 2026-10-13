@@ -463,27 +463,27 @@ module mcprobe_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_l2_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd1: r_l2_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
-              14'd2: r_l2_cp_wr_key_etype <= s_axil_wdata[15:0]; // key_etype
-              14'd3: r_l2_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd4: r_l2_cp_wr_p_grp <= s_axil_wdata[15:0]; // p_grp
-              14'd5: r_l2_cp_wr_en <= 1'b1; // l2 commit
-              14'd6: r_l2_cp_query_key_etype <= s_axil_wdata[15:0]; // query_key_etype
-              14'd7: begin r_l2_cp_query_en <= 1'b1; r_l2_cp_query_del <= 1'b0; end // l2 query
-              14'd8: begin r_l2_cp_query_en <= 1'b1; r_l2_cp_query_del <= 1'b1; end // l2 delete
-              14'd64: r_port_smac_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd65: r_port_smac_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd66: r_port_smac_cp_wr_key_egress_port <= s_axil_wdata[8:0]; // key_egress_port
-              14'd67: r_port_smac_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac_w0
-              14'd68: r_port_smac_cp_wr_p_smac[47:32] <= s_axil_wdata[15:0]; // p_smac_w1
-              14'd69: r_port_smac_cp_wr_en <= 1'b1; // port_smac commit
-              14'd70: r_port_smac_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port
-              14'd71: begin r_port_smac_cp_query_en <= 1'b1; r_port_smac_cp_query_del <= 1'b0; end // port_smac query
-              14'd72: begin r_port_smac_cp_query_en <= 1'b1; r_port_smac_cp_query_del <= 1'b1; end // port_smac delete
-              14'd128: r_mcast_cp_wr_idx <= s_axil_wdata[2:0]; // wr_idx
-              14'd129: r_mcast_cp_wr_mask <= s_axil_wdata[3:0]; // wr_mask
-              14'd130: r_mcast_cp_wr_en <= 1'b1; // mcast commit
+              14'd0: r_l2_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:l2.wr_idx]
+              14'd1: r_l2_cp_wr_action <= s_axil_wdata[1:0]; // wr_action [cpmap:l2.wr_action]
+              14'd2: r_l2_cp_wr_key_etype <= s_axil_wdata[15:0]; // key_etype [cpmap:l2.key_etype]
+              14'd3: r_l2_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port [cpmap:l2.p_port]
+              14'd4: r_l2_cp_wr_p_grp <= s_axil_wdata[15:0]; // p_grp [cpmap:l2.p_grp]
+              14'd5: r_l2_cp_wr_en <= 1'b1; // l2 commit [cpmap:l2.commit]
+              14'd6: r_l2_cp_query_key_etype <= s_axil_wdata[15:0]; // query_key_etype [cpmap:l2.query_key_etype]
+              14'd7: begin r_l2_cp_query_en <= 1'b1; r_l2_cp_query_del <= 1'b0; end // l2 query [cpmap:l2.query_commit]
+              14'd8: begin r_l2_cp_query_en <= 1'b1; r_l2_cp_query_del <= 1'b1; end // l2 delete [cpmap:l2.delete_commit]
+              14'd64: r_port_smac_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:port_smac.wr_idx]
+              14'd65: r_port_smac_cp_wr_action <= s_axil_wdata[0:0]; // wr_action [cpmap:port_smac.wr_action]
+              14'd66: r_port_smac_cp_wr_key_egress_port <= s_axil_wdata[8:0]; // key_egress_port [cpmap:port_smac.key_egress_port]
+              14'd67: r_port_smac_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac_w0 [cpmap:port_smac.p_smac_w0]
+              14'd68: r_port_smac_cp_wr_p_smac[47:32] <= s_axil_wdata[15:0]; // p_smac_w1 [cpmap:port_smac.p_smac_w1]
+              14'd69: r_port_smac_cp_wr_en <= 1'b1; // port_smac commit [cpmap:port_smac.commit]
+              14'd70: r_port_smac_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port [cpmap:port_smac.query_key_egress_port]
+              14'd71: begin r_port_smac_cp_query_en <= 1'b1; r_port_smac_cp_query_del <= 1'b0; end // port_smac query [cpmap:port_smac.query_commit]
+              14'd72: begin r_port_smac_cp_query_en <= 1'b1; r_port_smac_cp_query_del <= 1'b1; end // port_smac delete [cpmap:port_smac.delete_commit]
+              14'd128: r_mcast_cp_wr_idx <= s_axil_wdata[2:0]; // wr_idx [cpmap:mcast.wr_idx]
+              14'd129: r_mcast_cp_wr_mask <= s_axil_wdata[3:0]; // wr_mask [cpmap:mcast.wr_mask]
+              14'd130: r_mcast_cp_wr_en <= 1'b1; // mcast commit [cpmap:mcast.commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -519,14 +519,14 @@ module mcprobe_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd9: r_rdata <= {30'd0, l2_cp_query_hit, l2_cp_query_busy}; // l2 query_status
-              14'd10: r_rdata <= {30'd0, l2_cp_query_action_id}; // l2 query_action_id
-              14'd11: r_rdata <= {23'd0, l2_cp_query_p_port}; // l2 query_p_port
-              14'd12: r_rdata <= {16'd0, l2_cp_query_p_grp}; // l2 query_p_grp
-              14'd73: r_rdata <= {30'd0, port_smac_cp_query_hit, port_smac_cp_query_busy}; // port_smac query_status
-              14'd74: r_rdata <= {31'd0, port_smac_cp_query_action_id}; // port_smac query_action_id
-              14'd75: r_rdata <= port_smac_cp_query_p_smac; // port_smac query_p_smac_w0
-              14'd76: r_rdata <= {16'd0, port_smac_cp_query_p_smac[47:32]}; // port_smac query_p_smac_w1
+              14'd9: r_rdata <= {30'd0, l2_cp_query_hit, l2_cp_query_busy}; // l2 query_status [cpmap:l2.query_status]
+              14'd10: r_rdata <= {30'd0, l2_cp_query_action_id}; // l2 query_action_id [cpmap:l2.query_action_id]
+              14'd11: r_rdata <= {23'd0, l2_cp_query_p_port}; // l2 query_p_port [cpmap:l2.query_p_port]
+              14'd12: r_rdata <= {16'd0, l2_cp_query_p_grp}; // l2 query_p_grp [cpmap:l2.query_p_grp]
+              14'd73: r_rdata <= {30'd0, port_smac_cp_query_hit, port_smac_cp_query_busy}; // port_smac query_status [cpmap:port_smac.query_status]
+              14'd74: r_rdata <= {31'd0, port_smac_cp_query_action_id}; // port_smac query_action_id [cpmap:port_smac.query_action_id]
+              14'd75: r_rdata <= port_smac_cp_query_p_smac; // port_smac query_p_smac_w0 [cpmap:port_smac.query_p_smac_w0]
+              14'd76: r_rdata <= {16'd0, port_smac_cp_query_p_smac[47:32]}; // port_smac query_p_smac_w1 [cpmap:port_smac.query_p_smac_w1]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

@@ -304,19 +304,19 @@ module mdprobe_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd1: r_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd2: r_fwd_cp_wr_key_dst <= s_axil_wdata[31:0]; // key_dst_w0
-              14'd3: r_fwd_cp_wr_key_dst[47:32] <= s_axil_wdata[15:0]; // key_dst_w1
-              14'd4: r_fwd_cp_wr_p_p <= s_axil_wdata[8:0]; // p_p
-              14'd5: r_fwd_cp_wr_en <= 1'b1; // fwd commit
-              14'd6: r_fwd_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst_w0
-              14'd7: r_fwd_cp_query_key_dst[47:32] <= s_axil_wdata[15:0]; // query_key_dst_w1
-              14'd8: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b0; end // fwd query
-              14'd9: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b1; end // fwd delete
-              14'd64: r_rate_limit_cp_rate_shift <= s_axil_wdata[4:0]; // rate_shift
-              14'd65: r_rate_limit_cp_burst <= s_axil_wdata[15:0]; // burst
-              14'd128: r_seen_src_cp_wr_en <= 1'b1; // seen_src commit
+              14'd0: r_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:fwd.wr_idx]
+              14'd1: r_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action [cpmap:fwd.wr_action]
+              14'd2: r_fwd_cp_wr_key_dst <= s_axil_wdata[31:0]; // key_dst_w0 [cpmap:fwd.key_dst_w0]
+              14'd3: r_fwd_cp_wr_key_dst[47:32] <= s_axil_wdata[15:0]; // key_dst_w1 [cpmap:fwd.key_dst_w1]
+              14'd4: r_fwd_cp_wr_p_p <= s_axil_wdata[8:0]; // p_p [cpmap:fwd.p_p]
+              14'd5: r_fwd_cp_wr_en <= 1'b1; // fwd commit [cpmap:fwd.commit]
+              14'd6: r_fwd_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst_w0 [cpmap:fwd.query_key_dst_w0]
+              14'd7: r_fwd_cp_query_key_dst[47:32] <= s_axil_wdata[15:0]; // query_key_dst_w1 [cpmap:fwd.query_key_dst_w1]
+              14'd8: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b0; end // fwd query [cpmap:fwd.query_commit]
+              14'd9: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b1; end // fwd delete [cpmap:fwd.delete_commit]
+              14'd64: r_rate_limit_cp_rate_shift <= s_axil_wdata[4:0]; // rate_shift [cpmap:rate_limit.rate_shift]
+              14'd65: r_rate_limit_cp_burst <= s_axil_wdata[15:0]; // burst [cpmap:rate_limit.burst]
+              14'd128: r_seen_src_cp_wr_en <= 1'b1; // seen_src commit [cpmap:seen_src.commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -352,12 +352,12 @@ module mdprobe_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd10: r_rdata <= {30'd0, fwd_cp_query_hit, fwd_cp_query_busy}; // fwd query_status
-              14'd11: r_rdata <= {31'd0, fwd_cp_query_action_id}; // fwd query_action_id
-              14'd12: r_rdata <= {23'd0, fwd_cp_query_p_p}; // fwd query_p_p
-              14'd129: r_rdata <= {seen_src_overflow, 11'd0, (seen_src_wr - seen_src_rd)}; // seen_src status
-              14'd130: r_rdata <= seen_src_cp_rd_data[31:0]; // seen_src data0
-              14'd131: r_rdata <= {16'd0, seen_src_cp_rd_data[47:32]}; // seen_src data1
+              14'd10: r_rdata <= {30'd0, fwd_cp_query_hit, fwd_cp_query_busy}; // fwd query_status [cpmap:fwd.query_status]
+              14'd11: r_rdata <= {31'd0, fwd_cp_query_action_id}; // fwd query_action_id [cpmap:fwd.query_action_id]
+              14'd12: r_rdata <= {23'd0, fwd_cp_query_p_p}; // fwd query_p_p [cpmap:fwd.query_p_p]
+              14'd129: r_rdata <= {seen_src_overflow, 11'd0, (seen_src_wr - seen_src_rd)}; // seen_src status [cpmap:seen_src.status]
+              14'd130: r_rdata <= seen_src_cp_rd_data[31:0]; // seen_src data0 [cpmap:seen_src.data0]
+              14'd131: r_rdata <= {16'd0, seen_src_cp_rd_data[47:32]}; // seen_src data1 [cpmap:seen_src.data1]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

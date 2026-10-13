@@ -496,33 +496,33 @@ module load_balance_p4rtl_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_ecmp_group_cp_wr_idx <= s_axil_wdata[5:0]; // wr_idx
-              14'd1: r_ecmp_group_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
-              14'd2: r_ecmp_group_cp_wr_key_dstAddr <= s_axil_wdata[31:0]; // key_dstAddr
-              14'd3: r_ecmp_group_cp_wr_pfx_len <= s_axil_wdata[5:0]; // wr_pfx_len
-              14'd4: r_ecmp_group_cp_wr_p_ecmp_base <= s_axil_wdata[13:0]; // p_ecmp_base
-              14'd5: r_ecmp_group_cp_wr_p_ecmp_mask <= s_axil_wdata[15:0]; // p_ecmp_mask
-              14'd6: r_ecmp_group_cp_wr_en <= 1'b1; // ecmp_group commit
-              14'd64: r_ecmp_nhop_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd65: r_ecmp_nhop_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
-              14'd66: r_ecmp_nhop_cp_wr_key_ecmp_select <= s_axil_wdata[13:0]; // key_ecmp_select
-              14'd67: r_ecmp_nhop_cp_wr_p_nhop_dmac <= s_axil_wdata[31:0]; // p_nhop_dmac_w0
-              14'd68: r_ecmp_nhop_cp_wr_p_nhop_dmac[47:32] <= s_axil_wdata[15:0]; // p_nhop_dmac_w1
-              14'd69: r_ecmp_nhop_cp_wr_p_nhop_ipv4 <= s_axil_wdata[31:0]; // p_nhop_ipv4
-              14'd70: r_ecmp_nhop_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd71: r_ecmp_nhop_cp_wr_en <= 1'b1; // ecmp_nhop commit
-              14'd72: r_ecmp_nhop_cp_query_key_ecmp_select <= s_axil_wdata[13:0]; // query_key_ecmp_select
-              14'd73: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b0; end // ecmp_nhop query
-              14'd74: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b1; end // ecmp_nhop delete
-              14'd128: r_send_frame_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd129: r_send_frame_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
-              14'd130: r_send_frame_cp_wr_key_egress_port <= s_axil_wdata[8:0]; // key_egress_port
-              14'd131: r_send_frame_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac_w0
-              14'd132: r_send_frame_cp_wr_p_smac[47:32] <= s_axil_wdata[15:0]; // p_smac_w1
-              14'd133: r_send_frame_cp_wr_en <= 1'b1; // send_frame commit
-              14'd134: r_send_frame_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port
-              14'd135: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b0; end // send_frame query
-              14'd136: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b1; end // send_frame delete
+              14'd0: r_ecmp_group_cp_wr_idx <= s_axil_wdata[5:0]; // wr_idx [cpmap:ecmp_group.wr_idx]
+              14'd1: r_ecmp_group_cp_wr_action <= s_axil_wdata[1:0]; // wr_action [cpmap:ecmp_group.wr_action]
+              14'd2: r_ecmp_group_cp_wr_key_dstAddr <= s_axil_wdata[31:0]; // key_dstAddr [cpmap:ecmp_group.key_dstAddr]
+              14'd3: r_ecmp_group_cp_wr_pfx_len <= s_axil_wdata[5:0]; // wr_pfx_len [cpmap:ecmp_group.wr_pfx_len]
+              14'd4: r_ecmp_group_cp_wr_p_ecmp_base <= s_axil_wdata[13:0]; // p_ecmp_base [cpmap:ecmp_group.p_ecmp_base]
+              14'd5: r_ecmp_group_cp_wr_p_ecmp_mask <= s_axil_wdata[15:0]; // p_ecmp_mask [cpmap:ecmp_group.p_ecmp_mask]
+              14'd6: r_ecmp_group_cp_wr_en <= 1'b1; // ecmp_group commit [cpmap:ecmp_group.commit]
+              14'd64: r_ecmp_nhop_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:ecmp_nhop.wr_idx]
+              14'd65: r_ecmp_nhop_cp_wr_action <= s_axil_wdata[1:0]; // wr_action [cpmap:ecmp_nhop.wr_action]
+              14'd66: r_ecmp_nhop_cp_wr_key_ecmp_select <= s_axil_wdata[13:0]; // key_ecmp_select [cpmap:ecmp_nhop.key_ecmp_select]
+              14'd67: r_ecmp_nhop_cp_wr_p_nhop_dmac <= s_axil_wdata[31:0]; // p_nhop_dmac_w0 [cpmap:ecmp_nhop.p_nhop_dmac_w0]
+              14'd68: r_ecmp_nhop_cp_wr_p_nhop_dmac[47:32] <= s_axil_wdata[15:0]; // p_nhop_dmac_w1 [cpmap:ecmp_nhop.p_nhop_dmac_w1]
+              14'd69: r_ecmp_nhop_cp_wr_p_nhop_ipv4 <= s_axil_wdata[31:0]; // p_nhop_ipv4 [cpmap:ecmp_nhop.p_nhop_ipv4]
+              14'd70: r_ecmp_nhop_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port [cpmap:ecmp_nhop.p_port]
+              14'd71: r_ecmp_nhop_cp_wr_en <= 1'b1; // ecmp_nhop commit [cpmap:ecmp_nhop.commit]
+              14'd72: r_ecmp_nhop_cp_query_key_ecmp_select <= s_axil_wdata[13:0]; // query_key_ecmp_select [cpmap:ecmp_nhop.query_key_ecmp_select]
+              14'd73: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b0; end // ecmp_nhop query [cpmap:ecmp_nhop.query_commit]
+              14'd74: begin r_ecmp_nhop_cp_query_en <= 1'b1; r_ecmp_nhop_cp_query_del <= 1'b1; end // ecmp_nhop delete [cpmap:ecmp_nhop.delete_commit]
+              14'd128: r_send_frame_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:send_frame.wr_idx]
+              14'd129: r_send_frame_cp_wr_action <= s_axil_wdata[1:0]; // wr_action [cpmap:send_frame.wr_action]
+              14'd130: r_send_frame_cp_wr_key_egress_port <= s_axil_wdata[8:0]; // key_egress_port [cpmap:send_frame.key_egress_port]
+              14'd131: r_send_frame_cp_wr_p_smac <= s_axil_wdata[31:0]; // p_smac_w0 [cpmap:send_frame.p_smac_w0]
+              14'd132: r_send_frame_cp_wr_p_smac[47:32] <= s_axil_wdata[15:0]; // p_smac_w1 [cpmap:send_frame.p_smac_w1]
+              14'd133: r_send_frame_cp_wr_en <= 1'b1; // send_frame commit [cpmap:send_frame.commit]
+              14'd134: r_send_frame_cp_query_key_egress_port <= s_axil_wdata[8:0]; // query_key_egress_port [cpmap:send_frame.query_key_egress_port]
+              14'd135: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b0; end // send_frame query [cpmap:send_frame.query_commit]
+              14'd136: begin r_send_frame_cp_query_en <= 1'b1; r_send_frame_cp_query_del <= 1'b1; end // send_frame delete [cpmap:send_frame.delete_commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -558,16 +558,16 @@ module load_balance_p4rtl_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd75: r_rdata <= {30'd0, ecmp_nhop_cp_query_hit, ecmp_nhop_cp_query_busy}; // ecmp_nhop query_status
-              14'd76: r_rdata <= {30'd0, ecmp_nhop_cp_query_action_id}; // ecmp_nhop query_action_id
-              14'd77: r_rdata <= ecmp_nhop_cp_query_p_nhop_dmac; // ecmp_nhop query_p_nhop_dmac_w0
-              14'd78: r_rdata <= {16'd0, ecmp_nhop_cp_query_p_nhop_dmac[47:32]}; // ecmp_nhop query_p_nhop_dmac_w1
-              14'd79: r_rdata <= ecmp_nhop_cp_query_p_nhop_ipv4; // ecmp_nhop query_p_nhop_ipv4
-              14'd80: r_rdata <= {23'd0, ecmp_nhop_cp_query_p_port}; // ecmp_nhop query_p_port
-              14'd137: r_rdata <= {30'd0, send_frame_cp_query_hit, send_frame_cp_query_busy}; // send_frame query_status
-              14'd138: r_rdata <= {30'd0, send_frame_cp_query_action_id}; // send_frame query_action_id
-              14'd139: r_rdata <= send_frame_cp_query_p_smac; // send_frame query_p_smac_w0
-              14'd140: r_rdata <= {16'd0, send_frame_cp_query_p_smac[47:32]}; // send_frame query_p_smac_w1
+              14'd75: r_rdata <= {30'd0, ecmp_nhop_cp_query_hit, ecmp_nhop_cp_query_busy}; // ecmp_nhop query_status [cpmap:ecmp_nhop.query_status]
+              14'd76: r_rdata <= {30'd0, ecmp_nhop_cp_query_action_id}; // ecmp_nhop query_action_id [cpmap:ecmp_nhop.query_action_id]
+              14'd77: r_rdata <= ecmp_nhop_cp_query_p_nhop_dmac; // ecmp_nhop query_p_nhop_dmac_w0 [cpmap:ecmp_nhop.query_p_nhop_dmac_w0]
+              14'd78: r_rdata <= {16'd0, ecmp_nhop_cp_query_p_nhop_dmac[47:32]}; // ecmp_nhop query_p_nhop_dmac_w1 [cpmap:ecmp_nhop.query_p_nhop_dmac_w1]
+              14'd79: r_rdata <= ecmp_nhop_cp_query_p_nhop_ipv4; // ecmp_nhop query_p_nhop_ipv4 [cpmap:ecmp_nhop.query_p_nhop_ipv4]
+              14'd80: r_rdata <= {23'd0, ecmp_nhop_cp_query_p_port}; // ecmp_nhop query_p_port [cpmap:ecmp_nhop.query_p_port]
+              14'd137: r_rdata <= {30'd0, send_frame_cp_query_hit, send_frame_cp_query_busy}; // send_frame query_status [cpmap:send_frame.query_status]
+              14'd138: r_rdata <= {30'd0, send_frame_cp_query_action_id}; // send_frame query_action_id [cpmap:send_frame.query_action_id]
+              14'd139: r_rdata <= send_frame_cp_query_p_smac; // send_frame query_p_smac_w0 [cpmap:send_frame.query_p_smac_w0]
+              14'd140: r_rdata <= {16'd0, send_frame_cp_query_p_smac[47:32]}; // send_frame query_p_smac_w1 [cpmap:send_frame.query_p_smac_w1]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

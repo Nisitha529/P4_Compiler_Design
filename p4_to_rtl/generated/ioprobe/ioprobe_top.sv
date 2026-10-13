@@ -324,14 +324,14 @@ module ioprobe_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_port_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx
-              14'd1: r_port_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd2: r_port_fwd_cp_wr_key_ingress_port <= s_axil_wdata[8:0]; // key_ingress_port
-              14'd3: r_port_fwd_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd4: r_port_fwd_cp_wr_en <= 1'b1; // port_fwd commit
-              14'd5: r_port_fwd_cp_query_key_ingress_port <= s_axil_wdata[8:0]; // query_key_ingress_port
-              14'd6: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b0; end // port_fwd query
-              14'd7: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b1; end // port_fwd delete
+              14'd0: r_port_fwd_cp_wr_idx <= s_axil_wdata[3:0]; // wr_idx [cpmap:port_fwd.wr_idx]
+              14'd1: r_port_fwd_cp_wr_action <= s_axil_wdata[0:0]; // wr_action [cpmap:port_fwd.wr_action]
+              14'd2: r_port_fwd_cp_wr_key_ingress_port <= s_axil_wdata[8:0]; // key_ingress_port [cpmap:port_fwd.key_ingress_port]
+              14'd3: r_port_fwd_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port [cpmap:port_fwd.p_port]
+              14'd4: r_port_fwd_cp_wr_en <= 1'b1; // port_fwd commit [cpmap:port_fwd.commit]
+              14'd5: r_port_fwd_cp_query_key_ingress_port <= s_axil_wdata[8:0]; // query_key_ingress_port [cpmap:port_fwd.query_key_ingress_port]
+              14'd6: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b0; end // port_fwd query [cpmap:port_fwd.query_commit]
+              14'd7: begin r_port_fwd_cp_query_en <= 1'b1; r_port_fwd_cp_query_del <= 1'b1; end // port_fwd delete [cpmap:port_fwd.delete_commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -367,9 +367,9 @@ module ioprobe_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd8: r_rdata <= {30'd0, port_fwd_cp_query_hit, port_fwd_cp_query_busy}; // port_fwd query_status
-              14'd9: r_rdata <= {31'd0, port_fwd_cp_query_action_id}; // port_fwd query_action_id
-              14'd10: r_rdata <= {23'd0, port_fwd_cp_query_p_port}; // port_fwd query_p_port
+              14'd8: r_rdata <= {30'd0, port_fwd_cp_query_hit, port_fwd_cp_query_busy}; // port_fwd query_status [cpmap:port_fwd.query_status]
+              14'd9: r_rdata <= {31'd0, port_fwd_cp_query_action_id}; // port_fwd query_action_id [cpmap:port_fwd.query_action_id]
+              14'd10: r_rdata <= {23'd0, port_fwd_cp_query_p_port}; // port_fwd query_p_port [cpmap:port_fwd.query_p_port]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

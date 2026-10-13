@@ -1,0 +1,59 @@
+{
+  "app": "ioprobe",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": 250000000,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "port_fwd",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_ingress_port": 2,
+        "p_port": 3,
+        "commit": 4,
+        "query_key_ingress_port": 5,
+        "query_commit": 6,
+        "delete_commit": 7,
+        "query_status": 8,
+        "query_action_id": 9,
+        "query_p_port": 10
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "standard_metadata.ingress_port",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "fwd",
+          "params": [
+            {
+              "name": "port",
+              "width": 9
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [],
+  "registers": []
+}

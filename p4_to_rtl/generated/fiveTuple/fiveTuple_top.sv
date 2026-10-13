@@ -479,29 +479,29 @@ module fiveTuple_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_FiveTuple_cp_wr_idx <= s_axil_wdata[12:0]; // wr_idx
-              14'd1: r_FiveTuple_cp_wr_action <= s_axil_wdata[0:0]; // wr_action
-              14'd2: r_FiveTuple_cp_wr_key_src <= s_axil_wdata[31:0]; // key_src
-              14'd3: r_FiveTuple_cp_wr_key_dst <= s_axil_wdata[31:0]; // key_dst
-              14'd4: r_FiveTuple_cp_wr_key_protocol <= s_axil_wdata[7:0]; // key_protocol
-              14'd5: r_FiveTuple_cp_wr_key_table_key_sport <= s_axil_wdata[15:0]; // key_table_key_sport
-              14'd6: r_FiveTuple_cp_wr_key_table_key_dport <= s_axil_wdata[15:0]; // key_table_key_dport
-              14'd7: r_FiveTuple_cp_wr_p_counter_index <= s_axil_wdata[12:0]; // p_counter_index
-              14'd8: r_FiveTuple_cp_wr_p_pcp <= s_axil_wdata[2:0]; // p_pcp
-              14'd9: r_FiveTuple_cp_wr_p_cfi <= s_axil_wdata[0:0]; // p_cfi
-              14'd10: r_FiveTuple_cp_wr_p_vid <= s_axil_wdata[11:0]; // p_vid
-              14'd11: r_FiveTuple_cp_wr_en <= 1'b1; // FiveTuple commit
-              14'd12: r_FiveTuple_cp_query_key_src <= s_axil_wdata[31:0]; // query_key_src
-              14'd13: r_FiveTuple_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst
-              14'd14: r_FiveTuple_cp_query_key_protocol <= s_axil_wdata[7:0]; // query_key_protocol
-              14'd15: r_FiveTuple_cp_query_key_table_key_sport <= s_axil_wdata[15:0]; // query_key_table_key_sport
-              14'd16: r_FiveTuple_cp_query_key_table_key_dport <= s_axil_wdata[15:0]; // query_key_table_key_dport
-              14'd17: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b0; end // FiveTuple query
-              14'd18: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b1; end // FiveTuple delete
-              14'd64: r_PacketCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx
-              14'd65: r_PacketCounter_cp_query_en <= 1'b1; // PacketCounter query
-              14'd128: r_ByteCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx
-              14'd129: r_ByteCounter_cp_query_en <= 1'b1; // ByteCounter query
+              14'd0: r_FiveTuple_cp_wr_idx <= s_axil_wdata[12:0]; // wr_idx [cpmap:FiveTuple.wr_idx]
+              14'd1: r_FiveTuple_cp_wr_action <= s_axil_wdata[0:0]; // wr_action [cpmap:FiveTuple.wr_action]
+              14'd2: r_FiveTuple_cp_wr_key_src <= s_axil_wdata[31:0]; // key_src [cpmap:FiveTuple.key_src]
+              14'd3: r_FiveTuple_cp_wr_key_dst <= s_axil_wdata[31:0]; // key_dst [cpmap:FiveTuple.key_dst]
+              14'd4: r_FiveTuple_cp_wr_key_protocol <= s_axil_wdata[7:0]; // key_protocol [cpmap:FiveTuple.key_protocol]
+              14'd5: r_FiveTuple_cp_wr_key_table_key_sport <= s_axil_wdata[15:0]; // key_table_key_sport [cpmap:FiveTuple.key_table_key_sport]
+              14'd6: r_FiveTuple_cp_wr_key_table_key_dport <= s_axil_wdata[15:0]; // key_table_key_dport [cpmap:FiveTuple.key_table_key_dport]
+              14'd7: r_FiveTuple_cp_wr_p_counter_index <= s_axil_wdata[12:0]; // p_counter_index [cpmap:FiveTuple.p_counter_index]
+              14'd8: r_FiveTuple_cp_wr_p_pcp <= s_axil_wdata[2:0]; // p_pcp [cpmap:FiveTuple.p_pcp]
+              14'd9: r_FiveTuple_cp_wr_p_cfi <= s_axil_wdata[0:0]; // p_cfi [cpmap:FiveTuple.p_cfi]
+              14'd10: r_FiveTuple_cp_wr_p_vid <= s_axil_wdata[11:0]; // p_vid [cpmap:FiveTuple.p_vid]
+              14'd11: r_FiveTuple_cp_wr_en <= 1'b1; // FiveTuple commit [cpmap:FiveTuple.commit]
+              14'd12: r_FiveTuple_cp_query_key_src <= s_axil_wdata[31:0]; // query_key_src [cpmap:FiveTuple.query_key_src]
+              14'd13: r_FiveTuple_cp_query_key_dst <= s_axil_wdata[31:0]; // query_key_dst [cpmap:FiveTuple.query_key_dst]
+              14'd14: r_FiveTuple_cp_query_key_protocol <= s_axil_wdata[7:0]; // query_key_protocol [cpmap:FiveTuple.query_key_protocol]
+              14'd15: r_FiveTuple_cp_query_key_table_key_sport <= s_axil_wdata[15:0]; // query_key_table_key_sport [cpmap:FiveTuple.query_key_table_key_sport]
+              14'd16: r_FiveTuple_cp_query_key_table_key_dport <= s_axil_wdata[15:0]; // query_key_table_key_dport [cpmap:FiveTuple.query_key_table_key_dport]
+              14'd17: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b0; end // FiveTuple query [cpmap:FiveTuple.query_commit]
+              14'd18: begin r_FiveTuple_cp_query_en <= 1'b1; r_FiveTuple_cp_query_del <= 1'b1; end // FiveTuple delete [cpmap:FiveTuple.delete_commit]
+              14'd64: r_PacketCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx [cpmap:PacketCounter.query_idx]
+              14'd65: r_PacketCounter_cp_query_en <= 1'b1; // PacketCounter query [cpmap:PacketCounter.query_commit]
+              14'd128: r_ByteCounter_cp_query_idx <= s_axil_wdata[12:0]; // query_idx [cpmap:ByteCounter.query_idx]
+              14'd129: r_ByteCounter_cp_query_en <= 1'b1; // ByteCounter query [cpmap:ByteCounter.query_commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -537,18 +537,18 @@ module fiveTuple_top #(
         AXIL_R_IDLE: begin
           if (s_axil_arvalid) begin
             case (s_axil_araddr[AXIL_ADDR_W-1:2])  // word address
-              14'd19: r_rdata <= {30'd0, FiveTuple_cp_query_hit, FiveTuple_cp_query_busy}; // FiveTuple query_status
-              14'd20: r_rdata <= {31'd0, FiveTuple_cp_query_action_id}; // FiveTuple query_action_id
-              14'd21: r_rdata <= {19'd0, FiveTuple_cp_query_p_counter_index}; // FiveTuple query_p_counter_index
-              14'd22: r_rdata <= {29'd0, FiveTuple_cp_query_p_pcp}; // FiveTuple query_p_pcp
-              14'd23: r_rdata <= {31'd0, FiveTuple_cp_query_p_cfi}; // FiveTuple query_p_cfi
-              14'd24: r_rdata <= {20'd0, FiveTuple_cp_query_p_vid}; // FiveTuple query_p_vid
-              14'd66: r_rdata <= {31'd0, PacketCounter_cp_query_busy}; // PacketCounter query_status
-              14'd67: r_rdata <= PacketCounter_cp_query_pkt_value[31:0]; // PacketCounter value_pkt_lo
-              14'd68: r_rdata <= PacketCounter_cp_query_pkt_value[63:32]; // PacketCounter value_pkt_hi
-              14'd130: r_rdata <= {31'd0, ByteCounter_cp_query_busy}; // ByteCounter query_status
-              14'd131: r_rdata <= ByteCounter_cp_query_byte_value[31:0]; // ByteCounter value_byte_lo
-              14'd132: r_rdata <= ByteCounter_cp_query_byte_value[63:32]; // ByteCounter value_byte_hi
+              14'd19: r_rdata <= {30'd0, FiveTuple_cp_query_hit, FiveTuple_cp_query_busy}; // FiveTuple query_status [cpmap:FiveTuple.query_status]
+              14'd20: r_rdata <= {31'd0, FiveTuple_cp_query_action_id}; // FiveTuple query_action_id [cpmap:FiveTuple.query_action_id]
+              14'd21: r_rdata <= {19'd0, FiveTuple_cp_query_p_counter_index}; // FiveTuple query_p_counter_index [cpmap:FiveTuple.query_p_counter_index]
+              14'd22: r_rdata <= {29'd0, FiveTuple_cp_query_p_pcp}; // FiveTuple query_p_pcp [cpmap:FiveTuple.query_p_pcp]
+              14'd23: r_rdata <= {31'd0, FiveTuple_cp_query_p_cfi}; // FiveTuple query_p_cfi [cpmap:FiveTuple.query_p_cfi]
+              14'd24: r_rdata <= {20'd0, FiveTuple_cp_query_p_vid}; // FiveTuple query_p_vid [cpmap:FiveTuple.query_p_vid]
+              14'd66: r_rdata <= {31'd0, PacketCounter_cp_query_busy}; // PacketCounter query_status [cpmap:PacketCounter.query_status]
+              14'd67: r_rdata <= PacketCounter_cp_query_pkt_value[31:0]; // PacketCounter value_pkt_lo [cpmap:PacketCounter.value_pkt_lo]
+              14'd68: r_rdata <= PacketCounter_cp_query_pkt_value[63:32]; // PacketCounter value_pkt_hi [cpmap:PacketCounter.value_pkt_hi]
+              14'd130: r_rdata <= {31'd0, ByteCounter_cp_query_busy}; // ByteCounter query_status [cpmap:ByteCounter.query_status]
+              14'd131: r_rdata <= ByteCounter_cp_query_byte_value[31:0]; // ByteCounter value_byte_lo [cpmap:ByteCounter.value_byte_lo]
+              14'd132: r_rdata <= ByteCounter_cp_query_byte_value[63:32]; // ByteCounter value_byte_hi [cpmap:ByteCounter.value_byte_hi]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;

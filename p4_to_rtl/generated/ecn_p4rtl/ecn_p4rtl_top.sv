@@ -403,14 +403,14 @@ module ecn_p4rtl_top #(
         AXIL_WDATA: begin
           if (s_axil_wvalid && s_axil_wready) begin
             case (axil_awaddr_r[AXIL_ADDR_W-1:2])  // word address
-              14'd0: r_ipv4_lpm_cp_wr_idx <= s_axil_wdata[5:0]; // wr_idx
-              14'd1: r_ipv4_lpm_cp_wr_action <= s_axil_wdata[1:0]; // wr_action
-              14'd2: r_ipv4_lpm_cp_wr_key_dstAddr <= s_axil_wdata[31:0]; // key_dstAddr
-              14'd3: r_ipv4_lpm_cp_wr_pfx_len <= s_axil_wdata[5:0]; // wr_pfx_len
-              14'd4: r_ipv4_lpm_cp_wr_p_dstAddr <= s_axil_wdata[31:0]; // p_dstAddr_w0
-              14'd5: r_ipv4_lpm_cp_wr_p_dstAddr[47:32] <= s_axil_wdata[15:0]; // p_dstAddr_w1
-              14'd6: r_ipv4_lpm_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port
-              14'd7: r_ipv4_lpm_cp_wr_en <= 1'b1; // ipv4_lpm commit
+              14'd0: r_ipv4_lpm_cp_wr_idx <= s_axil_wdata[5:0]; // wr_idx [cpmap:ipv4_lpm.wr_idx]
+              14'd1: r_ipv4_lpm_cp_wr_action <= s_axil_wdata[1:0]; // wr_action [cpmap:ipv4_lpm.wr_action]
+              14'd2: r_ipv4_lpm_cp_wr_key_dstAddr <= s_axil_wdata[31:0]; // key_dstAddr [cpmap:ipv4_lpm.key_dstAddr]
+              14'd3: r_ipv4_lpm_cp_wr_pfx_len <= s_axil_wdata[5:0]; // wr_pfx_len [cpmap:ipv4_lpm.wr_pfx_len]
+              14'd4: r_ipv4_lpm_cp_wr_p_dstAddr <= s_axil_wdata[31:0]; // p_dstAddr_w0 [cpmap:ipv4_lpm.p_dstAddr_w0]
+              14'd5: r_ipv4_lpm_cp_wr_p_dstAddr[47:32] <= s_axil_wdata[15:0]; // p_dstAddr_w1 [cpmap:ipv4_lpm.p_dstAddr_w1]
+              14'd6: r_ipv4_lpm_cp_wr_p_port <= s_axil_wdata[8:0]; // p_port [cpmap:ipv4_lpm.p_port]
+              14'd7: r_ipv4_lpm_cp_wr_en <= 1'b1; // ipv4_lpm commit [cpmap:ipv4_lpm.commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;

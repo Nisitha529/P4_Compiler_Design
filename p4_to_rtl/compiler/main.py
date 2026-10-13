@@ -320,7 +320,8 @@ def debug_ir(ir):
 
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
                   axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
-                  register_ram=False, nslot=4, tm_qlimit=None, fe_stage_depth=8):
+                  register_ram=False, nslot=4, tm_qlimit=None, fe_stage_depth=8,
+                  cp_map=False, clock_hz=None):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -503,8 +504,13 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
 
     if frontend == 'p4test':
         print("[INFO] Generating top-level RTL (AXI4-Stream + AXI4-Lite)...")
+        _cp_map_path = (os.path.join(out_dir, f'{app_name}_cp_map.json')
+                        if cp_map else None)
         emit_top(ir, app_name, out_top, axi_data_width=axi_data_width, board=board, nslot=nslot,
-                 tm_qlimit=tm_qlimit, fe_stage_depth=fe_stage_depth)
+                 tm_qlimit=tm_qlimit, fe_stage_depth=fe_stage_depth,
+                 cp_map_path=_cp_map_path, clock_hz=clock_hz)
+        if _cp_map_path:
+            print(f"[SUCCESS] Control-plane map -> {_cp_map_path}")
         print(f"[SUCCESS] Top-level RTL    -> {out_top}")
         # The top's payload path is pkt_beat_buf (emit_fifo.py); it is a
         # generic module emitted next to the top so every XSA app carries its
@@ -669,6 +675,22 @@ def main():
               "pipeline latency at the cost of NSLOT x header-region registers."),
     )
     parser.add_argument(
+        "--cp-map", action="store_true",
+        help=("Also write generated/<app>/<app>_cp_map.json: the control-plane "
+              "register map as data (tables, keys, actions, parameter widths, "
+              "word offsets, extern windows, FeatureExport record field "
+              "positions, Register RAW distances). Host software and anything "
+              "generating table entries needs this; the SystemVerilog case "
+              "labels are not readable by either."),
+    )
+    parser.add_argument(
+        "--clock-hz", type=int, default=None, metavar="HZ",
+        help=("Pipeline clock frequency, recorded in the cp_map. "
+              "ingress_timestamp counts CLOCK CYCLES, so anything comparing "
+              "hardware inter-arrival times with times computed off-line has to "
+              "agree on this. Omitted rather than guessed if not given."),
+    )
+    parser.add_argument(
         "--fe-stage-depth", type=int, default=8, metavar="N",
         help=("FeatureExport staging FIFO depth, in records (default 8). This is "
               "the only buffering the compiler owns, and it exists so the stream "
@@ -785,6 +807,8 @@ def main():
         register_ram=args.register_ram,
         nslot=args.nslot,
         fe_stage_depth=args.fe_stage_depth,
+        cp_map=args.cp_map,
+        clock_hz=args.clock_hz,
         tm_qlimit=args.tm_qlimit,
     )
 

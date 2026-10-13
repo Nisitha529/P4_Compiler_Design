@@ -1,0 +1,125 @@
+{
+  "app": "egprobe",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": 250000000,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "l2",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_etype": 2,
+        "p_port": 3,
+        "commit": 4,
+        "query_key_etype": 5,
+        "query_commit": 6,
+        "delete_commit": 7,
+        "query_status": 8,
+        "query_action_id": 9,
+        "query_p_port": 10
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "hdr.eth.etype",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "fwd",
+          "params": [
+            {
+              "name": "port",
+              "width": 9
+            }
+          ]
+        },
+        {
+          "name": "drop_pkt",
+          "params": []
+        },
+        {
+          "name": "retag",
+          "params": []
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    },
+    {
+      "name": "port_smac",
+      "stage": "egress",
+      "base": "0x0100",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 64,
+        "wr_action": 65,
+        "key_egress_port": 66,
+        "p_smac_w0": 67,
+        "p_smac_w1": 68,
+        "commit": 69,
+        "query_key_egress_port": 70,
+        "query_commit": 71,
+        "delete_commit": 72,
+        "query_status": 73,
+        "query_action_id": 74,
+        "query_p_smac_w0": 75,
+        "query_p_smac_w1": 76
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "standard_metadata.egress_port",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_smac",
+          "params": [
+            {
+              "name": "smac",
+              "width": 48
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [
+    {
+      "name": "tx_pkts",
+      "stage": "egress",
+      "base": "0x0200",
+      "has_packets": true,
+      "has_bytes": false,
+      "words": {
+        "query_idx": 128,
+        "query_commit": 129,
+        "query_status": 130,
+        "value_pkt_lo": 131,
+        "value_pkt_hi": 132
+      }
+    }
+  ],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [],
+  "registers": []
+}

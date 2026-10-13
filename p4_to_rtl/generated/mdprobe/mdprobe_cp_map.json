@@ -1,0 +1,85 @@
+{
+  "app": "mdprobe",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": 250000000,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "fwd",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_dst_w0": 2,
+        "key_dst_w1": 3,
+        "p_p": 4,
+        "commit": 5,
+        "query_key_dst_w0": 6,
+        "query_key_dst_w1": 7,
+        "query_commit": 8,
+        "delete_commit": 9,
+        "query_status": 10,
+        "query_action_id": 11,
+        "query_p_p": 12
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "hdr.eth.dst",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "pass_through",
+          "params": [
+            {
+              "name": "p",
+              "width": 9
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [],
+  "meters": [
+    {
+      "name": "rate_limit",
+      "stage": "ingress",
+      "base": "0x0100",
+      "words": {
+        "rate_shift": 64,
+        "burst": 65
+      },
+      "note": "rate_shift and burst are per INSTANCE, not per index; one allowance unit returns every 2^rate_shift cycles, charged one unit per packet"
+    }
+  ],
+  "digests": [
+    {
+      "name": "seen_src",
+      "stage": "ingress",
+      "base": "0x0200",
+      "width": 48,
+      "words": {
+        "commit": 128,
+        "status": 129,
+        "data0": 130,
+        "data1": 131
+      }
+    }
+  ],
+  "feature_exports": [],
+  "registers": []
+}

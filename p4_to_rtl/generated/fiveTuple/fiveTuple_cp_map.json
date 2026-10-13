@@ -1,0 +1,130 @@
+{
+  "app": "fiveTuple",
+  "compiler_git": "6c501b7",
+  "axi_data_width": 256,
+  "clock_hz": null,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "FiveTuple",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_src": 2,
+        "key_dst": 3,
+        "key_protocol": 4,
+        "key_table_key_sport": 5,
+        "key_table_key_dport": 6,
+        "p_counter_index": 7,
+        "p_pcp": 8,
+        "p_cfi": 9,
+        "p_vid": 10,
+        "commit": 11,
+        "query_key_src": 12,
+        "query_key_dst": 13,
+        "query_key_protocol": 14,
+        "query_key_table_key_sport": 15,
+        "query_key_table_key_dport": 16,
+        "query_commit": 17,
+        "delete_commit": 18,
+        "query_status": 19,
+        "query_action_id": 20,
+        "query_p_counter_index": 21,
+        "query_p_pcp": 22,
+        "query_p_cfi": 23,
+        "query_p_vid": 24
+      },
+      "size": 8192,
+      "keys": [
+        {
+          "field": "hdr.ipv4.src",
+          "match": "exact"
+        },
+        {
+          "field": "hdr.ipv4.dst",
+          "match": "exact"
+        },
+        {
+          "field": "hdr.ipv4.protocol",
+          "match": "exact"
+        },
+        {
+          "field": "table_key_sport",
+          "match": "exact"
+        },
+        {
+          "field": "table_key_dport",
+          "match": "exact"
+        }
+      ],
+      "actions": [
+        {
+          "name": "InsertVLAN",
+          "params": [
+            {
+              "name": "counter_index",
+              "width": 13
+            },
+            {
+              "name": "pcp",
+              "width": 3
+            },
+            {
+              "name": "cfi",
+              "width": 1
+            },
+            {
+              "name": "vid",
+              "width": 12
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "counters": [
+    {
+      "name": "PacketCounter",
+      "stage": "ingress",
+      "base": "0x0100",
+      "has_packets": true,
+      "has_bytes": false,
+      "words": {
+        "query_idx": 64,
+        "query_commit": 65,
+        "query_status": 66,
+        "value_pkt_lo": 67,
+        "value_pkt_hi": 68
+      }
+    },
+    {
+      "name": "ByteCounter",
+      "stage": "ingress",
+      "base": "0x0200",
+      "has_packets": false,
+      "has_bytes": true,
+      "words": {
+        "query_idx": 128,
+        "query_commit": 129,
+        "query_status": 130,
+        "value_byte_lo": 131,
+        "value_byte_hi": 132
+      }
+    }
+  ],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [],
+  "registers": []
+}
