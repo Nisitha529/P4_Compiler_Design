@@ -29,7 +29,12 @@ def _git_rev(repo_root):
     compiler that made it. None (not a guess) when this is not a git checkout.
     """
     try:
-        out = subprocess.run(['git', '-C', repo_root, 'rev-parse', '--short', 'HEAD'],
+        # --dirty matters: a map generated from uncommitted work would
+        # otherwise record the last commit's hash, which does NOT contain the
+        # compiler that produced it. "8004ded-dirty" is honest; "8004ded" is a
+        # lie that only shows up when someone tries to reproduce the build.
+        out = subprocess.run(['git', '-C', repo_root, 'describe',
+                              '--always', '--dirty'],
                              capture_output=True, text=True, timeout=5)
         return out.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):

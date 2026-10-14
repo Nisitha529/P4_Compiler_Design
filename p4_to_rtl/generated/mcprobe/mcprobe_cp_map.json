@@ -1,6 +1,6 @@
 {
   "app": "mcprobe",
-  "compiler_git": "8004ded",
+  "compiler_git": "e7d6147-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {
@@ -35,8 +35,12 @@
           "field": "hdr.eth.etype",
           "match": "exact",
           "width": 16,
-          "word": 2,
-          "query_word": 6
+          "words": [
+            2
+          ],
+          "query_words": [
+            6
+          ]
         }
       ],
       "actions": [
@@ -47,7 +51,9 @@
             {
               "name": "port",
               "width": 9,
-              "word": 3
+              "words": [
+                3
+              ]
             }
           ]
         },
@@ -58,7 +64,9 @@
             {
               "name": "grp",
               "width": 16,
-              "word": 4
+              "words": [
+                4
+              ]
             }
           ]
         },
@@ -103,8 +111,12 @@
           "field": "standard_metadata.egress_port",
           "match": "exact",
           "width": 9,
-          "word": 66,
-          "query_word": 70
+          "words": [
+            66
+          ],
+          "query_words": [
+            70
+          ]
         }
       ],
       "actions": [
@@ -115,7 +127,10 @@
             {
               "name": "smac",
               "width": 48,
-              "word": null
+              "words": [
+                67,
+                68
+              ]
             }
           ]
         },

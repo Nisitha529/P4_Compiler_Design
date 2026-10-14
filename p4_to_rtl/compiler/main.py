@@ -389,6 +389,29 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     # all, so its output must stay byte-identical regardless of table shape.
     enable_query = (frontend == 'p4test')
 
+    # ── Argument checks that must hold however run_compiler was reached ──────
+    # These used to live in main() only, so a direct run_compiler() call (the
+    # regression scripts, any future driver) skipped them entirely.
+    if fe_stage_depth < 2 or (fe_stage_depth & (fe_stage_depth - 1)):
+        raise ValueError(
+            f"fe_stage_depth must be a power of 2 and >= 2 (got {fe_stage_depth}): "
+            f"the FeatureExport staging ring is indexed by the low bits of its "
+            f"pointers, so any other depth addresses entries that do not exist.")
+    if ways > 1 and frontend == 'p4test':
+        # The d-way associative exact-match table has no cp_query/cp_delete
+        # ports, but the shell wires them unconditionally -- emit_top.py does
+        # not thread --exact-match-ways at all (see the note at its
+        # _build_axil_regmap). The result compiled nothing: "port
+        # fwd_cp_query_key_etype is not a port of u_proc". Exiting 0 with RTL
+        # that cannot elaborate is the worst outcome, so refuse instead.
+        raise ValueError(
+            f"--exact-match-ways={ways} is not supported for {arch}.p4 programs "
+            f"(the p4test path). The shell always wires each table's "
+            f"control-plane query/delete ports, and the {ways}-way associative "
+            f"table does not have them, so the generated top level would not "
+            f"elaborate. Use ways=1 here; the d-way variant is reachable only "
+            f"from the module-level (v1model) path today.")
+
     if frontend == 'p4test':
         print("[INFO] Running p4test MidEnd front-end...")
         midend_text = _run_p4c_frontend(p4_path, p4test_bin)

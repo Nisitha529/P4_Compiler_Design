@@ -1,6 +1,6 @@
 {
   "app": "ioprobe",
-  "compiler_git": "8004ded",
+  "compiler_git": "e7d6147-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {
@@ -33,8 +33,12 @@
           "field": "standard_metadata.ingress_port",
           "match": "exact",
           "width": 9,
-          "word": 2,
-          "query_word": 5
+          "words": [
+            2
+          ],
+          "query_words": [
+            5
+          ]
         }
       ],
       "actions": [
@@ -45,7 +49,9 @@
             {
               "name": "port",
               "width": 9,
-              "word": 3
+              "words": [
+                3
+              ]
             }
           ]
         },

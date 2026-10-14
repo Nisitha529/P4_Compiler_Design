@@ -1,6 +1,6 @@
 {
   "app": "fiveTuple",
-  "compiler_git": "8004ded",
+  "compiler_git": "e7d6147-dirty",
   "axi_data_width": 256,
   "clock_hz": null,
   "axil": {
@@ -47,36 +47,56 @@
           "field": "hdr.ipv4.src",
           "match": "exact",
           "width": 32,
-          "word": 2,
-          "query_word": 12
+          "words": [
+            2
+          ],
+          "query_words": [
+            12
+          ]
         },
         {
           "field": "hdr.ipv4.dst",
           "match": "exact",
           "width": 32,
-          "word": 3,
-          "query_word": 13
+          "words": [
+            3
+          ],
+          "query_words": [
+            13
+          ]
         },
         {
           "field": "hdr.ipv4.protocol",
           "match": "exact",
           "width": 8,
-          "word": 4,
-          "query_word": 14
+          "words": [
+            4
+          ],
+          "query_words": [
+            14
+          ]
         },
         {
           "field": "table_key_sport",
           "match": "exact",
           "width": 16,
-          "word": 5,
-          "query_word": 15
+          "words": [
+            5
+          ],
+          "query_words": [
+            15
+          ]
         },
         {
           "field": "table_key_dport",
           "match": "exact",
           "width": 16,
-          "word": 6,
-          "query_word": 16
+          "words": [
+            6
+          ],
+          "query_words": [
+            16
+          ]
         }
       ],
       "actions": [
@@ -87,22 +107,30 @@
             {
               "name": "counter_index",
               "width": 13,
-              "word": 7
+              "words": [
+                7
+              ]
             },
             {
               "name": "pcp",
               "width": 3,
-              "word": 8
+              "words": [
+                8
+              ]
             },
             {
               "name": "cfi",
               "width": 1,
-              "word": 9
+              "words": [
+                9
+              ]
             },
             {
               "name": "vid",
               "width": 12,
-              "word": 10
+              "words": [
+                10
+              ]
             }
           ]
         },

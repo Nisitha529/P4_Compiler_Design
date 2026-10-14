@@ -95,6 +95,18 @@ for app in "${apps[@]}"; do
     echo
   done
 done
+# The Register RAW distance, in BOTH register modes. The loop above runs each
+# app once, in whatever mode it was last generated in, so --register-ram was
+# never covered -- and that is exactly where the reported number was wrong.
+if [ -x "$R/scripts/check_raw_distance.sh" ]; then
+  if ! "$R/scripts/check_raw_distance.sh" > "$O/raw_distance.log" 2>&1; then
+    echo "-----"; echo "RAW-DISTANCE MISMATCH:"; sed 's/^/  /' "$O/raw_distance.log"
+    bad="$bad raw_distance"
+  else
+    echo "-----"; sed 's/^/raw_distance: /' "$O/raw_distance.log"
+  fi
+fi
+
 # Any <app>_cp_map.json in the tree is checked against its decoder. The map's
 # whole value is that host software can trust it, so a drift between the two has
 # to fail here rather than on hardware. Silent when no map has been generated.

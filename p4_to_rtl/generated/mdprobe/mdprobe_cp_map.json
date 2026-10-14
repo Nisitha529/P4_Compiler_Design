@@ -1,6 +1,6 @@
 {
   "app": "mdprobe",
-  "compiler_git": "8004ded",
+  "compiler_git": "e7d6147-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {
@@ -35,8 +35,14 @@
           "field": "hdr.eth.dst",
           "match": "exact",
           "width": 48,
-          "word": null,
-          "query_word": null
+          "words": [
+            2,
+            3
+          ],
+          "query_words": [
+            6,
+            7
+          ]
         }
       ],
       "actions": [
@@ -47,7 +53,9 @@
             {
               "name": "p",
               "width": 9,
-              "word": 4
+              "words": [
+                4
+              ]
             }
           ]
         },

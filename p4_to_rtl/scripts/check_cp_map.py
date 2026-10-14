@@ -52,8 +52,13 @@ def words_from_map(doc):
     return out
 
 
-# e.g.  2'd1: begin // set_port
-ACTION = r"\d+'d(\d+)\s*:\s*begin\s*//\s*{}\b"
+# An action case arm, with OR without a body:
+#   2'd1: begin // set_port
+#   2'd0: ;     // NoAction
+ACTION = r"\d+'d(\d+)\s*:\s*(?:begin|;)\s*//\s*{}\b"
+# One table's apply block, so an action name shared by two tables with
+# different ids is looked up in the right one.
+APPLY = r"//\s*{}\.apply\(\)(.*?)endcase"
 
 
 def action_ids_from_rtl(app):
@@ -82,8 +87,19 @@ def check_actions(app, doc, text):
                     problems.append(f"{t['name']}.NoAction: map id {a.get('id')}, "
                                     f"the hardware always uses 0")
                 continue
-            m = re.search(ACTION.format(re.escape(a['name'])), text)
-            if m and int(m.group(1)) != a.get('id'):
+            # Search inside THIS table's apply block where possible. Scanning
+            # the whole file finds the first case label with that comment
+            # anywhere, which is the wrong answer as soon as two tables share
+            # an action name with different ids.
+            scope = text
+            ms = re.search(APPLY.format(re.escape(t['name'])), text, re.S)
+            if ms:
+                scope = ms.group(1)
+            m = re.search(ACTION.format(re.escape(a['name'])), scope)
+            if m is None:
+                problems.append(f"{t['name']}.{a['name']}: no case label found "
+                                f"in the RTL (map id {a.get('id')})")
+            elif int(m.group(1)) != a.get('id'):
                 problems.append(f"{t['name']}.{a['name']}: map id {a.get('id')}, "
                                 f"RTL case label {m.group(1)}")
     return problems
