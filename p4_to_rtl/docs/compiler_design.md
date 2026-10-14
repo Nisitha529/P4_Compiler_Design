@@ -181,8 +181,8 @@ so `p4rtl.p4` is the project-owned architecture that fixes those. See
 | `ingress_timestamp` | 64 | shell, at **start of packet** | either | free-running cycle counter |
 | `parsed_bytes` | 16 | shell, at issue | either | bytes consumed by `extract()` |
 | `parser_error` | — | shell, from `verify()` | either | `error` enum, width from the program |
-| `enq_qdepth` | 19 | traffic manager, at enqueue | egress | 0 in ingress — not queued yet |
-| `deq_qdepth` | 19 | traffic manager, at dequeue | egress | 0 in ingress |
+| `enq_qdepth` | 19 | traffic manager, at enqueue | egress | 0 in ingress — not queued yet. Packets **already** in that queue; does not count itself |
+| `deq_qdepth` | 19 | traffic manager, at dequeue | egress | 0 in ingress. Depth of that queue on the dequeue cycle; **does** count itself, so it is never 0 for a dequeued packet |
 | `drop` | 1 | pipeline | shell | **sticky** across ingress→egress |
 | `egress_port` | 9 | ingress | egress, shell sideband | selects the TM queue |
 | `mcast_group` | 16 | ingress | shell | 0 = unicast; else replicate |
@@ -305,6 +305,24 @@ Key ideas, each of which exists for a measured reason:
   scheduler, `enq_qdepth`/`deq_qdepth`, optional tail drop (`--tm-qlimit`), and
   multicast replication. Dequeue is deliberately throttled (`TM_INFLIGHT`) —
   otherwise nothing ever waits in a queue and the scheduler has no choice to make.
+- **How deep a queue can actually get.** A packet holds a slot from arrival
+  until TX retires it, so at most `NSLOT` packets exist at once, and
+  `TM_INFLIGHT` of them are past the scheduler. The deepest a single queue can
+  therefore read is **`NSLOT - TM_INFLIGHT`** — 2 at the default `--nslot 4`,
+  6 at `--nslot 8`. A program that wants to see real congestion numbers needs
+  the deeper ring; a program that reacts to depth 1 is reacting to nothing.
+  The depth is **per queue**, not a global occupancy: the same burst split over
+  two output ports halves it. Measured by `qdprobe`
+  (`scripts/check_tm_qdepth.sh`), which exports both depths per packet and
+  checks the drain shape — one dequeue per packet, depth falling by exactly one.
+- **What `--tm-qlimit` does and does not do.** Enqueueing into a queue already
+  at the limit **marks that packet dropped**: egress side effects are
+  suppressed and TX discards its bytes. It does **not** cap occupancy — the
+  packet is still enqueued and still holds its place until TX retires it, so
+  the depth keeps climbing to `NSLOT - TM_INFLIGHT` as before. The slot has to
+  be released by walking the pipeline, which is the price of a ring with no
+  separate free path. Pinned in `verification/tm_qlimit/tb_qdprobe_limit.sv`,
+  including the part that is a limitation rather than a feature.
 - **Egress runs after the TM**, fed from the slot. That is what lets each
   multicast copy have its own `egress_port` and its own per-port rewrites.
 - **Order.** Within a queue, arrival order. Across queues, the scheduler's order —
@@ -379,13 +397,26 @@ fits.
 3. **Top-level tests** — real AXI frames through the whole shell. This is where
    the interesting bugs were. `fiveTuple` 28, `load_balance_xsa_top` 22,
    `load_balance_p4rtl_top` 22, `egprobe` 26, `ioprobe` 18, `mcprobe` 15,
-   `egprobe_tm` 10, `lmprobe` 10, `ecn_p4rtl` 9, plus the streaming harness.
+   `egprobe_tm` 10, `lmprobe` 10, `ecn_p4rtl` 9, `qdprobe` 16, plus the
+   streaming harness.
 
 **The probe apps are a deliberate technique.** `smprobe`, `regprobe`, `ueprobe`,
-`egprobe`, `ioprobe`, `lmprobe`, `ecn_p4rtl`, `mcprobe` are small P4 programs
-whose only job is to make one shell feature observable from the AXI interface.
-When you add a feature, add a probe: it is much easier to debug than a real app
-and it becomes a permanent regression.
+`egprobe`, `ioprobe`, `lmprobe`, `ecn_p4rtl`, `mcprobe`, `mdprobe`, `feprobe`,
+`egfeprobe`, `rawprobe`, `qdprobe` are small P4 programs whose only job is to
+make one shell feature observable from the AXI interface. When you add a
+feature, add a probe: it is much easier to debug than a real app and it becomes
+a permanent regression.
+
+Three of them answer questions that depend on **generator flags**, so a
+testbench alone cannot cover them — the regression runs each app in whichever
+mode it was last built in. Those have a driving script instead, each called
+from `scripts/regress.sh`:
+
+| script | what it regenerates, and why a testbench could not |
+|---|---|
+| `check_raw_distance.sh` | `rawprobe` in both register modes — the synchronous read is one packet further apart, and only the default mode was ever covered |
+| `check_tm_qdepth.sh` | `qdprobe` at `--nslot 8` (a queue can only reach `NSLOT - TM_INFLIGHT`, so the default ring could never show a depth above 2) and again with `--tm-qlimit 3` (whose `tm_tail_drops` does not exist without the flag) |
+| `check_cp_map.py` | not a regeneration — cross-checks every `<app>_cp_map.json` against its own decoder |
 
 **What the testbenches are careful about,** because each of these cost real
 debugging time:

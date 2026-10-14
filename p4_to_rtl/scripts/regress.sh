@@ -107,6 +107,20 @@ if [ -x "$R/scripts/check_raw_distance.sh" ]; then
   fi
 fi
 
+# The traffic manager's queue depth, which only means something when a queue
+# is deeper than one packet -- and that depends on how the app was GENERATED
+# (--nslot), not on which testbench runs. Same reason as above: the loop runs
+# each app in one mode. Also covers --tm-qlimit, whose testbench cannot live in
+# generated/ because tm_tail_drops does not exist without the flag.
+if [ -x "$R/scripts/check_tm_qdepth.sh" ]; then
+  if ! "$R/scripts/check_tm_qdepth.sh" > "$O/tm_qdepth.log" 2>&1; then
+    echo "-----"; echo "TRAFFIC-MANAGER QUEUE DEPTH:"; sed 's/^/  /' "$O/tm_qdepth.log"
+    bad="$bad tm_qdepth"
+  else
+    echo "-----"; sed 's/^/tm_qdepth: /' "$O/tm_qdepth.log"
+  fi
+fi
+
 # Any <app>_cp_map.json in the tree is checked against its decoder. The map's
 # whole value is that host software can trust it, so a drift between the two has
 # to fail here rather than on hardware. Silent when no map has been generated.

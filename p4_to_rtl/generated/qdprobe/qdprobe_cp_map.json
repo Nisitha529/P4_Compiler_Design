@@ -1,0 +1,114 @@
+{
+  "app": "qdprobe",
+  "compiler_git": "28872dd-dirty",
+  "axi_data_width": 256,
+  "clock_hz": null,
+  "axil": {
+    "addr_w": 16,
+    "data_w": 32,
+    "window_bytes": 256
+  },
+  "tables": [
+    {
+      "name": "fwd",
+      "stage": "ingress",
+      "base": "0x0000",
+      "supports_query": true,
+      "words": {
+        "wr_idx": 0,
+        "wr_action": 1,
+        "key_etype": 2,
+        "p_p": 3,
+        "commit": 4,
+        "query_key_etype": 5,
+        "query_commit": 6,
+        "delete_commit": 7,
+        "query_status": 8,
+        "query_action_id": 9,
+        "query_p_p": 10
+      },
+      "size": 16,
+      "keys": [
+        {
+          "field": "hdr.eth.etype",
+          "match": "exact",
+          "width": 16,
+          "words": [
+            2
+          ],
+          "query_words": [
+            5
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "name": "set_port",
+          "id": 1,
+          "params": [
+            {
+              "name": "p",
+              "width": 9,
+              "words": [
+                3
+              ]
+            }
+          ]
+        },
+        {
+          "name": "NoAction",
+          "id": 0,
+          "params": []
+        }
+      ],
+      "addressing": {
+        "scheme": "hash",
+        "hash": "xor-fold",
+        "ways": 1,
+        "index_bits": 4,
+        "key_bits": 16,
+        "note": "the slot is chosen by XOR-folding the concatenated key down to index_bits; wr_idx is NOT used. With ways=1 two keys that fold to the same index overwrite each other, so a writer must check for collisions itself."
+      }
+    }
+  ],
+  "counters": [],
+  "meters": [],
+  "digests": [],
+  "feature_exports": [
+    {
+      "name": "qd_feed",
+      "stage": "egress",
+      "base": "0x0100",
+      "width": 32,
+      "tdata_width": 32,
+      "stage_depth": 8,
+      "enable_reset": 1,
+      "fields": [
+        {
+          "name": "enq_qdepth",
+          "lsb": 24,
+          "width": 8
+        },
+        {
+          "name": "deq_qdepth",
+          "lsb": 16,
+          "width": 8
+        },
+        {
+          "name": "eth_dst_15_0",
+          "lsb": 0,
+          "width": 16
+        }
+      ],
+      "words": {
+        "enable": 64,
+        "commit": 65,
+        "pushed": 66,
+        "dropped": 67,
+        "status": 68
+      },
+      "note": "records leave by the AXI4-Stream port <name>_t*, not over AXI4-Lite; these words are statistics only"
+    }
+  ],
+  "registers": []
+}

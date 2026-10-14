@@ -7,8 +7,10 @@
 //       (the shell drives it on deq_fire with the sticky drop in drop_in), and
 //       the egress Counter gates itself on !drop_in while a push() does not.
 //       This measures what actually happens and pins it.
-//   G3  deq_qdepth in the record is non-zero when the traffic manager is
-//       holding packets -- the reason to export from egress at all
+//   G3  deq_qdepth in the record is the real queue depth (2, with this app's
+//       NSLOT=4) when the traffic manager is holding packets -- the reason to
+//       export from egress at all. The depth arithmetic in general is
+//       qdprobe's job, not this probe's.
 //   G4  the consumer stalling still does not stall the packet path
 //
 // Record: [31:16] deq_qdepth   [15:0] eth.dst[15:0]
@@ -191,13 +193,17 @@ module tb_egfeprobe_top;
     // value -- that is the FeatureExport question. It does NOT check the depth
     // semantics themselves.
     //
-    // Holding m_axis_tready low backs up the TX path, not the TM queue, so the
-    // depth stays at 1 however many packets are in flight; congesting the TM
-    // itself needs the dequeue to run slower than the enqueue. Worth stating
-    // plainly: NO testbench in the tree currently forces a queue depth above 1
-    // and asserts on it (ecn_p4rtl only mentions qdepth in a comment), so the
-    // depth arithmetic above 1 is an open gap in the traffic manager's
-    // coverage, not something this probe quietly dropped.
+    // Holding m_axis_tready low DOES back the TM queue up: TM_INFLIGHT=2
+    // packets get past the scheduler and every one after that waits in its
+    // queue. An earlier version of this test sent three packets and saw a
+    // depth of 1 -- not because the depth cannot exceed 1, but because two of
+    // the three never queued. A full slot ring (NSLOT=4) leaves two waiting
+    // and the depth reaches 2.
+    // This group only checks that deq_qdepth REACHES THE RECORD with the right
+    // value, which is the FeatureExport question. The depth arithmetic itself
+    // -- the drain shape, and that the count is per queue rather than global --
+    // needs a deeper ring than this app is built with, and is covered by
+    // qdprobe (scripts/check_tm_qdepth.sh, generated at --nslot 8).
     $display("\n== G3: deq_qdepth reaches the record with a plausible value ==");
     recs.delete(); out_pkts = 0; max_qd = 0;
     // Only as many packets as the slot ring holds (NSLOT=4), and the release is
@@ -211,7 +217,7 @@ module tb_egfeprobe_top;
         @(negedge clk); m_axis_tready = 1'b1;
       end
       begin : sender
-        for (int i = 0; i < 3; i++) send_frame(16'hC000 + 16'(i), 16'h0801);
+        for (int i = 0; i < 4; i++) send_frame(16'hC000 + 16'(i), 16'h0801);
       end
     join
     repeat (300) @(posedge clk);
@@ -220,8 +226,9 @@ module tb_egfeprobe_top;
       if (int'(r0[31:16]) > max_qd) max_qd = int'(r0[31:16]);
     end
     $display("      %0d record(s), highest deq_qdepth seen = %0d", recs.size(), max_qd);
-    chk("G3: records were produced for the burst", recs.size() >= 3);
-    chk("G3: deq_qdepth arrives in the record (>= 1)", max_qd >= 1);
+    chk("G3: records were produced for the burst", recs.size() == 4);
+    chk("G3: deq_qdepth arrives in the record, and above 1 (NSLOT-TM_INFLIGHT=2)",
+        max_qd == 2);
 
     // ── G4: a stalled consumer must not stall packets ───────────────────────
     $display("\n== G4: stalled consumer does not stall the packet path ==");
