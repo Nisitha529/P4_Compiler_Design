@@ -452,7 +452,7 @@ traffic manager.
 |---|---|
 | `Meter` | single-rate two-colour, one debit bucket per index, AXI4-Lite rate/burst — §8b |
 | `Digest` | 16-deep FIFO drained over AXI4-Lite; drops newest and counts — §8b |
-| `FeatureExport` | one record per `push()` out an AXI4-Stream master; staging FIFO drops newest and counts; AXI4-Lite statistics. For an ON-CHIP consumer — the deep buffer, its clock crossing and its memory type are deliberately outside the compiler |
+| `FeatureExport` | one record per `push()` out an AXI4-Stream master; staging FIFO drops newest and counts; AXI4-Lite statistics. For an ON-CHIP consumer — the deep buffer, its clock crossing and its memory type are deliberately outside the compiler. A dropped packet still produces a record; `if (standard_metadata.drop == 0) { feed.push(...); }` opts out, in ingress and egress alike (the read sees the drop decided so far, and the sticky ingress drop from egress) |
 | `++` (bit concatenation) | in expressions at any nesting depth; width-prefixed literals converted too |
 
 **Not supported, on purpose:**

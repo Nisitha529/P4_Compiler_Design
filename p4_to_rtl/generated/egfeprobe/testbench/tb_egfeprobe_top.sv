@@ -6,7 +6,9 @@
 //   G2  THE OPEN QUESTION: egress runs for a packet INGRESS ALREADY DROPPED
 //       (the shell drives it on deq_fire with the sticky drop in drop_in), and
 //       the egress Counter gates itself on !drop_in while a push() does not.
-//       This measures what actually happens and pins it.
+//       This measures what actually happens and pins it. gated_feed, which
+//       pushes only `if (smeta.drop == 0)`, must produce NO record for it --
+//       from egress that read has to see the sticky ingress drop.
 //   G3  deq_qdepth in the record is the real queue depth (2, with this app's
 //       NSLOT=4) when the traffic manager is holding packets -- the reason to
 //       export from egress at all. The depth arithmetic in general is
@@ -16,6 +18,7 @@
 // Record: [31:16] deq_qdepth   [15:0] eth.dst[15:0]
 // Map: fwd 0 idx / 1 action / 2 key_etype / 3 p_port / 4 commit
 //      qos_feed 64 enable / 65 clear_stats / 66 pushed / 67 dropped / 68 status
+//      gated_feed 128..132, same layout; record [15:0] eth.dst[15:0]
 // ============================================================================
 `timescale 1ns/1ps
 
@@ -47,6 +50,9 @@ module tb_egfeprobe_top;
   logic [31:0] qos_feed_tdata;
   logic        qos_feed_tvalid;
   logic        qos_feed_tready = 1'b1;
+  logic [15:0] gated_feed_tdata;
+  logic        gated_feed_tvalid;
+  logic        gated_feed_tready = 1'b1;   // always ready: only WHETHER it pushes matters
   logic [15:0] out_meta_qd;
   logic  [8:0] out_std_meta_egress_port;
 
@@ -65,6 +71,8 @@ module tb_egfeprobe_top;
     .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready),
     .qos_feed_tdata(qos_feed_tdata), .qos_feed_tvalid(qos_feed_tvalid),
     .qos_feed_tready(qos_feed_tready),
+    .gated_feed_tdata(gated_feed_tdata), .gated_feed_tvalid(gated_feed_tvalid),
+    .gated_feed_tready(gated_feed_tready),
     .out_meta_qd(out_meta_qd),
     .out_std_meta_egress_port(out_std_meta_egress_port)
   );
@@ -78,6 +86,10 @@ module tb_egfeprobe_top;
   logic [31:0] recs [$];
   always @(posedge clk) if (rst_n && qos_feed_tvalid && qos_feed_tready)
     recs.push_back(qos_feed_tdata);
+
+  logic [15:0] grecs [$];
+  always @(posedge clk) if (rst_n && gated_feed_tvalid && gated_feed_tready)
+    grecs.push_back(gated_feed_tdata);
 
   int out_pkts;
   always @(posedge clk) if (rst_n && m_axis_tvalid && m_axis_tready && m_axis_tlast)
@@ -157,10 +169,12 @@ module tb_egfeprobe_top;
 
     // ── G1: a forwarded packet ───────────────────────────────────────────────
     $display("\n== G1: a forwarded packet produces one egress record ==");
-    recs.delete();
+    recs.delete(); grecs.delete();
     send_frame(16'h1234, 16'h0801);
     repeat (60) @(posedge clk);
     chk("G1: exactly one record", recs.size() == 1);
+    chk("G1: gated_feed also records a FORWARDED packet",
+        grecs.size() == 1 && grecs[0] == 16'h1234);
     if (recs.size() > 0) begin
       r0 = recs[0];
       chk("G1: [15:0] = eth.dst[15:0]", r0[15:0] == 16'h1234);
@@ -175,11 +189,14 @@ module tb_egfeprobe_top;
     //     if (standard_metadata.drop == 0) { qos_feed.push(...); }
     // Pinned here so the behaviour cannot change unnoticed.
     $display("\n== G2: an ingress-dropped packet still reaches the egress push ==");
-    recs.delete(); out_pkts = 0;
+    recs.delete(); grecs.delete(); out_pkts = 0;
     send_frame(16'hBEEF, 16'h0802);
     repeat (60) @(posedge clk);
     chk("G2: the packet really was dropped", out_pkts == 0);
     chk("G2: a record was still produced",   recs.size() == 1);
+    // The P4 opt-out from egress: smeta.drop must read the sticky ingress
+    // decision (drop_in), not the 0 the shell drives on std_meta_drop.
+    chk("G2: gated_feed (if smeta.drop == 0) produced NO record", grecs.size() == 0);
     if (recs.size() > 0) begin
       r0 = recs[0];
       chk("G2: and it carries that packet's dst", r0[15:0] == 16'hBEEF);

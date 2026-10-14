@@ -10,16 +10,20 @@
 //       and counted, and tvalid obeys the stream protocol once raised.
 //   F4  tready toggling: no duplicated records (the idle-cycle re-push bug)
 //       and no all-zero records (the late-sampling bug)
-//   F5  a packet the ingress DROPS still produces a record
+//   F5  a packet the ingress DROPS still produces a record -- and gated_feed,
+//       which pushes only `if (smeta.drop == 0)`, produces NONE for it, while
+//       still producing one for a forwarded packet (checked in F1)
 //   F6  the host's enable switch stops the feed
 //
 // Record layout (from processing_generated.sv, high bits first):
 //   [63:48] eth.etype   [47:32] packet_length   [31:16] eth.dst[15:0]
 //   [15:8]  0xA5        [7:0]   parsed_bytes[7:0]
+// gated_feed record: [15:0] eth.dst[15:0]
 //
 // Register map: fwd 0 idx / 1 action / 2 key_etype / 3 p_port / 4 commit
 //               tcn_feed 64 enable / 65 clear_stats / 66 pushed / 67 dropped
 //                        68 status {hiwater, occupancy}
+//               gated_feed 128..132, same layout
 // ============================================================================
 `timescale 1ns/1ps
 
@@ -53,6 +57,10 @@ module tb_feprobe_top;
   logic        tcn_feed_tvalid;
   logic        tcn_feed_tready = 1'b1;
 
+  logic [15:0] gated_feed_tdata;
+  logic        gated_feed_tvalid;
+  logic        gated_feed_tready = 1'b1;   // always ready: only WHETHER it pushes matters
+
   logic [15:0] out_meta_flow_id, out_meta_seen;
   logic  [7:0] out_meta_dir;
   logic  [8:0] out_std_meta_egress_port;
@@ -72,6 +80,8 @@ module tb_feprobe_top;
     .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready),
     .tcn_feed_tdata(tcn_feed_tdata), .tcn_feed_tvalid(tcn_feed_tvalid),
     .tcn_feed_tready(tcn_feed_tready),
+    .gated_feed_tdata(gated_feed_tdata), .gated_feed_tvalid(gated_feed_tvalid),
+    .gated_feed_tready(gated_feed_tready),
     .out_meta_flow_id(out_meta_flow_id), .out_meta_seen(out_meta_seen),
     .out_meta_dir(out_meta_dir),
     .out_std_meta_egress_port(out_std_meta_egress_port)
@@ -109,6 +119,10 @@ module tb_feprobe_top;
       td_d   <= tcn_feed_tdata;
     end
   end
+
+  logic [15:0] grecs [$];
+  always @(posedge clk) if (rst_n && gated_feed_tvalid && gated_feed_tready)
+    grecs.push_back(gated_feed_tdata);
 
   task do_reset;
     rst_n = 0; s_axis_tvalid = 0; s_axis_tlast = 0;
@@ -195,10 +209,12 @@ module tb_feprobe_top;
 
     // ── F1/F2: records appear, fields are where they should be ──────────────
     $display("\n== F1/F2: one record per packet, fields in position ==");
-    recs.delete();
+    recs.delete(); grecs.delete();
     send_frame(16'h1234, 16'h0801);
     repeat (40) @(posedge clk);
     chk("F1: exactly one record for one packet", recs.size() == 1);
+    chk("F1: gated_feed also records a FORWARDED packet",
+        grecs.size() == 1 && grecs[0] == 16'h1234);
     if (recs.size() > 0) begin
       r0 = recs[0];
       chk("F2: [63:48] = eth.etype",        r0[63:48] == 16'h0801);
@@ -210,11 +226,16 @@ module tb_feprobe_top;
 
     // ── F5: a DROPPED packet still feeds the TCN ────────────────────────────
     $display("\n== F5: a dropped packet still produces a record ==");
-    recs.delete(); out_pkts = 0;
+    recs.delete(); grecs.delete(); out_pkts = 0;
     send_frame(16'hBEEF, 16'h0802);               // table action = drop_it
     repeat (40) @(posedge clk);
     chk("F5: the packet really was dropped", out_pkts == 0);
     chk("F5: but a record was still produced", recs.size() == 1);
+    // The P4 opt-out. Two failures look the same from here and both have
+    // happened: the read of smeta.drop seeing the value at issue (0) instead
+    // of the drop decided by fwd, and the conditional push inferring a latch
+    // that re-pushes the previous record.
+    chk("F5: gated_feed (if smeta.drop == 0) produced NO record", grecs.size() == 0);
     if (recs.size() > 0) begin
       // A queue index plus a bit-select in one expression is two indices on a
       // one-dimensional queue, which iverilog rejects -- go through a temp.

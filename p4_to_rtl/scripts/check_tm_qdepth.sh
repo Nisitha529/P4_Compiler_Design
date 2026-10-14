@@ -19,16 +19,17 @@
 # under Vivado xsim by hand, including the hierarchical reads of the DUT's
 # NSLOT / TM_INFLIGHT / TM_QLIMIT and tm_tail_drops that they depend on.
 #
-# Leaves qdprobe generated at --nslot 8 --cp-map, which is what the rest of
-# the regression expects to find.
+# Both builds go into a scratch directory (--out-dir), never generated/: the
+# committed qdprobe (--nslot 8 --cp-map) is what the regression loop runs, and
+# rebuilding it in place used to leave the tree modified after every run.
 set -u
 R="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="${P4C_BIN:-/home/nisitha/p4c/build}:$PATH"
 W=$(mktemp -d); rc=0
-G="$R/generated/qdprobe"
+trap 'rm -rf "$W"' EXIT
 
-run_tb() { # $1=label  $2=testbench path
-  local label="$1" tb="$2" files res fails
+run_tb() { # $1=label  $2=testbench path  $3=generated-RTL directory
+  local label="$1" tb="$2" G="$3" files res fails
   files=$(ls "$G"/*.sv | grep -v _pkg | grep -v selftest)
   if ! iverilog -g2012 -o "$W/tb.vvp" "$G"/qdprobe_pkg.sv $files "$tb" 2> "$W/b.log"; then
     echo "FAIL $label: build error"
@@ -46,19 +47,18 @@ run_tb() { # $1=label  $2=testbench path
 }
 
 # 1. A deep ring: the depth, the drain shape, and that it is per queue.
-if ! (cd "$R" && python3 compiler/main.py qdprobe --nslot 8 --cp-map) > "$W/gen1.log" 2>&1; then
+if ! (cd "$R" && python3 compiler/main.py qdprobe --nslot 8 --cp-map \
+        --out-dir "$W/depth") > "$W/gen1.log" 2>&1; then
   echo "FAIL depth: generation failed"; sed 's/^/     /' "$W/gen1.log" | tail -5; rc=1
 else
-  run_tb "depth  (--nslot 8)" "$G/testbench/tb_qdprobe_top.sv"
+  run_tb "depth  (--nslot 8)" "$R/generated/qdprobe/testbench/tb_qdprobe_top.sv" "$W/depth"
 fi
 
 # 2. The same ring with a limit: tail drop at the limit, and what it does not do.
-if ! (cd "$R" && python3 compiler/main.py qdprobe --nslot 8 --tm-qlimit 3) > "$W/gen2.log" 2>&1; then
+if ! (cd "$R" && python3 compiler/main.py qdprobe --nslot 8 --tm-qlimit 3 \
+        --out-dir "$W/qlimit") > "$W/gen2.log" 2>&1; then
   echo "FAIL qlimit: generation failed"; sed 's/^/     /' "$W/gen2.log" | tail -5; rc=1
 else
-  run_tb "qlimit (--tm-qlimit 3)" "$R/verification/tm_qlimit/tb_qdprobe_limit.sv"
+  run_tb "qlimit (--tm-qlimit 3)" "$R/verification/tm_qlimit/tb_qdprobe_limit.sv" "$W/qlimit"
 fi
-
-# leave the build the rest of the regression expects (deep ring, with a map)
-(cd "$R" && python3 compiler/main.py qdprobe --nslot 8 --cp-map > /dev/null 2>&1)
 exit $rc

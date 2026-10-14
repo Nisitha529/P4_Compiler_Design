@@ -17,6 +17,7 @@ module egress_processing_generated (
 
   // Standard metadata inputs (table key sources)
   input  logic [18:0] std_meta_deq_qdepth,
+  input  logic [0:0] std_meta_drop,
 
   // Header valid flag outputs (may be modified by setValid/setInvalid)
   output logic        out_eth_valid,
@@ -34,6 +35,8 @@ module egress_processing_generated (
   // tdata is padded up to a byte multiple, pad bits in the LOW bits.
   output logic        qos_feed_push,
   output logic [31:0] qos_feed_data,
+  output logic        gated_feed_push,
+  output logic [15:0] gated_feed_data,
 
   output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
@@ -57,6 +60,18 @@ module egress_processing_generated (
       if (qos_feed_push_c && valid_in) qos_feed_data <= qos_feed_data_c;
     end
   end
+  // gated_feed: 16-bit record padded to 16, pushed in stage 0
+  // record layout, high bits first:
+  //   [15:0] eth_dst_15_0 (16b)
+  logic        gated_feed_push_c;
+  logic [15:0] gated_feed_data_c;
+  always_ff @(posedge clk) begin
+    if (!rst_n) gated_feed_push <= 1'b0;
+    else begin
+      gated_feed_push <= gated_feed_push_c && valid_in;
+      if (gated_feed_push_c && valid_in) gated_feed_data <= gated_feed_data_c;
+    end
+  end
 
   // Metadata outputs (final value after the last stage)
   assign out_meta_qd = meta_qd_w;
@@ -69,6 +84,8 @@ module egress_processing_generated (
     meta_qd_w = meta_qd;
     qos_feed_push_c = 1'b0;
     qos_feed_data_c = '0;
+    gated_feed_push_c = 1'b0;
+    gated_feed_data_c = '0;
 
     // Header valid flag pass-through defaults
     out_eth_valid = eth_valid;
@@ -82,6 +99,10 @@ module egress_processing_generated (
     meta_qd_w = 16'(std_meta_deq_qdepth);
     qos_feed_push_c = 1'b1;
     qos_feed_data_c = {16'(std_meta_deq_qdepth), eth_dst[15:0]};
+    if (drop == 1'd0) begin
+      gated_feed_push_c = 1'b1;
+      gated_feed_data_c = eth_dst[15:0];
+    end
   end
 
   always_ff @(posedge clk) begin

@@ -217,6 +217,26 @@ def _collect_hash_sites(ctrl, fwmap):
     return sites, unsupported
 
 
+def _map_drop_read(text):
+    """A READ of standard_metadata.drop means the drop decision so far.
+
+    Writes already go to the module's running `drop` (see _lhs_sig), but reads
+    used to fall through to the generic `std_meta_drop` input -- the value at
+    ISSUE, which is 0 in ingress and hard-wired to 0 for egress (the sticky
+    ingress decision reaches egress on drop_in, not on that port). So
+    `if (standard_metadata.drop == 0) { feed.push(...); }` never saw a drop
+    made earlier in the same control, nor an ingress drop from egress, and a
+    dropped packet still produced a record -- the opposite of what it says.
+
+    Mapping the read to `drop` gives it the same per-stage treatment as the
+    write: `drop` is a pool-A name, so _stage_text turns it into drop__stN in
+    every stage but the last, i.e. that stage's running copy -- which starts
+    from drop_in in egress. Must run BEFORE the generic standard_metadata.X
+    substitution, which would otherwise claim it first.
+    """
+    return re.sub(r'\bstandard_metadata\.drop\b', 'drop', text)
+
+
 def _map_cond(cond, cmap=None):
     # Same MeterColor_t resolution as _map_expr -- a policer's whole shape is
     # `if (colour == MeterColor_t.RED)`, so missing it here left the enum name
@@ -227,6 +247,7 @@ def _map_cond(cond, cmap=None):
     cond = re.sub(r'hdr\.(\w+)\.isValid\(\)', r'\1_valid', cond)
     cond = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', cond)
     cond = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', cond)  # reads use the shadow
+    cond = _map_drop_read(cond)
     cond = re.sub(r'\bstandard_metadata\.(\w+)', r'std_meta_\1', cond)
     if cmap:
         for name, sv_lit in cmap.items():
@@ -506,6 +527,7 @@ def _map_expr(e, cmap=None):
     e = re.sub(r'\bMeterColor_t\.RED\b',   "1'b1", e)
     e = re.sub(r'hdr\.(\w+)\.(\w+)', r'\1_\2', e)
     e = re.sub(r'\bmeta\.(\w+)', r'meta_\1_w', e)          # reads use the shadow
+    e = _map_drop_read(e)
     e = re.sub(r'\bstandard_metadata\.(\w+)', r'std_meta_\1', e)
     if cmap:
         for name, sv_lit in cmap.items():
@@ -2595,7 +2617,9 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
         # for intrusion detection -- a dropped attack packet is still evidence --
         # and it needs no gate here. A program that wants the opposite says so in
         # P4 (`if (standard_metadata.drop == 0) { feed.push(...); }`), which is
-        # clearer than an annotation and needs no compiler support.
+        # clearer than an annotation. That relies on the read seeing the drop
+        # decision so far, in egress too (_map_drop_read); feprobe and egfeprobe
+        # each carry a gated second feed so both behaviours stay pinned.
         if feature_exports:
             f.write('  // ── FeatureExport push outputs ───────────────────────────────────────\n')
             for fe in feature_exports:
@@ -2926,6 +2950,25 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                     if counter_incr_stage[cnt.name] == k:
                         buf.write(f'    {cnt.name}_incr_en  = 1\'b0;\n')
                         buf.write(f'    {cnt.name}_incr_idx = \'0;\n')
+                # The same defaults stage 0 writes, for an extern that sits in
+                # THIS stage. Without them a call under a condition --
+                # `if (export_en == 1) feed.push(...)` -- assigns its _c signals
+                # on one path only, the always_comb infers a latch, and a later
+                # packet that skips the call re-pushes the last record (seen as
+                # a stale record for a packet the condition rejected). An
+                # unconditional call hid this, because it assigns every cycle.
+                for mt in meters:
+                    if meter_exec_stage.get(mt.name, 0) == k:
+                        buf.write(f'    {mt.name}_exec_en  = 1\'b0;\n')
+                        buf.write(f'    {mt.name}_exec_idx = \'0;\n')
+                for dg in digests:
+                    if dg.fields and digest_push_stage.get(dg.name, 0) == k:
+                        buf.write(f'    {dg.name}_push_c = 1\'b0;\n')
+                        buf.write(f'    {dg.name}_data_c = \'0;\n')
+                for fe in feature_exports:
+                    if fe_push_stage.get(fe.name, 0) == k:
+                        buf.write(f'    {fe.name}_push_c = 1\'b0;\n')
+                        buf.write(f'    {fe.name}_data_c = \'0;\n')
                 for hname in hdr_valids:
                     buf.write(f'    out_{hname}_valid = out_{hname}_valid_s{k};\n')
                     buf.write(f'    {hname}_valid = {hname}_valid_s{k};\n')

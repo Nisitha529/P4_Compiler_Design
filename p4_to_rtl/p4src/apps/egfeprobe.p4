@@ -12,6 +12,10 @@
 //     gates itself on !drop_in so dropped packets are not counted; a push()
 //     has no such gate, so whether a dropped packet produces a record was
 //     unknown until this probe measured it.
+//     A second feed, gated_feed, pushes only `if (smeta.drop == 0)`: from
+//     egress that read must see the STICKY ingress drop (it arrives on
+//     drop_in), so gated_feed stays silent for the dropped packet. It once
+//     read a hard-wired 0 there, so the gate never closed.
 //
 // Record: deq_qdepth[15:0] ++ eth.dst[15:0] = 32 bits, a byte multiple, with
 // two independent sources so a swapped field is obvious.
@@ -46,11 +50,17 @@ control MyEgress(inout headers hdr, inout metadata meta,
                  inout standard_metadata_t smeta) {
 
     FeatureExport<bit<32>>() qos_feed;
+    FeatureExport<bit<16>>() gated_feed;
 
     apply {
         // Deliberately UNGATED by drop: what that does is the thing under test.
         meta.qd = (bit<16>)smeta.deq_qdepth;
         qos_feed.push(meta.qd ++ hdr.eth.dst[15:0]);
+
+        // The opt-out, written in P4: no record for a packet ingress dropped.
+        if (smeta.drop == 0) {
+            gated_feed.push(hdr.eth.dst[15:0]);
+        }
     }
 }
 

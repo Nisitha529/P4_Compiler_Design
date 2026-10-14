@@ -1,6 +1,6 @@
 {
   "app": "feprobe",
-  "compiler_git": "e7d6147-dirty",
+  "compiler_git": "645d88d-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {
@@ -121,6 +121,30 @@
         "pushed": 66,
         "dropped": 67,
         "status": 68
+      },
+      "note": "records leave by the AXI4-Stream port <name>_t*, not over AXI4-Lite; these words are statistics only"
+    },
+    {
+      "name": "gated_feed",
+      "stage": "ingress",
+      "base": "0x0200",
+      "width": 16,
+      "tdata_width": 16,
+      "stage_depth": 8,
+      "enable_reset": 1,
+      "fields": [
+        {
+          "name": "eth_dst_15_0",
+          "lsb": 0,
+          "width": 16
+        }
+      ],
+      "words": {
+        "enable": 128,
+        "commit": 129,
+        "pushed": 130,
+        "dropped": 131,
+        "status": 132
       },
       "note": "records leave by the AXI4-Stream port <name>_t*, not over AXI4-Lite; these words are statistics only"
     }

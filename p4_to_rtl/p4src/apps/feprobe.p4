@@ -11,6 +11,12 @@
 //     protocol once raised
 //   * a record is produced even for a packet ingress DROPS (dropped attack
 //     packets are still evidence, which is the whole point for an IDS)
+//   * ...and a program that does NOT want that can say so: gated_feed pushes
+//     only `if (smeta.drop == 0)`, so it must stay silent for the same packet.
+//     That read has to see the drop decided earlier in this control; it once
+//     read the value at issue (always 0) and the gate never closed. The gate
+//     also makes gated_feed a CONDITIONAL push in a stage after 0, which is the
+//     case that inferred a latch and re-pushed stale records.
 //
 // The record is built with ++, which is also the regression for that operator.
 // Widths: 16 + 16 + 16 + 8 + 8 = 64, already a byte multiple, so no padding.
@@ -36,6 +42,7 @@ control MyIngress(inout headers hdr, inout metadata meta,
                   inout standard_metadata_t smeta) {
 
     FeatureExport<bit<64>>() tcn_feed;
+    FeatureExport<bit<16>>() gated_feed;
 
     action set_port(PortId_t p) { smeta.egress_port = p; }
     action drop_it()            { smeta.drop = 1; }
@@ -62,6 +69,11 @@ control MyIngress(inout headers hdr, inout metadata meta,
         // two of them into the same expression.
         tcn_feed.push(hdr.eth.etype ++ smeta.packet_length ++ hdr.eth.dst[15:0]
                       ++ meta.dir ++ smeta.parsed_bytes[7:0]);
+
+        // The opt-out, written in P4: no record for a packet already dropped.
+        if (smeta.drop == 0) {
+            gated_feed.push(hdr.eth.dst[15:0]);
+        }
     }
 }
 

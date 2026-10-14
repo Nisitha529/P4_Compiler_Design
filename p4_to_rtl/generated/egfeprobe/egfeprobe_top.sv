@@ -41,7 +41,10 @@ module egfeprobe_top #(
     // FeatureExport record streams (never back-pressure the packet path)
     output logic [31:0] qos_feed_tdata,
     output logic qos_feed_tvalid,
-    input  logic qos_feed_tready
+    input  logic qos_feed_tready,
+    output logic [15:0] gated_feed_tdata,
+    output logic gated_feed_tvalid,
+    input  logic gated_feed_tready
 ,
 
     // Metadata sideband (valid while m_axis_tvalid for the packet)
@@ -78,6 +81,7 @@ module egfeprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
+  logic [0:0] slot_std_meta_drop [0:NSLOT-1];
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
@@ -310,9 +314,11 @@ module egfeprobe_top #(
   logic [15:0] r_fwd_cp_query_key_etype;
   logic r_fwd_cp_query_del;
   logic [0:0] r_qos_feed_cp_enable;
+  logic [0:0] r_gated_feed_cp_enable;
   logic r_fwd_cp_wr_en;
   logic r_fwd_cp_query_en;
   logic r_qos_feed_cp_wr_en;
+  logic r_gated_feed_cp_wr_en;
   // qos_feed: 32-bit records, staging depth 8
   wire        qos_feed_push;
   wire [31:0] qos_feed_data;
@@ -352,6 +358,45 @@ module egfeprobe_top #(
     end
   end
 
+  // gated_feed: 16-bit records, staging depth 8
+  wire        gated_feed_push;
+  wire [15:0] gated_feed_data;
+  logic [15:0] gated_feed_ring [0:7];
+  logic [3:0] gated_feed_wr, gated_feed_rd;
+  logic [31:0] gated_feed_pushed, gated_feed_dropped;
+  logic [3:0] gated_feed_hiwater;
+  wire [3:0] gated_feed_occ  = gated_feed_wr - gated_feed_rd;
+  wire gated_feed_full  = (gated_feed_occ == 4'd8);
+  wire gated_feed_empty = (gated_feed_wr == gated_feed_rd);
+  // tvalid follows "ring not empty", which is exactly the protocol:
+  // once raised it stays raised until the entry is taken.
+  assign gated_feed_tvalid = !gated_feed_empty;
+  assign gated_feed_tdata  = gated_feed_ring[gated_feed_rd[2:0]];
+  wire gated_feed_take = gated_feed_tvalid && gated_feed_tready;
+  // A global enable the host can use to stop the feed, and a
+  // one-cycle stats clear (the decoder's commit-pulse trick).
+  wire gated_feed_accept = gated_feed_push && r_gated_feed_cp_enable[0] && !gated_feed_full;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      gated_feed_wr <= '0; gated_feed_rd <= '0;
+      gated_feed_pushed <= 32'd0; gated_feed_dropped <= 32'd0; gated_feed_hiwater <= '0;
+    end else begin
+      if (r_gated_feed_cp_wr_en) begin   // clear_stats
+        gated_feed_pushed <= 32'd0; gated_feed_dropped <= 32'd0; gated_feed_hiwater <= '0;
+      end
+      if (gated_feed_accept) begin
+        gated_feed_ring[gated_feed_wr[2:0]] <= gated_feed_data;
+        gated_feed_wr     <= gated_feed_wr + 1'b1;
+        if (!r_gated_feed_cp_wr_en) gated_feed_pushed <= gated_feed_pushed + 32'd1;
+      end else if (gated_feed_push && r_gated_feed_cp_enable[0]) begin
+        // full: drop the NEWEST record, never the packet
+        if (!r_gated_feed_cp_wr_en) gated_feed_dropped <= gated_feed_dropped + 32'd1;
+      end
+      if (gated_feed_take) gated_feed_rd <= gated_feed_rd + 1'b1;
+      if (!r_gated_feed_cp_wr_en && gated_feed_occ > gated_feed_hiwater) gated_feed_hiwater <= gated_feed_occ;
+    end
+  end
+
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -385,13 +430,16 @@ module egfeprobe_top #(
     if (!rst_n) begin
       axil_st <= AXIL_IDLE;
       r_qos_feed_cp_enable <= 1'b1;   // feed enabled out of reset
+      r_gated_feed_cp_enable <= 1'b1;   // feed enabled out of reset
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
       r_qos_feed_cp_wr_en <= 1'b0;
+      r_gated_feed_cp_wr_en <= 1'b0;
     end else begin
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
       r_qos_feed_cp_wr_en <= 1'b0;
+      r_gated_feed_cp_wr_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -412,6 +460,8 @@ module egfeprobe_top #(
               14'd7: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b1; end // fwd delete [cpmap:fwd.delete_commit]
               14'd64: r_qos_feed_cp_enable <= s_axil_wdata[0:0]; // enable [cpmap:qos_feed.enable]
               14'd65: r_qos_feed_cp_wr_en <= 1'b1; // qos_feed commit [cpmap:qos_feed.commit]
+              14'd128: r_gated_feed_cp_enable <= s_axil_wdata[0:0]; // enable [cpmap:gated_feed.enable]
+              14'd129: r_gated_feed_cp_wr_en <= 1'b1; // gated_feed commit [cpmap:gated_feed.commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -453,6 +503,9 @@ module egfeprobe_top #(
               14'd66: r_rdata <= qos_feed_pushed; // qos_feed pushed [cpmap:qos_feed.pushed]
               14'd67: r_rdata <= qos_feed_dropped; // qos_feed dropped [cpmap:qos_feed.dropped]
               14'd68: r_rdata <= {12'd0, qos_feed_hiwater, 12'd0, qos_feed_occ}; // qos_feed status [cpmap:qos_feed.status]
+              14'd130: r_rdata <= gated_feed_pushed; // gated_feed pushed [cpmap:gated_feed.pushed]
+              14'd131: r_rdata <= gated_feed_dropped; // gated_feed dropped [cpmap:gated_feed.dropped]
+              14'd132: r_rdata <= {12'd0, gated_feed_hiwater, 12'd0, gated_feed_occ}; // gated_feed status [cpmap:gated_feed.status]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;
@@ -477,6 +530,8 @@ module egfeprobe_top #(
   wire fwd_hit_out;
   wire [0:0] qos_feed_cp_enable = r_qos_feed_cp_enable;
   wire qos_feed_cp_wr_en = r_qos_feed_cp_wr_en;
+  wire [0:0] gated_feed_cp_enable = r_gated_feed_cp_enable;
+  wire gated_feed_cp_wr_en = r_gated_feed_cp_wr_en;
 
   processing_generated u_proc (
     .clk       (clk),
@@ -530,6 +585,7 @@ module egfeprobe_top #(
     .eth_etype  (slot_phv_eth_etype[deq_slot]),
     .meta_qd  (slot_meta_qd[deq_slot]),
     .std_meta_deq_qdepth  (19'(deq_qdepth_now)),   // TM: depth right now
+    .std_meta_drop  (slot_std_meta_drop[deq_slot]),   // from the slot
     .out_eth_valid     (eg_out_eth_valid),
     .out_eth_dst  (eg_out_eth_dst),
     .out_eth_src  (eg_out_eth_src),
@@ -537,6 +593,8 @@ module egfeprobe_top #(
     .out_meta_qd  (eg_out_meta_qd),
     .qos_feed_push (qos_feed_push),
     .qos_feed_data (qos_feed_data),
+    .gated_feed_push (gated_feed_push),
+    .gated_feed_data (gated_feed_data),
     .out_valid (eg_out_valid),   // aligned with out_*/drop
     .valid_out (eg_valid_out),
     .drop      (eg_drop)
@@ -626,6 +684,7 @@ module egfeprobe_top #(
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_std_meta_drop[iss_slot] <= 1'b0;   // for egress
     end
   end
 

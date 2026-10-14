@@ -17,6 +17,7 @@ module processing_generated (
   input  logic [7:0] meta_dir,
 
   // Standard metadata inputs (table key sources)
+  input  logic [0:0] std_meta_drop,
   input  logic [15:0] std_meta_packet_length,
   input  logic [15:0] std_meta_parsed_bytes,
 
@@ -60,6 +61,8 @@ module processing_generated (
   // tdata is padded up to a byte multiple, pad bits in the LOW bits.
   output logic        tcn_feed_push,
   output logic [63:0] tcn_feed_data,
+  output logic        gated_feed_push,
+  output logic [15:0] gated_feed_data,
 
   output logic        out_valid,   // aligned with out_*/drop -- see note
   output logic        valid_out,
@@ -86,6 +89,7 @@ module processing_generated (
   logic [15:0] meta_seen_w_s1;
   logic [7:0] meta_dir_w_s1;
   logic [8:0] out_std_meta_egress_port_s1;
+  logic [0:0] std_meta_drop_s1;
   logic [15:0] std_meta_packet_length_s1;
   logic [15:0] std_meta_parsed_bytes_s1;
   logic drop_s1;
@@ -102,6 +106,7 @@ module processing_generated (
   logic [15:0] meta_seen_w_s2;
   logic [7:0] meta_dir_w_s2;
   logic [8:0] out_std_meta_egress_port_s2;
+  logic [0:0] std_meta_drop_s2;
   logic [15:0] std_meta_packet_length_s2;
   logic [15:0] std_meta_parsed_bytes_s2;
   logic drop_s2;
@@ -130,6 +135,7 @@ module processing_generated (
   logic [47:0] eth_dst__st1;
   logic [47:0] eth_src__st1;
   logic [15:0] eth_etype__st1;
+  logic [0:0] std_meta_drop__st1;
   logic [15:0] std_meta_packet_length__st1;
   logic [15:0] std_meta_parsed_bytes__st1;
   logic [15:0] meta_flow_id_w__st2;
@@ -139,6 +145,7 @@ module processing_generated (
   logic [47:0] eth_dst__st2;
   logic [47:0] eth_src__st2;
   logic [15:0] eth_etype__st2;
+  logic [0:0] std_meta_drop__st2;
   logic [15:0] std_meta_packet_length__st2;
   logic [15:0] std_meta_parsed_bytes__st2;
 
@@ -157,6 +164,18 @@ module processing_generated (
     else begin
       tcn_feed_push <= tcn_feed_push_c && valid_s2;
       if (tcn_feed_push_c && valid_s2) tcn_feed_data <= tcn_feed_data_c;
+    end
+  end
+  // gated_feed: 16-bit record padded to 16, pushed in stage 2
+  // record layout, high bits first:
+  //   [15:0] eth_dst_15_0 (16b)
+  logic        gated_feed_push_c;
+  logic [15:0] gated_feed_data_c;
+  always_ff @(posedge clk) begin
+    if (!rst_n) gated_feed_push <= 1'b0;
+    else begin
+      gated_feed_push <= gated_feed_push_c && valid_s2;
+      if (gated_feed_push_c && valid_s2) gated_feed_data <= gated_feed_data_c;
     end
   end
 
@@ -239,6 +258,7 @@ module processing_generated (
       out_eth_etype_s1 <= out_eth_etype__st0;
       eth_etype_s1 <= eth_etype;
       out_std_meta_egress_port_s1 <= out_std_meta_egress_port__st0;
+      std_meta_drop_s1 <= std_meta_drop;
       std_meta_packet_length_s1 <= std_meta_packet_length;
       std_meta_parsed_bytes_s1 <= std_meta_parsed_bytes;
     end
@@ -259,6 +279,7 @@ module processing_generated (
     out_eth_etype__st1 = out_eth_etype_s1;
     eth_etype__st1 = eth_etype_s1;
     out_std_meta_egress_port__st1 = out_std_meta_egress_port_s1;
+    std_meta_drop__st1 = std_meta_drop_s1;
     std_meta_packet_length__st1 = std_meta_packet_length_s1;
     std_meta_parsed_bytes__st1 = std_meta_parsed_bytes_s1;
   end
@@ -283,6 +304,7 @@ module processing_generated (
       out_eth_etype_s2 <= out_eth_etype__st1;
       eth_etype_s2 <= eth_etype__st1;
       out_std_meta_egress_port_s2 <= out_std_meta_egress_port__st1;
+      std_meta_drop_s2 <= std_meta_drop__st1;
       std_meta_packet_length_s2 <= std_meta_packet_length__st1;
       std_meta_parsed_bytes_s2 <= std_meta_parsed_bytes__st1;
     end
@@ -294,6 +316,10 @@ module processing_generated (
     meta_flow_id_w__st2 = meta_flow_id_w_s2;
     meta_seen_w__st2 = meta_seen_w_s2;
     meta_dir_w__st2 = meta_dir_w_s2;
+    tcn_feed_push_c = 1'b0;
+    tcn_feed_data_c = '0;
+    gated_feed_push_c = 1'b0;
+    gated_feed_data_c = '0;
     out_eth_valid = out_eth_valid_s2;
     eth_valid__st2 = eth_valid_s2;
     out_eth_dst = out_eth_dst_s2;
@@ -303,6 +329,7 @@ module processing_generated (
     out_eth_etype = out_eth_etype_s2;
     eth_etype__st2 = eth_etype_s2;
     out_std_meta_egress_port = out_std_meta_egress_port_s2;
+    std_meta_drop__st2 = std_meta_drop_s2;
     std_meta_packet_length__st2 = std_meta_packet_length_s2;
     std_meta_parsed_bytes__st2 = std_meta_parsed_bytes_s2;
 
@@ -322,6 +349,10 @@ module processing_generated (
     end
     tcn_feed_push_c = 1'b1;
     tcn_feed_data_c = {eth_etype__st2, std_meta_packet_length__st2, eth_dst__st2[15:0], 8'hA5, std_meta_parsed_bytes__st2[7:0]};
+    if (drop == 1'd0) begin
+      gated_feed_push_c = 1'b1;
+      gated_feed_data_c = eth_dst__st2[15:0];
+    end
   end
 
   always_ff @(posedge clk) begin

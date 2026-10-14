@@ -41,7 +41,10 @@ module feprobe_top #(
     // FeatureExport record streams (never back-pressure the packet path)
     output logic [63:0] tcn_feed_tdata,
     output logic tcn_feed_tvalid,
-    input  logic tcn_feed_tready
+    input  logic tcn_feed_tready,
+    output logic [15:0] gated_feed_tdata,
+    output logic gated_feed_tvalid,
+    input  logic gated_feed_tready
 ,
 
     // Metadata sideband (valid while m_axis_tvalid for the packet)
@@ -231,9 +234,11 @@ module feprobe_top #(
   logic [15:0] r_fwd_cp_query_key_etype;
   logic r_fwd_cp_query_del;
   logic [0:0] r_tcn_feed_cp_enable;
+  logic [0:0] r_gated_feed_cp_enable;
   logic r_fwd_cp_wr_en;
   logic r_fwd_cp_query_en;
   logic r_tcn_feed_cp_wr_en;
+  logic r_gated_feed_cp_wr_en;
   // tcn_feed: 64-bit records, staging depth 8
   wire        tcn_feed_push;
   wire [63:0] tcn_feed_data;
@@ -273,6 +278,45 @@ module feprobe_top #(
     end
   end
 
+  // gated_feed: 16-bit records, staging depth 8
+  wire        gated_feed_push;
+  wire [15:0] gated_feed_data;
+  logic [15:0] gated_feed_ring [0:7];
+  logic [3:0] gated_feed_wr, gated_feed_rd;
+  logic [31:0] gated_feed_pushed, gated_feed_dropped;
+  logic [3:0] gated_feed_hiwater;
+  wire [3:0] gated_feed_occ  = gated_feed_wr - gated_feed_rd;
+  wire gated_feed_full  = (gated_feed_occ == 4'd8);
+  wire gated_feed_empty = (gated_feed_wr == gated_feed_rd);
+  // tvalid follows "ring not empty", which is exactly the protocol:
+  // once raised it stays raised until the entry is taken.
+  assign gated_feed_tvalid = !gated_feed_empty;
+  assign gated_feed_tdata  = gated_feed_ring[gated_feed_rd[2:0]];
+  wire gated_feed_take = gated_feed_tvalid && gated_feed_tready;
+  // A global enable the host can use to stop the feed, and a
+  // one-cycle stats clear (the decoder's commit-pulse trick).
+  wire gated_feed_accept = gated_feed_push && r_gated_feed_cp_enable[0] && !gated_feed_full;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      gated_feed_wr <= '0; gated_feed_rd <= '0;
+      gated_feed_pushed <= 32'd0; gated_feed_dropped <= 32'd0; gated_feed_hiwater <= '0;
+    end else begin
+      if (r_gated_feed_cp_wr_en) begin   // clear_stats
+        gated_feed_pushed <= 32'd0; gated_feed_dropped <= 32'd0; gated_feed_hiwater <= '0;
+      end
+      if (gated_feed_accept) begin
+        gated_feed_ring[gated_feed_wr[2:0]] <= gated_feed_data;
+        gated_feed_wr     <= gated_feed_wr + 1'b1;
+        if (!r_gated_feed_cp_wr_en) gated_feed_pushed <= gated_feed_pushed + 32'd1;
+      end else if (gated_feed_push && r_gated_feed_cp_enable[0]) begin
+        // full: drop the NEWEST record, never the packet
+        if (!r_gated_feed_cp_wr_en) gated_feed_dropped <= gated_feed_dropped + 32'd1;
+      end
+      if (gated_feed_take) gated_feed_rd <= gated_feed_rd + 1'b1;
+      if (!r_gated_feed_cp_wr_en && gated_feed_occ > gated_feed_hiwater) gated_feed_hiwater <= gated_feed_occ;
+    end
+  end
+
 
   // AXI4-Lite write channel state machine
   typedef enum logic [1:0] {
@@ -306,13 +350,16 @@ module feprobe_top #(
     if (!rst_n) begin
       axil_st <= AXIL_IDLE;
       r_tcn_feed_cp_enable <= 1'b1;   // feed enabled out of reset
+      r_gated_feed_cp_enable <= 1'b1;   // feed enabled out of reset
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
       r_tcn_feed_cp_wr_en <= 1'b0;
+      r_gated_feed_cp_wr_en <= 1'b0;
     end else begin
       r_fwd_cp_wr_en <= 1'b0;
       r_fwd_cp_query_en <= 1'b0;
       r_tcn_feed_cp_wr_en <= 1'b0;
+      r_gated_feed_cp_wr_en <= 1'b0;
       case (axil_st)
         AXIL_IDLE: begin
           if (s_axil_awvalid) begin
@@ -333,6 +380,8 @@ module feprobe_top #(
               14'd7: begin r_fwd_cp_query_en <= 1'b1; r_fwd_cp_query_del <= 1'b1; end // fwd delete [cpmap:fwd.delete_commit]
               14'd64: r_tcn_feed_cp_enable <= s_axil_wdata[0:0]; // enable [cpmap:tcn_feed.enable]
               14'd65: r_tcn_feed_cp_wr_en <= 1'b1; // tcn_feed commit [cpmap:tcn_feed.commit]
+              14'd128: r_gated_feed_cp_enable <= s_axil_wdata[0:0]; // enable [cpmap:gated_feed.enable]
+              14'd129: r_gated_feed_cp_wr_en <= 1'b1; // gated_feed commit [cpmap:gated_feed.commit]
               default: ; // ignore unknown address
             endcase
             axil_st <= AXIL_BRESP;
@@ -374,6 +423,9 @@ module feprobe_top #(
               14'd66: r_rdata <= tcn_feed_pushed; // tcn_feed pushed [cpmap:tcn_feed.pushed]
               14'd67: r_rdata <= tcn_feed_dropped; // tcn_feed dropped [cpmap:tcn_feed.dropped]
               14'd68: r_rdata <= {12'd0, tcn_feed_hiwater, 12'd0, tcn_feed_occ}; // tcn_feed status [cpmap:tcn_feed.status]
+              14'd130: r_rdata <= gated_feed_pushed; // gated_feed pushed [cpmap:gated_feed.pushed]
+              14'd131: r_rdata <= gated_feed_dropped; // gated_feed dropped [cpmap:gated_feed.dropped]
+              14'd132: r_rdata <= {12'd0, gated_feed_hiwater, 12'd0, gated_feed_occ}; // gated_feed status [cpmap:gated_feed.status]
               default: r_rdata <= 32'd0;
             endcase
             axil_rst <= AXIL_R_DATA;
@@ -398,6 +450,8 @@ module feprobe_top #(
   wire fwd_hit_out;
   wire [0:0] tcn_feed_cp_enable = r_tcn_feed_cp_enable;
   wire tcn_feed_cp_wr_en = r_tcn_feed_cp_wr_en;
+  wire [0:0] gated_feed_cp_enable = r_gated_feed_cp_enable;
+  wire gated_feed_cp_wr_en = r_gated_feed_cp_wr_en;
 
   processing_generated u_proc (
     .clk       (clk),
@@ -410,6 +464,7 @@ module feprobe_top #(
     .meta_flow_id  (16'b0),
     .meta_seen  (16'b0),
     .meta_dir  (8'b0),
+    .std_meta_drop  (1'b0),  // no shell source for this field
     .std_meta_packet_length  (16'({slot_byte_len[iss_slot]})),  // final: issue waits for tlast
     .std_meta_parsed_bytes  (16'(cutoff_byte)),  // bytes consumed by extract()
     .out_eth_valid     (out_eth_valid),
@@ -435,6 +490,8 @@ module feprobe_top #(
     .fwd_hit_out  (fwd_hit_out),
     .tcn_feed_push (tcn_feed_push),
     .tcn_feed_data (tcn_feed_data),
+    .gated_feed_push (gated_feed_push),
+    .gated_feed_data (gated_feed_data),
     .out_valid (proc_out_valid),   // aligned with out_*/drop
     .valid_out (proc_valid_out),   // legacy registered-late valid, unused here
     .drop      (proc_drop)

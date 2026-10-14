@@ -98,8 +98,10 @@ done
 # The Register RAW distance, in BOTH register modes. The loop above runs each
 # app once, in whatever mode it was last generated in, so --register-ram was
 # never covered -- and that is exactly where the reported number was wrong.
-if [ -x "$R/scripts/check_raw_distance.sh" ]; then
-  if ! "$R/scripts/check_raw_distance.sh" > "$O/raw_distance.log" 2>&1; then
+# Both checks run through `bash` and are tested with -f, not -x: git records
+# these scripts as 100644, so on a fresh clone a -x test skipped them silently.
+if [ -f "$R/scripts/check_raw_distance.sh" ]; then
+  if ! bash "$R/scripts/check_raw_distance.sh" > "$O/raw_distance.log" 2>&1; then
     echo "-----"; echo "RAW-DISTANCE MISMATCH:"; sed 's/^/  /' "$O/raw_distance.log"
     bad="$bad raw_distance"
   else
@@ -112,8 +114,8 @@ fi
 # (--nslot), not on which testbench runs. Same reason as above: the loop runs
 # each app in one mode. Also covers --tm-qlimit, whose testbench cannot live in
 # generated/ because tm_tail_drops does not exist without the flag.
-if [ -x "$R/scripts/check_tm_qdepth.sh" ]; then
-  if ! "$R/scripts/check_tm_qdepth.sh" > "$O/tm_qdepth.log" 2>&1; then
+if [ -f "$R/scripts/check_tm_qdepth.sh" ]; then
+  if ! bash "$R/scripts/check_tm_qdepth.sh" > "$O/tm_qdepth.log" 2>&1; then
     echo "-----"; echo "TRAFFIC-MANAGER QUEUE DEPTH:"; sed 's/^/  /' "$O/tm_qdepth.log"
     bad="$bad tm_qdepth"
   else

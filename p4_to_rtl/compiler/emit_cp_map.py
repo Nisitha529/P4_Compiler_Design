@@ -29,14 +29,26 @@ def _git_rev(repo_root):
     compiler that made it. None (not a guess) when this is not a git checkout.
     """
     try:
-        # --dirty matters: a map generated from uncommitted work would
+        # The -dirty suffix matters: a map generated from uncommitted work would
         # otherwise record the last commit's hash, which does NOT contain the
         # compiler that produced it. "8004ded-dirty" is honest; "8004ded" is a
         # lie that only shows up when someone tries to reproduce the build.
-        out = subprocess.run(['git', '-C', repo_root, 'describe',
-                              '--always', '--dirty'],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
+        #
+        # But only the INPUTS count: the compiler (this directory) and the P4
+        # sources. `git describe --dirty` looked at the whole tree, so
+        # regenerating app 2 after app 1 -- or any regression run -- marked a
+        # clean compiler dirty because of generated/ output, and every
+        # committed map said "-dirty", which made the suffix meaningless.
+        rev = subprocess.run(['git', '-C', repo_root, 'rev-parse', '--short', 'HEAD'],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if not rev:
+            return None
+        st = subprocess.run(['git', '-C', repo_root, 'status', '--porcelain',
+                             '--', '.', '../p4src'],
+                            capture_output=True, text=True, timeout=5)
+        if st.returncode != 0:
+            return rev
+        return rev + ('-dirty' if st.stdout.strip() else '')
     except (OSError, subprocess.SubprocessError):
         return None
 

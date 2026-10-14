@@ -321,7 +321,7 @@ def debug_ir(ir):
 def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_levels=None, ways=1,
                   axi_data_width=DEFAULT_AXI_DATA_W, board=None, self_test=False,
                   register_ram=False, nslot=4, tm_qlimit=None, fe_stage_depth=8,
-                  cp_map=False, clock_hz=None):
+                  cp_map=False, clock_hz=None, out_dir=None):
     """
     frontend: 'bmv2' | 'p4test' | None (auto-detect from P4 source)
     budget_levels: None (default) = today's behavior exactly, no budget-splitting.
@@ -351,6 +351,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
         Ethernet MAC/PHY. Only for the p4test/XSA frontend (only that frontend
         produces a top-level to wrap); emit_top.py itself is never modified by
         this flag.
+    out_dir: None (default) = generated/<app>/, as always. Otherwise the
+        directory to write into instead. For the regression's alternate builds
+        (another register mode, another --nslot): written into generated/ they
+        replaced the committed build and left the tree modified after every run.
     """
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -369,17 +373,18 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
     if not os.path.exists(p4_path):
         raise FileNotFoundError(f"P4 source not found: {p4_path}")
 
-    out_dir        = os.path.join(base_dir, f"../generated/{app_name}")
+    if out_dir is None:
+        out_dir    = os.path.join(base_dir, f"../generated/{app_name}")
     out_parser     = os.path.join(out_dir, "parser_generated.sv")
     out_processing = os.path.join(out_dir, "processing_generated.sv")
     out_deparser   = os.path.join(out_dir, "deparser_generated.sv")
     out_top        = os.path.join(out_dir, f"{app_name}_top.sv")
 
-    os.makedirs(out_dir, exist_ok=True)
-
     # ── Stage 1: choose front-end based on architecture ───────────────
+    # Detected even when the frontend is forced: the argument checks below
+    # name the architecture, and with --frontend given it used to be unbound.
+    arch = _detect_p4_arch(p4_path)
     if frontend is None:
-        arch = _detect_p4_arch(p4_path)
         frontend = 'p4test' if arch in ('xsa', 'p4rtl') else 'bmv2'
         print(f"[INFO] Detected architecture : {arch}  → using {frontend} frontend")
 
@@ -411,6 +416,10 @@ def run_compiler(app_name, p4c_bin=None, p4test_bin=None, frontend=None, budget_
             f"table does not have them, so the generated top level would not "
             f"elaborate. Use ways=1 here; the d-way variant is reachable only "
             f"from the module-level (v1model) path today.")
+
+    # Only once the arguments are known to be good, so a refused run does not
+    # leave an empty output directory behind.
+    os.makedirs(out_dir, exist_ok=True)
 
     if frontend == 'p4test':
         print("[INFO] Running p4test MidEnd front-end...")
@@ -723,6 +732,14 @@ def main():
               "clock and memory type are system choices)."),
     )
     parser.add_argument(
+        "--out-dir", default=None, metavar="DIR",
+        help=("Write the generated files into DIR instead of generated/<app>/. "
+              "For alternate builds of an app (another register mode, another "
+              "--nslot) that must not overwrite the committed one. A UserExtern "
+              "body is user code that lives in the output directory, so a fresh "
+              "DIR gets the placeholder, not your edited block."),
+    )
+    parser.add_argument(
         "--board",
         choices=available_boards(),
         default=None,
@@ -843,6 +860,7 @@ def main():
         cp_map=args.cp_map,
         clock_hz=args.clock_hz,
         tm_qlimit=args.tm_qlimit,
+        out_dir=args.out_dir,
     )
 
 
