@@ -52,9 +52,9 @@ module echo_selftest_top #(
 
   localparam int KEEP_W        = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BYTES = 256 * KEEP_W;  // 8192
-  localparam int TMPL_BASE_WORD  = 16;
-  localparam int CAP_BASE_WORD   = 2064;
-  localparam int ADDR_SPAN_WORDS = 4112;
+  localparam int TMPL_BASE_WORD  = 32;
+  localparam int CAP_BASE_WORD   = 2080;
+  localparam int ADDR_SPAN_WORDS = 4128;
   localparam int TMPL_ROWS     = 256;  // == MAX_PKT_BEATS; one row per beat
   localparam int CAP_ROWS      = TMPL_ROWS;
   localparam int WORDS_PER_ROW = 8;  // KEEP_W/4
@@ -408,7 +408,7 @@ module echo_selftest_top #(
   // Row/word-within-row split for the tmpl_buf CP write below -- WORDS_PER_ROW
   // (KEEP_W/4) 4-byte AXI4-Lite words fit in one KEEP_W-byte BRAM row; both are
   // powers of 2 so this is a pure bit-select, never a division.
-  wire [13:0] wr_word_idx = st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd16;
+  wire [13:0] wr_word_idx = st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] - 14'd32;
   wire [13:0] wr_row = wr_word_idx[13:3];
 
   assign st_axil_awready = (st_axil_st == ST_AXIL_IDLE);
@@ -438,7 +438,7 @@ module echo_selftest_top #(
         end
         ST_AXIL_WDATA: begin
           if (st_axil_wvalid && st_axil_wready) begin
-            if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd16) begin
+            if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd32) begin
               case (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2])
                 14'd0: gen_pkt_len_reg     <= st_axil_wdata[13:0];
                 14'd1: gen_pkt_count_reg   <= st_axil_wdata;
@@ -447,9 +447,9 @@ module echo_selftest_top #(
                 14'd4: gen_ipg_reg         <= st_axil_wdata;
                 14'd5: r_gen_start         <= 1'b1;
                 14'd8: r_cap_start         <= 1'b1;
-                default: ; // 6,7,9,10,11 read-only; 12-15 reserved
+                default: ; // the rest are read-only or reserved
               endcase
-            end else if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd2064) begin
+            end else if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd2080) begin
               // template buffer word write -- big-endian byte packing (see register
               // map). Both mirrored copies written identically every cycle so they
               // can never diverge -- see the buffer declaration comment.
@@ -601,24 +601,27 @@ module echo_selftest_top #(
       case (st_axil_rst)
         ST_AXIL_R_IDLE: begin
           if (st_axil_arvalid) begin
-            if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd16) begin
+            if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd32) begin
               case (st_axil_araddr[ST_AXIL_ADDR_W-1:2])
                 14'd6:  st_r_rdata <= {30'd0, gen_done, gen_busy};
                 14'd7:  st_r_rdata <= sent_count;
                 14'd9:  st_r_rdata <= {30'd0, cap_done, cap_busy};
                 14'd10: st_r_rdata <= cap_byte_count;
                 14'd11: st_r_rdata <= 32'd8192;
+                14'd17: st_r_rdata <= 32'd32;
+                14'd18: st_r_rdata <= 32'd2080;
+                14'd19: st_r_rdata <= 32'd4128;
                 default: st_r_rdata <= 32'd0;
               endcase
               st_axil_rst <= ST_AXIL_R_DATA;
-            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd2064) begin
-              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16) >> 3;
-              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd16) & 14'd7;
+            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd2080) begin
+              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd32) >> 3;
+              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd32) & 14'd7;
               st_r_is_cap <= 1'b0;
               st_axil_rst <= ST_AXIL_R_WAIT;
-            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd4112) begin
-              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064) >> 3;
-              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2064) & 14'd7;
+            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd4128) begin
+              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2080) >> 3;
+              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd2080) & 14'd7;
               st_r_is_cap <= 1'b1;
               st_axil_rst <= ST_AXIL_R_WAIT;
             end else begin

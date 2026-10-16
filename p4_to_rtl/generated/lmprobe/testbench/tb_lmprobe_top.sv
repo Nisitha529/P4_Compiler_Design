@@ -22,8 +22,16 @@ module tb_lmprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -189,7 +197,7 @@ module tb_lmprobe_top;
     $display("== T1: one 64 B frame accumulates into the egress register ==");
     ingress_port = 9'd3;
     fork send_frame(64, 0); watch_output(200); join
-    chk("T1: frame forwarded",                       out_beats == 2 && saw_tlast);
+    chk("T1: frame forwarded",                       out_beats == nbeats_of(64) && saw_tlast);
     chk("T1: egress saw the port ingress chose (1)", o_port_seen === 9'd1);
     chk("T1: running total == 64",                   o_total === 32'd64);
 

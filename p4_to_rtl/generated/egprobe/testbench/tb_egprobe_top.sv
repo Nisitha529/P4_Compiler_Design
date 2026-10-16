@@ -35,8 +35,16 @@ module tb_egprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -259,7 +267,7 @@ module tb_egprobe_top;
     // ---- T1: plain forward through both stages ---------------------------
     $display("== T1: etype 0x0001 -> port 1; egress rewrites src MAC ==");
     fork send_frame(16'h0001); watch_output(80); join
-    chk("T1: packet forwarded (2 beats)",            out_beats == 2 && saw_tlast);
+    chk("T1: packet forwarded (one frame)",            out_beats == nbeats_of(64) && saw_tlast);
     chk("T1: sideband egress_port == 1 (ingress std meta)", out_port === 9'd1);
     chk("T1: src MAC rewritten by EGRESS port_smac(1)", beat_smac(out_first_beat) === 48'h0000AA000001);
     chk("T1: etype untouched",                       beat_etype(out_first_beat) === 16'h0001);
@@ -269,7 +277,7 @@ module tb_egprobe_top;
     // ---- T2: PHV pass-through -------------------------------------------
     $display("\n== T2: etype 0x00F0 -> ingress retags to 0x0002/port 2; egress keys on the NEW etype ==");
     fork send_frame(16'h00F0); watch_output(80); join
-    chk("T2: packet forwarded",                      out_beats == 2 && saw_tlast);
+    chk("T2: packet forwarded",                      out_beats == nbeats_of(64) && saw_tlast);
     chk("T2: etype on the wire is the ingress-rewritten 0x0002", beat_etype(out_first_beat) === 16'h0002);
     chk("T2: sideband egress_port == 2",             out_port === 9'd2);
     chk("T2: src MAC = port_smac(2): egress saw ingress's PHV, not the packet", beat_smac(out_first_beat) === 48'h0000AA000002);
@@ -294,7 +302,7 @@ module tb_egprobe_top;
     // ---- T5: no match anywhere -------------------------------------------
     $display("\n== T5: unknown etype -> passes untouched, port 0 ==");
     fork send_frame(16'h0800); watch_output(80); join
-    chk("T5: packet forwarded",                      out_beats == 2 && saw_tlast);
+    chk("T5: packet forwarded",                      out_beats == nbeats_of(64) && saw_tlast);
     chk("T5: src MAC untouched (no port_smac entry for port 0)", beat_smac(out_first_beat) === 48'h66778899aabb);
     chk("T5: sideband egress_port == 0",             out_port === 9'd0);
     query_tx_pkts(4'd0, c0);

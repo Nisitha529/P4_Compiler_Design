@@ -1,8 +1,8 @@
 {
   "app": "feprobe",
-  "compiler_git": "645d88d-dirty",
+  "compiler_git": "7d2bfc3-dirty",
   "axi_data_width": 256,
-  "clock_hz": 250000000,
+  "clock_hz": null,
   "axil": {
     "addr_w": 16,
     "data_w": 32,

@@ -309,7 +309,17 @@ Key ideas, each of which exists for a measured reason:
   until TX retires it, so at most `NSLOT` packets exist at once, and
   `TM_INFLIGHT` of them are past the scheduler. The deepest a single queue can
   therefore read is **`NSLOT - TM_INFLIGHT`** — 2 at the default `--nslot 4`,
-  6 at `--nslot 8`. A program that wants to see real congestion numbers needs
+  6 at `--nslot 8` — **less one when a whole packet fits in a single beat.**
+  A slot is retired when the packet's last beat is *loaded* into the output
+  register, not when the wire accepts it, so a one-beat packet frees its slot
+  immediately and stops counting toward `tm_inflight` while it still sits there
+  waiting for `tready`; one more packet then gets past the scheduler. That is
+  safe — the bytes are already registered — but it means the ceiling depends on
+  the beat width, so a program reacting to queue depth sees different numbers
+  at 256 and 512 for the same traffic. `TM_INFLIGHT = 2` was chosen from a
+  throughput sweep at 256 bits and is deliberately left alone: making the gate
+  count the packet in the output register would change measured throughput to
+  fix something that is an accounting detail, not a defect. A program that wants to see real congestion numbers needs
   the deeper ring; a program that reacts to depth 1 is reacting to nothing.
   The depth is **per queue**, not a global occupancy: the same burst split over
   two output ports halves it. Measured by `qdprobe`
@@ -327,6 +337,21 @@ Key ideas, each of which exists for a measured reason:
   multicast copy have its own `egress_port` and its own per-port rewrites.
 - **Order.** Within a queue, arrival order. Across queues, the scheduler's order —
   the shell reorders, and that is intended.
+- **The beat width is not just a port width.** `--axi-data-width` resizes
+  `HDR_MAX_BYTES` (the header region is beat-rounded: 32 bytes at 256, 64 at
+  512) and `MAX_PKT_BYTES` with it. So the same frame can be "header plus
+  payload" at one width and "entirely header, no payload" at another, and the
+  payload buffer holds exactly the bytes past the header region. The
+  length-changing TX path got this wrong: it asked the payload buffer for a
+  beat whenever the beat window reached past `tx_pstart`, without checking that
+  a payload existed at all, so a packet that fitted inside the header region
+  waited forever for a beat that never comes — and because the slot was never
+  retired, the ring filled and the **whole link** stalled behind that one
+  packet. Fixed by gating on `tx_has_pl = (tx_in_len > HDR_MAX_BYTES)`. It was
+  reachable at the 256-bit default too, with a frame of 32 bytes or less;
+  running at 512 is just what made a 64-byte frame hit it. `tb_lenprobe_top`
+  T6/T7/T8 pin it, deriving the frame size from the DUT's own `HDR_MAX_BYTES`
+  so they stay meaningful at any width.
 
 ### Control plane
 
@@ -382,6 +407,37 @@ Use `--self-test` for board runs: a bare AXI top needs ~721 pins and the DE2-115
 has 523, so the self-test wrapper (on-chip generator + checker) is what actually
 fits.
 
+**The wrapper must drive every input of the core it wraps,** and that is not
+automatic: it instantiates `<app>_top` by name, and SystemVerilog accepts an
+instantiation with ports left out. A missing output is merely unobserved; a
+missing *input* is undriven — X in simulation, tied low by synthesis — and
+nothing warns. Two were found that way:
+
+* **`<name>_tready`** for every `FeatureExport` instance, so the shell's staging
+  FIFO filled and every record after it was counted as dropped. On a board whose
+  only master is JTAG-to-AXI, that made the feature stream — the entire product
+  of a TCN or IDS program — unobservable from the self-test build.
+* **`ingress_port`**, for any program that reads
+  `standard_metadata.ingress_port`, so every packet looked like it arrived on
+  port 0. `lmprobe`'s committed wrapper had this live.
+
+Both are fixed, and `scripts/check_selftest_ports.py` now fails the regression
+on any core input a wrapper leaves undriven, so the next new top-level port
+cannot repeat it quietly. The wrapper also **captures records on-chip**: a
+window of the first N per instance, readable over the self-test bus
+(`rec_arm`/`rec_sel`/`rec_count`/`rec_total` plus the window itself), with
+`rec_total - rec_count` reporting exactly how many were not kept. The record
+streams are additionally brought out as wrapper outputs for an ILA or DMA tap —
+outputs only, with no `tready` input, because letting an outside consumer stall
+that stream is what the never-backpressure contract forbids.
+
+The self-test register map now also reports its own window bases
+(`tmpl_base_word`, `cap_base_word`, `rec_base_word`), because the testbenches
+had them hardcoded as `16` and `16 + 8192/4`: those move with
+`--axi-data-width` *and* moved again when the control block grew for the record
+window, at which point two testbenches failed with no code change of their
+own.
+
 ---
 
 ## 7. Verification
@@ -416,7 +472,25 @@ from `scripts/regress.sh`:
 |---|---|
 | `check_raw_distance.sh` | `rawprobe` in both register modes — the synchronous read is one packet further apart, and only the default mode was ever covered |
 | `check_tm_qdepth.sh` | `qdprobe` at `--nslot 8` (a queue can only reach `NSLOT - TM_INFLIGHT`, so the default ring could never show a depth above 2) and again with `--tm-qlimit 3` (whose `tm_tail_drops` does not exist without the flag) |
+| `check_axi_width.sh` | every top-level testbench at `--axi-data-width 512`. Every committed build is 256-bit, so the loop could only ever cover that — and the width is what `boards/vcu118.json` exists for |
 | `check_cp_map.py` | not a regeneration — cross-checks every `<app>_cp_map.json` against its own decoder |
+| `check_selftest_ports.py` | also not a regeneration — checks that every `--self-test` wrapper connects every INPUT of the core it instantiates (see §6's note; this is the guard for a whole class of silent bug) |
+
+**Two sampling rules for a top-level testbench,** both learned from failures
+that looked like design bugs:
+
+* **Read `m_axis` on the negedge, not just after the posedge.** Just after the
+  edge the output register has already advanced, so a "first beat of this
+  packet" capture lands on beat 0 or beat 1 depending on whether `tready` was
+  high before the packet appeared. That reported the ECN codepoint of a payload
+  byte for the first packet out of a congested queue, and it only showed up
+  when the burst got longer.
+* **Read a per-slot internal signal when it is USED, not when the beat is
+  accepted.** The slot is popped as its last beat is loaded, so while that beat
+  is still on `m_axis`, `tx_slot` and everything indexed by it already read X.
+  Sampling `hdr_delta`/`tx_splice` on the `m_axis` handshake worked only
+  because a 64-byte frame was never one beat; at 512 it returned another slot's
+  values. Sample on the DUT's own `emit_beat`.
 
 **What the testbenches are careful about,** because each of these cost real
 debugging time:

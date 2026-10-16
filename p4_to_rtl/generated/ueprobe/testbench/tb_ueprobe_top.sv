@@ -39,8 +39,16 @@ module tb_ueprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -97,12 +105,16 @@ module tb_ueprobe_top;
     pkt[3]=dst[23:16]; pkt[4]=dst[15:8];  pkt[5]=dst[7:0];
     pkt[6]=8'h66; pkt[7]=8'h77; pkt[8]=8'h88; pkt[9]=8'h99; pkt[10]=8'haa; pkt[11]=8'hbb;
     pkt[12] = etype[15:8]; pkt[13] = etype[7:0];
-    for (int b = 0; b < 2; b++) begin
+    // Beat count DERIVED, and the byte index guarded: this loop used to be
+    // `b < 2` over a 64-entry array, which reads past the array (and sends
+    // twice the frame) as soon as a beat is wider than 32 bytes.
+    for (int b = 0; b < nbeats_of(64); b++) begin
       beat = '0;
-      for (int i = 0; i < TB_BEAT_BYTES; i++) beat[i*8 +: 8] = pkt[b*TB_BEAT_BYTES + i];
+      for (int i = 0; i < TB_BEAT_BYTES; i++)
+        if (b*TB_BEAT_BYTES + i < 64) beat[i*8 +: 8] = pkt[b*TB_BEAT_BYTES + i];
       @(negedge clk);
       s_axis_tdata = beat; s_axis_tkeep = '1;
-      s_axis_tvalid = 1'b1; s_axis_tlast = (b == 1);
+      s_axis_tvalid = 1'b1; s_axis_tlast = (b == nbeats_of(64) - 1);
       @(posedge clk);
       while (!s_axis_tready) @(posedge clk);
       #1;
@@ -142,14 +154,14 @@ module tb_ueprobe_top;
     // ---- T1: single frame, both externs ----------------------------------
     $display("== T1: header reaches the externs, results reach the sideband ==");
     run_frame(48'hAABBCCDD1234, 16'h0899);
-    chk("T1: frame emerged",                       saw_tlast && out_beats == 2);
+    chk("T1: frame emerged",                       saw_tlast && out_beats == nbeats_of(64));
     chk("T1: out_meta_res  == eth.dst[15:0]",      out_meta_res  === 16'h1234);
     chk("T1: out_meta_res2 == eth.etype[7:0]",     out_meta_res2 === 8'h99);
 
     // ---- T2: a different frame, no stale latch ---------------------------
     $display("\n== T2: second frame replaces the sideband, no stale value ==");
     run_frame(48'h0102030405AB, 16'h86DD);
-    chk("T2: frame emerged",                       saw_tlast && out_beats == 2);
+    chk("T2: frame emerged",                       saw_tlast && out_beats == nbeats_of(64));
     chk("T2: out_meta_res  updated",               out_meta_res  === 16'h05AB);
     chk("T2: out_meta_res2 updated",               out_meta_res2 === 8'hDD);
 
@@ -158,7 +170,7 @@ module tb_ueprobe_top;
     bad = 0;
     for (int i = 1; i <= 12; i++) begin
       run_frame({32'h00000000 + i, 16'(16'h1000 + i*17)}, 16'(16'h0800 + i));
-      if (!(saw_tlast && out_beats == 2)) bad++;
+      if (!(saw_tlast && out_beats == nbeats_of(64))) bad++;
       if (out_meta_res  !== 16'(16'h1000 + i*17)) bad++;
       if (out_meta_res2 !== 8'((16'h0800 + i) & 16'hFF)) bad++;
     end

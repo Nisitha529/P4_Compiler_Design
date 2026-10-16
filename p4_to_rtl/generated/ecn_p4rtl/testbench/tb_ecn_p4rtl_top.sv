@@ -16,8 +16,16 @@ module tb_ecn_p4rtl_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -150,8 +158,14 @@ module tb_ecn_p4rtl_top;
   logic        collecting = 0;
   logic        cur_seen;
   logic [1:0]  cur_ecn;
-  always @(posedge clk) begin
-    #1;
+  // Sampled on the NEGEDGE: m_axis_tdata then holds the beat currently being
+  // PRESENTED. Read instead just after the posedge, the output register has
+  // already advanced to the next beat, so which beat the "first beat of this
+  // packet" capture lands on depends on whether tready was high before the
+  // packet appeared -- fine when traffic flows freely, wrong after a stall.
+  // That is how the ECN codepoint of the first packet out of a congested queue
+  // came back as a payload byte (reported as CE on a packet nothing marked).
+  always @(negedge clk) begin
     if (collecting && m_axis_tvalid && m_axis_tready) begin
       if (!cur_seen) begin cur_ecn = m_axis_tdata[15*8 +: 2]; cur_seen = 1'b1; end
       if (m_axis_tlast) begin got_ecn.push_back(cur_ecn); got_n++; cur_seen = 1'b0; end
@@ -174,22 +188,41 @@ module tb_ecn_p4rtl_top;
     chk("T1: ECN still ECT(0), not marked",  got_n == 1 && got_ecn[0] === 2'd2);
 
     $display("\n== T2: packets queued behind another are marked CE ==");
+    // ECN_THRESHOLD is 1 on enq_qdepth, which EXCLUDES the packet itself, so a
+    // packet is marked only if another was ALREADY waiting when it arrived.
+    // How many that takes depends on how many get past the scheduler before
+    // anything waits: TM_INFLIGHT, plus one more when a whole frame fits in a
+    // single beat (the shell retires a slot as the last beat is LOADED, so a
+    // one-beat packet stops counting toward tm_inflight while it waits for
+    // tready -- see qdprobe). Six packets is enough either way; four was
+    // enough only at 32-byte beats.
+    // The release is FORKED because six packets exceed the slot ring: with the
+    // output held off, s_axis_tready drops and a sequential send would wait on
+    // it forever -- a deadlock in the TESTBENCH, not the design.
     got_n = 0; got_ecn.delete(); cur_seen = 0;
     m_axis_tready = 1'b0;
     collecting = 1;
-    send_ip(2'd2, 32'h0A000001);
-    send_ip(2'd2, 32'h0A000001);
-    send_ip(2'd1, 32'h0A000001);
-    send_ip(2'd2, 32'h0A000001);
-    repeat (40) @(posedge clk);
-    m_axis_tready = 1'b1;
+    fork
+      begin : t2_releaser
+        repeat (40) @(posedge clk);
+        @(negedge clk); m_axis_tready = 1'b1;
+      end
+      begin : t2_sender
+        send_ip(2'd2, 32'h0A000001);
+        send_ip(2'd2, 32'h0A000001);
+        send_ip(2'd1, 32'h0A000001);
+        send_ip(2'd2, 32'h0A000001);
+        send_ip(2'd2, 32'h0A000001);
+        send_ip(2'd1, 32'h0A000001);
+      end
+    join
     repeat (400) @(posedge clk);
     collecting = 0;
-    chk("T2: all 4 packets emerged", got_n == 4);
+    chk("T2: all 6 packets emerged", got_n == 6);
     n_marked = 0;
     foreach (got_ecn[k]) if (got_ecn[k] === 2'd3) n_marked++;
-    $display("    [INFO] ECN codepoints out: %0d %0d %0d %0d (3 = CE)",
-             got_ecn[0], got_ecn[1], got_ecn[2], got_ecn[3]);
+    $display("    [INFO] ECN codepoints out: %0d %0d %0d %0d %0d %0d (3 = CE)",
+             got_ecn[0], got_ecn[1], got_ecn[2], got_ecn[3], got_ecn[4], got_ecn[5]);
     chk("T2: at least one packet was marked CE", n_marked >= 1);
     chk("T2: the FIRST packet is unmarked -- it found an empty queue",
         got_ecn[0] === 2'd2);

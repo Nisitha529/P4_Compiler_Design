@@ -32,8 +32,16 @@ module tb_smprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -136,7 +144,7 @@ module tb_smprobe_top;
     join
     chk("T1: output packet emerged",       out_beats > 0);
     chk("T1: output packet completed",     saw_tlast);
-    chk("T1: whole frame came out (2 beats)", out_beats == 2);
+    chk("T1: whole frame came out", out_beats == nbeats_of(64));
 
     // ---- T2: bad etherType -> verify fails -> dropped ---------------------
     $display("\n== T2: etype 0xFFFF, verify FAILS -> parser_error=BadEtherType -> dropped ==");
@@ -152,7 +160,7 @@ module tb_smprobe_top;
       send_frame(16'h0800);
       watch_output(80);
     join
-    chk("T3: output packet emerged again",  out_beats == 2 && saw_tlast);
+    chk("T3: output packet emerged again",  out_beats == nbeats_of(64) && saw_tlast);
 
     // ---- T4: a DROPPED packet that has payload beats beyond the header region --
     // 224 B = 7 beats: 3 header rows + 4 payload beats in the FIFO. Those four
@@ -170,7 +178,7 @@ module tb_smprobe_top;
       send_frame(16'h0800, 224);
       watch_output(120);
     join
-    chk("T5: exactly 7 beats, ending in tlast", out_beats == 7 && saw_tlast);
+    chk("T5: the whole 224 B frame, ending in tlast", out_beats == nbeats_of(224) && saw_tlast);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)",

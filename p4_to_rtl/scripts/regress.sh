@@ -123,6 +123,33 @@ if [ -f "$R/scripts/check_tm_qdepth.sh" ]; then
   fi
 fi
 
+# Every --self-test wrapper must DRIVE every input of the core it wraps. An
+# omitted port in an instantiation is legal SystemVerilog and silent, and two
+# real inputs were found undriven that way (FeatureExport's tready, and
+# ingress_port) -- both invisible in simulation until something read X.
+if [ -f "$R/scripts/check_selftest_ports.py" ]; then
+  if ! python3 "$R/scripts/check_selftest_ports.py" > "$O/selftest_ports.log" 2>&1; then
+    echo "-----"; echo "SELF-TEST WRAPPER PORTS:"; sed 's/^/  /' "$O/selftest_ports.log"
+    bad="$bad selftest_ports"
+  elif ! grep -q "nothing to check" "$O/selftest_ports.log"; then
+    echo "-----"
+    echo "selftest_ports: $(grep -c '^ok ' "$O/selftest_ports.log") wrapper(s) drive every core input"
+  fi
+fi
+
+# The 512-bit datapath. Same reason as the two above: --axi-data-width is a
+# GENERATOR flag, every committed build is 256-bit, and the per-app loop can
+# only run what was generated. This is the width boards/vcu118.json exists for.
+if [ -x "$R/scripts/check_axi_width.sh" ]; then
+  if ! "$R/scripts/check_axi_width.sh" > "$O/axi_width.log" 2>&1; then
+    echo "-----"; echo "512-BIT DATAPATH:"; sed 's/^/  /' "$O/axi_width.log"
+    bad="$bad axi_width"
+  else
+    echo "-----"
+    echo "axi_width: $(grep -c '^ok ' "$O/axi_width.log") testbench(es) pass at --axi-data-width 512"
+  fi
+fi
+
 # Any <app>_cp_map.json in the tree is checked against its decoder. The map's
 # whole value is that host software can trust it, so a drift between the two has
 # to fail here rather than on hardware. Silent when no map has been generated.

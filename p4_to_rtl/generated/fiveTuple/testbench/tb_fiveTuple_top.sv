@@ -59,8 +59,20 @@ module tb_fiveTuple_top;
   // compiled against (see generated/fiveTuple/fiveTuple_top.sv's own
   // AXI_DATA_W parameter) -- every beat-indexed loop below derives its
   // bound from this instead of a hardcoded byte count.
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
+  // T9 reads this from the DUT; declared here because xvlog rejects a
+  // use before its declaration.
+  int tb_max_pkt_bytes;
+
 
   // ── AXI4-Stream ────────────────────────────────────────────────────────────
   logic [TB_AXI_DATA_W-1:0]   s_axis_tdata;
@@ -657,20 +669,25 @@ module tb_fiveTuple_top;
       append_eth(16'h0800);
       append_ipv4(4'd5, 8'd17, 32'hC0A8000D, 32'hC0A8000E);
       append_udp(16'd1, 16'd2);
-      // MAX_PKT_BEATS=256 -> 8192 bytes (256 * TB_BEAT_BYTES); push well past that.
-      append_payload(8300, 8'h55);
+      // The truncation point is the DUT's own MAX_PKT_BEATS * BEAT_BYTES,
+      // read hierarchically rather than written as 8192: that literal was
+      // 256 beats x 32 bytes, so at --axi-data-width 512 the frame below no
+      // longer reached the limit and the test silently stopped testing it.
+      tb_max_pkt_bytes = dut.MAX_PKT_BYTES;
+      append_payload(tb_max_pkt_bytes + 108 - pb.size(), 8'h55);
       pkt_arr = pb;
       // Build the expected (truncated) array with a plain loop -- iverilog's
       // `new[N](src)` sized-copy constructor hit an internal assertion
       // failure (vvp_darray.cc shallow_copy) on large sizes, so avoid it.
-      expect_arr = new[8192];
-      for (int i = 0; i < 8192; i++) expect_arr[i] = pkt_arr[i];
+      expect_arr = new[tb_max_pkt_bytes];
+      for (int i = 0; i < tb_max_pkt_bytes; i++) expect_arr[i] = pkt_arr[i];
       fork
         send_packet(pkt_arr);
         capture_response();
       join
-      chk("T9: output truncated to MAX_PKT_BEATS*BEAT_BYTES bytes", rx_bytes.size() == 8192);
-      chk("T9: truncated content matches the first 8192 input bytes",
+      chk("T9: output truncated to MAX_PKT_BEATS*BEAT_BYTES bytes",
+          rx_bytes.size() == tb_max_pkt_bytes);
+      chk("T9: truncated content matches that many input bytes",
           bytes_equal(rx_bytes, expect_arr));
       chk("T9: output correctly terminated with tlast", rx_tlast_cycle != -1);
     end

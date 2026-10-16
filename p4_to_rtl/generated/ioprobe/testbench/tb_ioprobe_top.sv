@@ -24,8 +24,16 @@ module tb_ioprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -203,7 +211,7 @@ module tb_ioprobe_top;
     $display("== T1: ingress_port delivered and used as a table key ==");
     ingress_port = 9'd3;
     fork send_frame(64, 0); watch_output(120); join
-    chk("T1: packet forwarded",                       out_beats == 2 && saw_tlast);
+    chk("T1: packet forwarded",                       out_beats == nbeats_of(64) && saw_tlast);
     chk("T1: meta.iport == the driven ingress_port 3", o_iport === 9'd3);
     chk("T1: port_fwd(3) hit -> egress_port 7",        o_eport === 9'd7);
     ingress_port = 9'd4;
@@ -254,7 +262,7 @@ module tb_ioprobe_top;
     fork send_frame(160, 0); watch_output(200); join
     chk("T5: 160 B is over it -> dropped",            out_beats == 0);
     fork send_frame(64, 0);  watch_output(160); join
-    chk("T5: a short frame after the drop still passes", out_beats == 2 && saw_tlast);
+    chk("T5: a short frame after the drop still passes", out_beats == nbeats_of(64) && saw_tlast);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);

@@ -40,6 +40,14 @@ module tb_qdprobe_top;
 
   parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -146,7 +154,7 @@ module tb_qdprobe_top;
   endtask
 
   logic [31:0] r0;
-  int nslot, inflight, exp_deep, max_qd, max_enq, min_deq;
+  int nslot, inflight, pass_thru, exp_deep, max_qd, max_enq, min_deq;
   // A plain counter array, not an associative one: iverilog 11 has no
   // associative arrays, and a testbench that only builds under one simulator
   // is not a check on anything.
@@ -163,9 +171,19 @@ module tb_qdprobe_top;
     // What the shell was built with decides what the right answers are.
     nslot    = dut.NSLOT;
     inflight = dut.TM_INFLIGHT;
-    exp_deep = nslot - inflight;   // packets left WAITING when the ring is full
-    $display("  built with NSLOT=%0d, TM_INFLIGHT=%0d  ->  deepest queue = %0d",
-             nslot, inflight, exp_deep);
+    // How many packets get past the scheduler before anything has to wait.
+    // TM_INFLIGHT is the gate, but there is ONE MORE when a whole packet fits
+    // in a single beat: the shell retires a slot when the packet's LAST beat is
+    // LOADED into the output register, not when the wire accepts it, so a
+    // one-beat packet frees its slot immediately and stops being counted in
+    // tm_inflight while it still sits there waiting for tready. That is safe
+    // (the bytes are already registered) but it does let one extra packet
+    // leave the queue -- so the depth a queue can reach depends on the beat
+    // width, and this test would otherwise be pinned to --axi-data-width 256.
+    pass_thru = inflight + ((64 <= TB_BEAT_BYTES) ? 1 : 0);
+    exp_deep  = nslot - pass_thru;   // packets left WAITING when the ring is full
+    $display("  built with NSLOT=%0d, TM_INFLIGHT=%0d, %0d B beats -> %0d packet(s) pass straight through, deepest queue = %0d",
+             nslot, inflight, TB_BEAT_BYTES, pass_thru, exp_deep);
 
     // etype 0x0801 -> port 5 (queue 5 & 3 = 1);  0x0802 -> port 6 (queue 2)
     axil_write(0, 0); axil_write(1, 1); axil_write(2, 16'h0801); axil_write(3, 5); axil_write(4, 1);
@@ -236,7 +254,7 @@ module tb_qdprobe_top;
       r0 = recs[i];
       if (run_start < 0 && int'(r0[23:16]) == exp_deep) run_start = i;
     end
-    chk("G3: the deep run starts where the stall ended", run_start == inflight);
+    chk("G3: the deep run starts where the stall ended", run_start == pass_thru);
     bad_step = 0; run_len = 0;
     if (run_start >= 0) begin
       for (int i = run_start; i < recs.size(); i++) begin
@@ -276,8 +294,11 @@ module tb_qdprobe_top;
       if (int'(r0[23:16]) > max_qd) max_qd = int'(r0[23:16]);
     end
     chk("G4: every packet was still forwarded", out_pkts == nslot);
+    // CEILING of half: the waiting packets alternate between the two queues,
+    // so when there is an odd number of them one queue holds the extra. (6
+    // waiting -> 3 and 3; 5 waiting -> 3 and 2.)
     chk("G4: half the depth, because half the packets are in the other queue",
-        max_qd == exp_deep / 2);
+        max_qd == (exp_deep + 1) / 2);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);

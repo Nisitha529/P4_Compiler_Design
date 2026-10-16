@@ -8,12 +8,11 @@
 // emit_selftest.py adds: the template-buffer generator, the capture logic,
 // and the new, independent self-test AXI4-Lite bus.
 //
-// Word offsets and default-width-specific constants below (TMPL_BASE_WORD,
-// CAP_BASE_WORD) match emit_selftest.py's register map at the DEFAULT
-// --axi-data-width (256 bits, MAX_PKT_BYTES=8192) -- same hardcoding
-// precedent tb_fiveTuple_top.sv's own T9 already uses for width-derived
-// constants (the committed testbench targets the default build it's
-// actually compiled against).
+// The window bases are READ FROM THE DUT (words 17/18/19), not hardcoded: they
+// move with --axi-data-width and they moved again when the control block grew
+// to make room for the FeatureExport record window, at which point a
+// hardcoded 16 silently addressed the wrong thing. Those three capability
+// words exist precisely so software never has to know the layout.
 //
 // Run against the committed generated/fiveTuple/fiveTuple_selftest_top.sv
 // (produced via `python3 main.py fiveTuple --self-test`, no special flags
@@ -51,8 +50,11 @@ module tb_fiveTuple_selftest_top;
   localparam int CAP_STATUS       = 9;
   localparam int CAP_BYTE_COUNT   = 10;
   localparam int MAX_PKT_BYTES_REG = 11;
-  localparam int TMPL_BASE_WORD   = 16;
-  localparam int CAP_BASE_WORD    = 16 + 8192/4;  // 2064, default 256-bit width
+  localparam int TMPL_BASE_REG    = 17;   // R: where tmpl_buf starts
+  localparam int CAP_BASE_REG     = 18;   // R: where cap_buf starts
+  localparam int REC_BASE_REG     = 19;   // R: where the record window starts
+  // Filled from the DUT in the initial block below, never hardcoded.
+  int TMPL_BASE_WORD, CAP_BASE_WORD;
 
   // ── Table-CP AXI4-Lite (unused by this testbench -- tie idle) ──────────────
   logic [15:0] s_axil_awaddr = 0;
@@ -236,6 +238,17 @@ module tb_fiveTuple_selftest_top;
       st_read(GEN_SENT_COUNT, v);  chk("T1: gen_sent_count==0 after reset", v == 32'd0);
       st_read(MAX_PKT_BYTES_REG, v);
       chk("T1: max_pkt_bytes capability register == 8192 (default width)", v == 32'd8192);
+      // The window bases come from the DUT, so this testbench survives both a
+      // width change and a change to the control-register block.
+      st_read(TMPL_BASE_REG, v); TMPL_BASE_WORD = int'(v);
+      st_read(CAP_BASE_REG,  v); CAP_BASE_WORD  = int'(v);
+      $display("      window bases from the DUT: tmpl=%0d cap=%0d", TMPL_BASE_WORD, CAP_BASE_WORD);
+      chk("T1: tmpl_base is past the control block", TMPL_BASE_WORD >= 16);
+      chk("T1: cap_base is one whole packet buffer above tmpl_base",
+          CAP_BASE_WORD == TMPL_BASE_WORD + 8192/4);
+      st_read(REC_BASE_REG, v);
+      chk("T1: rec_base sits above cap_buf (no records in this app, empty window)",
+          int'(v) == CAP_BASE_WORD + 8192/4);
     end
 
     // ────────────────────────────────────────────────────────────────────

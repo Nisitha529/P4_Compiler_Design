@@ -42,8 +42,13 @@ module tb_fiveTuple_selftest_top_avmm;
   localparam int CAP_STATUS        = 9;
   localparam int CAP_BYTE_COUNT    = 10;
   localparam int MAX_PKT_BYTES_REG = 11;
-  localparam int TMPL_BASE_WORD    = 16;
-  localparam int CAP_BASE_WORD     = 16 + 8192/4;  // 2064, default 256-bit width
+  localparam int TMPL_BASE_REG     = 17;   // R: where tmpl_buf starts
+  localparam int CAP_BASE_REG      = 18;   // R: where cap_buf starts
+  // Read from the DUT in T1, never hardcoded: the bases move with
+  // --axi-data-width, and they moved again when the control block grew to make
+  // room for the FeatureExport record window -- at which point a hardcoded 16
+  // addressed the wrong thing and this testbench failed with no code change.
+  int TMPL_BASE_WORD, CAP_BASE_WORD;
 
   // ── Table-CP AXI4-Lite (unused -- tie idle, same as tb_fiveTuple_selftest_top.sv) ──
   logic [15:0] s_axil_awaddr = 0;
@@ -240,6 +245,12 @@ module tb_fiveTuple_selftest_top_avmm;
       avmm_read(CAP_STATUS, v);       chk("T1: cap_status==0 after reset", v == 32'd0);
       avmm_read(MAX_PKT_BYTES_REG, v);
       chk("T1: max_pkt_bytes capability register == 8192 (default width)", v == 32'd8192);
+      avmm_read(TMPL_BASE_REG, v); TMPL_BASE_WORD = int'(v);
+      avmm_read(CAP_BASE_REG,  v); CAP_BASE_WORD  = int'(v);
+      $display("      window bases through the bridge: tmpl=%0d cap=%0d",
+               TMPL_BASE_WORD, CAP_BASE_WORD);
+      chk("T1: the bases read back consistently",
+          CAP_BASE_WORD == TMPL_BASE_WORD + 8192/4);
     end
 
     // ────────────────────────────────────────────────────────────────────

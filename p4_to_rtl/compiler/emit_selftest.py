@@ -45,13 +45,62 @@ Register map (self-test AXI4-Lite bus, word-addressed, AXI4-Lite word = 4B):
  10  cap_byte_count    R   bytes captured for the last completed packet
  11  max_pkt_bytes     R   = MAX_PKT_BYTES (capability discovery -- this value
                             changes with --axi-data-width, don't hardcode it)
- 12-15                 reserved
+ 12  rec_arm           W   write-strobe: clear every FeatureExport record
+                            buffer, its count and its total
+     rec_info          R   {depth[31:16], words_per_entry[15:8], n_inst[7:0]}
+                            -- capability discovery, same idea as word 11
+ 13  rec_sel           RW  which FeatureExport instance words 14/15 and the
+                            record window below refer to (0..n_inst-1, in
+                            declaration order: ingress instances first, then
+                            egress -- the same order as <app>_top's ports and
+                            the cp_map's feature_exports list)
+ 14  rec_count         R   records STORED for rec_sel (saturates at depth)
+ 15  rec_total         R   records SEEN for rec_sel since rec_arm. Greater than
+                            rec_count means the buffer filled and later records
+                            were not stored -- that difference IS the overflow
+                            indication, so there is no separate flag.
+ (words 12-15 read as 0 when the program declares no FeatureExport)
+ 16  gen_ingress_port  RW  the ingress_port the generator claims for every
+                            packet it sends. Present only when the program
+                            actually reads standard_metadata.ingress_port, in
+                            which case {app}_top has a matching INPUT -- which
+                            this wrapper used to leave undriven, so on hardware
+                            every packet looked like it arrived on port 0 (or
+                            on X in simulation) with nothing to say otherwise.
+                            Defaults to 0, which is what the undriven case
+                            effectively did, so no existing behaviour moves.
+ 17  tmpl_base_word    R   \
+ 18  cap_base_word     R    > the three window bases, so software (and the
+ 19  rec_base_word     R   /  testbenches) stop hardcoding them. They move with
+                            --axi-data-width and with this map; word 11 was
+                            already here for exactly this reason.
+ 20-31                 reserved
  16 .. 16+TMPL_WORDS-1        tmpl_buf  RW (word = 4 bytes, big-endian: a
                                32-bit write W places W[31:24] at the lowest
                                byte offset -- matches how a human hand-writing
                                a header field, e.g. a 32-bit IPv4 address, as
                                one hex literal expects it to land on the wire)
- 16+TMPL_WORDS .. +TMPL_WORDS-1  cap_buf  R (write ignored)
+ 16+TMPL_WORDS .. +CAP_WORDS-1    cap_buf  R (write ignored)
+ then REC_DEPTH*REC_WORDS words        record window for rec_sel, R (write
+                            ignored): entry e word w is at e*REC_WORDS + w,
+                            word 0 holding the record's LOW 32 bits
+
+FeatureExport records (p4rtl's AXI4-Stream feature ports) are captured here
+because without it this wrapper could not see them at all: it instantiates
+{app}_top and, before this, simply left the record ports unconnected -- which
+makes <name>_tready an UNDRIVEN INPUT of the core (Vivado ties it low), so the
+shell's staging FIFO filled and every record after it was counted as dropped.
+On a board whose only master is JTAG-to-AXI that made the feature stream, which
+is the whole product of a TCN/IDS-style program, unobservable. Now tready is
+tied HIGH inside the wrapper, every record is accepted, and the first REC_DEPTH
+of them per instance are readable over st_axil_*. <name>_tdata/<name>_tvalid
+are also brought out as wrapper OUTPUTS for an ILA or DMA tap; there is
+deliberately no tready input, because letting an outside consumer stall the
+stream is exactly what the never-backpressure contract forbids.
+
+Records are kept FIRST-N, not last-N (a full buffer stops storing rather than
+overwriting): the interesting records in a bring-up burst are the early ones,
+and rec_total still reports everything that happened.
 
 Real, demonstrable ordering requirement (not just a caveat): {app}_top.sv's
 cut-through datapath can start m_axis output before s_axis input finishes, so
@@ -68,16 +117,25 @@ import math
 
 from emit_top import (DEFAULT_AXI_DATA_W, MAX_AXI_DATA_W, MAX_PKT_BEATS,
                        AXIL_ADDR_W, AXIL_DATA_W)
+from emit_table import _find_processing_ctrl
+from emit_top import _collect_std_meta_inputs, _collect_std_meta_outputs
 
-CTRL_WORDS = 16   # bytes 0x00-0x3C
+CTRL_WORDS = 32   # bytes 0x00-0x7C
+# Records held per FeatureExport instance. Deliberately small: this is a
+# bring-up window, not a data path -- a real consumer attaches to the
+# <name>_t* stream ports (or, off-chip, to a DMA behind them). 32 entries of
+# at most 2 words is ~2 Kbit per instance, so it stays in registers and never
+# competes with the packet buffers for BRAM.
+REC_DEPTH  = 32
 
 
 def emit_selftest_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W):
     """Generate {app_name}_selftest_top.sv.
 
-    ir: accepted for interface symmetry with the other emit_*() functions and
-        future-proofing; unused today -- the wrapper is protocol-agnostic by
-        construction (the whole point of the writable-template design).
+    ir: read ONLY for the program's FeatureExport declarations (record capture
+        below). The packet datapath part of this wrapper stays
+        protocol-agnostic by construction -- the whole point of the
+        writable-template design.
     axi_data_width: MUST match the axi_data_width the corresponding emit_top()
         call for this app used (see module docstring). Re-validated here
         (not just in main.py's CLI parsing) since this function can be called
@@ -113,7 +171,42 @@ def emit_selftest_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA
     tmpl_base_word   = CTRL_WORDS
     cap_base_word    = tmpl_base_word + tmpl_words
     cap_words        = max_pkt_bytes // 4
-    addr_span_words  = cap_base_word + cap_words
+    rec_base_word    = cap_base_word + cap_words
+
+    # FeatureExport instances, in the SAME order emit_top.py lays out its
+    # ports (ingress control first, then egress) -- that order is the
+    # instance index software selects with rec_sel, and the cp_map lists the
+    # instances in it too, so the three cannot drift.
+    _ctrl  = _find_processing_ctrl(ir)
+    _ectrl = getattr(getattr(ir, 'pipeline', None), 'egress', None)
+    if _ectrl is not None and not (_ectrl.tables or _ectrl.statements):
+        _ectrl = None
+    fe_all = list(getattr(_ctrl, 'feature_exports', []) or []) if _ctrl else []
+    if _ectrl is not None:
+        fe_all += list(getattr(_ectrl, 'feature_exports', []) or [])
+
+    # Does {app}_top have an ingress_port INPUT? Composed exactly as
+    # emit_top.py composes shell_std_used (see its `shell_std_used =` line):
+    # inputs the ingress control reads, plus the ones egress reads that
+    # ingress does not itself produce. Same helpers, so the two cannot drift
+    # in how a field is detected -- and scripts/check_selftest_ports.py
+    # checks the RESULT structurally, which is what actually guarantees every
+    # core input ends up driven.
+    _std_ins = dict(_collect_std_meta_inputs(_ctrl)) if _ctrl else {}
+    if _ectrl is not None:
+        _ig_outs = _collect_std_meta_outputs(_ctrl)
+        for _k, _w in _collect_std_meta_inputs(_ectrl).items():
+            if _k not in _ig_outs:
+                _std_ins[_k] = _w
+    ingress_port_w = _std_ins.get('ingress_port')
+
+    # One uniform entry geometry for every instance, sized from the WIDEST
+    # record: a per-instance stride would make the address decode depend on
+    # which instance is selected, for no gain -- these buffers are tiny.
+    rec_words = max((((fe.padded_width + 31) // 32) for fe in fe_all), default=0)
+    rec_depth = REC_DEPTH if fe_all else 0
+    rec_span  = rec_depth * rec_words
+    addr_span_words  = rec_base_word + rec_span
 
     # Real-BRAM row storage: each row is exactly one KEEP_W-byte AXI4-Stream
     # beat wide (ROW_BYTES==KEEP_W -- see the module docstring's "full BRAM
@@ -138,13 +231,17 @@ def emit_selftest_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA
         _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
                       pktlen_w, vary_w, tmpl_words, tmpl_base_word,
                       cap_base_word, cap_words, addr_span_words,
-                      tmpl_rows, words_per_row, wpr_shift)
+                      tmpl_rows, words_per_row, wpr_shift,
+                      fe_all, rec_base_word, rec_depth, rec_words, rec_span,
+                      ingress_port_w)
 
 
 def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
                    pktlen_w, vary_w, tmpl_words, tmpl_base_word,
                    cap_base_word, cap_words, addr_span_words,
-                   tmpl_rows, words_per_row, wpr_shift):
+                   tmpl_rows, words_per_row, wpr_shift,
+                   fe_all, rec_base_word, rec_depth, rec_words, rec_span,
+                   ingress_port_w):
 
     # ── Module header ────────────────────────────────────────────────────────
     f.write(f'module {app_name}_selftest_top #(\n')
@@ -189,7 +286,19 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
     f.write('    output logic [31:0]                st_axil_rdata,\n')
     f.write('    output logic [1:0]                 st_axil_rresp,\n')
     f.write('    output logic                       st_axil_rvalid,\n')
-    f.write('    input  logic                       st_axil_rready\n')
+    if fe_all:
+        f.write('    input  logic                       st_axil_rready,\n')
+        f.write('\n    // FeatureExport record streams, brought out for an ILA/DMA tap.\n')
+        f.write('    // OUTPUTS ONLY, on purpose: there is no tready input, because an\n')
+        f.write('    // outside consumer stalling this stream is what the never-\n')
+        f.write('    // backpressure contract forbids. tready is tied high below and the\n')
+        f.write('    // supported readback path is the record window on st_axil_*.\n')
+        for i, fe in enumerate(fe_all):
+            comma = ',' if i < len(fe_all) - 1 else ''
+            f.write(f'    output logic [{fe.padded_width-1}:0] {fe.name}_tdata,\n')
+            f.write(f'    output logic {fe.name}_tvalid{comma}\n')
+    else:
+        f.write('    input  logic                       st_axil_rready\n')
     f.write(');\n\n')
 
     f.write('  localparam int KEEP_W        = AXI_DATA_W / 8;  // {}\n'.format(beat_bytes))
@@ -199,7 +308,13 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
     f.write(f'  localparam int ADDR_SPAN_WORDS = {addr_span_words};\n')
     f.write(f'  localparam int TMPL_ROWS     = {tmpl_rows};  // == MAX_PKT_BEATS; one row per beat\n')
     f.write(f'  localparam int CAP_ROWS      = TMPL_ROWS;\n')
-    f.write(f'  localparam int WORDS_PER_ROW = {words_per_row};  // KEEP_W/4\n\n')
+    f.write(f'  localparam int WORDS_PER_ROW = {words_per_row};  // KEEP_W/4\n')
+    if fe_all:
+        f.write(f'  localparam int REC_BASE_WORD = {rec_base_word};\n')
+        f.write(f'  localparam int REC_DEPTH     = {rec_depth};   // records kept per instance\n')
+        f.write(f'  localparam int REC_WORDS     = {rec_words};   // 32-bit words per record\n')
+        f.write(f'  localparam int REC_NINST     = {len(fe_all)};\n')
+    f.write('\n')
 
     # ── Template / capture buffers ──────────────────────────────────────────
     # Real-BRAM row storage (see module docstring's "full BRAM reorganization"
@@ -282,8 +397,30 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
     f.write('    .s_axil_wdata(s_axil_wdata), .s_axil_wstrb(s_axil_wstrb), .s_axil_wvalid(s_axil_wvalid), .s_axil_wready(s_axil_wready),\n')
     f.write('    .s_axil_bresp(s_axil_bresp), .s_axil_bvalid(s_axil_bvalid), .s_axil_bready(s_axil_bready),\n')
     f.write('    .s_axil_araddr(s_axil_araddr), .s_axil_arvalid(s_axil_arvalid), .s_axil_arready(s_axil_arready),\n')
-    f.write('    .s_axil_rdata(s_axil_rdata), .s_axil_rresp(s_axil_rresp), .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready)\n')
+    f.write('    .s_axil_rdata(s_axil_rdata), .s_axil_rresp(s_axil_rresp), .s_axil_rvalid(s_axil_rvalid), .s_axil_rready(s_axil_rready)')
+    if ingress_port_w:
+        f.write(',\n')
+        f.write('    // Driven from a register, not left dangling: an undriven input reads as\n')
+        f.write('    // X in simulation and is tied low by synthesis, so the program would see\n')
+        f.write('    // every packet arrive on port 0 with nothing saying so.\n')
+        f.write('    .ingress_port(gen_ingress_port_reg)')
+    if fe_all:
+        f.write(',\n')
+        f.write('    // tready tied HIGH: the record capture below never backpressures the\n')
+        f.write('    // core, which is the contract these ports are built on. Leaving them\n')
+        f.write('    // unconnected (as this wrapper did before) makes tready an undriven\n')
+        f.write('    // INPUT -- tied low by synthesis -- so the staging FIFO fills and every\n')
+        f.write('    // record after it is counted as dropped.\n')
+        for i, fe in enumerate(fe_all):
+            comma = ',' if i < len(fe_all) - 1 else ''
+            f.write(f'    .{fe.name}_tdata({fe.name}_tdata), .{fe.name}_tvalid({fe.name}_tvalid), '
+                    f'.{fe.name}_tready(1\'b1){comma}\n')
+    else:
+        f.write('\n')
     f.write('  );\n\n')
+
+    if ingress_port_w:
+        f.write(f'  logic [{ingress_port_w-1}:0] gen_ingress_port_reg;\n\n')
 
     # Bare (no-initializer) staging-register declarations hoisted here,
     # BEFORE _write_generator -- its own logic references gen_pkt_len_reg/
@@ -301,8 +438,10 @@ def _write_module(f, app_name, axi_data_width, beat_bytes, max_pkt_bytes,
 
     _write_generator(f, pktlen_w, vary_w, beat_bytes)
     _write_capture(f, beat_bytes)
+    _write_record_capture(f, fe_all, rec_depth, rec_words)
     _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr_span_words,
-                        max_pkt_bytes, words_per_row, wpr_shift)
+                        max_pkt_bytes, words_per_row, wpr_shift,
+                        fe_all, rec_base_word, rec_depth, rec_words, ingress_port_w)
 
     f.write('endmodule\n')
 
@@ -569,8 +708,77 @@ def _write_capture(f, beat_bytes):
     f.write('  end\n\n')
 
 
+def _write_record_capture(f, fe_all, rec_depth, rec_words):
+    """Capture FeatureExport records into a per-instance window readable over
+    st_axil_*.
+
+    One entry per record, REC_WORDS 32-bit words wide, written in a single
+    cycle as ONE wide element -- not as REC_WORDS separate word writes, which
+    would be two writes into one array in one cycle (a pattern this project
+    has twice found stops iverilog advancing simulation time, and that real
+    RAM inference does not match either).
+
+    The array is deliberately plain REGISTERS, not a RAM: it holds
+    REC_NINST * REC_DEPTH * REC_WORDS * 32 bits -- about 2 Kbit per instance --
+    and a RAM would need one write port per instance, because two instances
+    declared in the same control push on the SAME cycle (feprobe.p4 does
+    exactly that). Registers make that free; one shared RAM port would have had
+    to drop a record.
+    """
+    if not fe_all:
+        return
+    idx_w = max(1, (rec_depth - 1).bit_length())
+    sel_w = max(1, (len(fe_all) - 1).bit_length())
+    f.write('  // ── FeatureExport record capture ─────────────────────────────────────────\n')
+    f.write('  // Each instance keeps the FIRST REC_DEPTH records since rec_arm. A full\n')
+    f.write('  // buffer stops storing rather than overwriting -- in a bring-up burst the\n')
+    f.write('  // early records are the interesting ones -- while rec_total keeps counting\n')
+    f.write('  // everything pushed, so (rec_total - rec_count) is exactly how many were\n')
+    f.write('  // not kept.\n')
+    f.write('  logic [REC_WORDS*32-1:0] rec_entry [0:REC_NINST*REC_DEPTH-1];\n')
+    f.write('  logic [31:0] rec_count_v [0:REC_NINST-1];\n')
+    f.write('  logic [31:0] rec_total_v [0:REC_NINST-1];\n')
+    f.write('  logic        r_rec_arm;    // one-cycle strobe from the decoder below\n')
+    f.write(f'  logic [{sel_w-1}:0] rec_sel_reg;\n\n')
+    f.write('  // Simulation-only zero-fill, same reason (and same directive) as the\n')
+    f.write('  // packet buffers above: hardware needs no reset value here.\n')
+    f.write('  // synthesis translate_off\n')
+    f.write('  initial begin\n')
+    f.write("    for (int i = 0; i < REC_NINST*REC_DEPTH; i++) rec_entry[i] = '0;\n")
+    f.write('  end\n')
+    f.write('  // synthesis translate_on\n\n')
+    for i, fe in enumerate(fe_all):
+        pad = rec_words * 32 - fe.padded_width
+        f.write(f'  // instance {i}: {fe.name}, {fe.padded_width}-bit record\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    if (!rst_n || r_rec_arm) begin\n')
+        f.write(f"      rec_count_v[{i}] <= 32'd0;\n")
+        f.write(f"      rec_total_v[{i}] <= 32'd0;\n")
+        f.write(f'    end else if ({fe.name}_tvalid) begin\n')
+        f.write(f"      rec_total_v[{i}] <= rec_total_v[{i}] + 32'd1;\n")
+        f.write(f'      if (rec_count_v[{i}] < REC_DEPTH) begin\n')
+        f.write(f'        rec_entry[{i}*REC_DEPTH + rec_count_v[{i}][{idx_w-1}:0]] <=\n')
+        if pad > 0:
+            f.write(f"            {{{pad}'d0, {fe.name}_tdata}};\n")
+        else:
+            f.write(f'            {fe.name}_tdata;\n')
+        f.write(f"        rec_count_v[{i}] <= rec_count_v[{i}] + 32'd1;\n")
+        f.write('      end\n')
+        f.write('    end\n')
+        f.write('  end\n\n')
+    f.write('  // The selected instance\'s counters. always_comb, not an assign: reading an\n')
+    f.write('  // unpacked-array element from a continuous assignment is a pattern iverilog\n')
+    f.write('  // 11 rejects (the same rule the shell\'s per-slot arrays follow).\n')
+    f.write('  logic [31:0] rec_count_sel, rec_total_sel;\n')
+    f.write('  always_comb begin\n')
+    f.write('    rec_count_sel = rec_count_v[rec_sel_reg];\n')
+    f.write('    rec_total_sel = rec_total_v[rec_sel_reg];\n')
+    f.write('  end\n\n')
+
+
 def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr_span_words,
-                         max_pkt_bytes, words_per_row, wpr_shift):
+                         max_pkt_bytes, words_per_row, wpr_shift,
+                         fe_all, rec_base_word, rec_depth, rec_words, ingress_port_w):
     f.write('  // ── Self-test AXI4-Lite decoder (own bus, own FSM -- see register map above) ──\n')
     f.write('  // (staging-register declarations for gen_pkt_len_reg/etc. are hoisted to\n')
     f.write('  // before _write_generator -- see the call site in _write_module.)\n\n')
@@ -607,9 +815,16 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
     f.write("      gen_vary_offset_reg <= '0;\n")
     f.write("      gen_vary_enable_reg <= 1'b0;\n")
     f.write("      gen_ipg_reg         <= 32'd0;\n")
+    if ingress_port_w:
+        f.write("      gen_ingress_port_reg <= '0;\n")
+    if fe_all:
+        f.write("      r_rec_arm   <= 1'b0;\n")
+        f.write("      rec_sel_reg <= '0;\n")
     f.write('    end else begin\n')
     f.write("      r_gen_start <= 1'b0;\n")
     f.write("      r_cap_start <= 1'b0;\n")
+    if fe_all:
+        f.write("      r_rec_arm   <= 1'b0;\n")
     f.write('      case (st_axil_st)\n')
     f.write('        ST_AXIL_IDLE: begin\n')
     f.write('          if (st_axil_awvalid) begin\n')
@@ -628,7 +843,12 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
     f.write("                14'd4: gen_ipg_reg         <= st_axil_wdata;\n")
     f.write("                14'd5: r_gen_start         <= 1'b1;\n")
     f.write("                14'd8: r_cap_start         <= 1'b1;\n")
-    f.write('                default: ; // 6,7,9,10,11 read-only; 12-15 reserved\n')
+    if fe_all:
+        f.write("                14'd12: r_rec_arm          <= 1'b1;\n")
+        f.write(f"                14'd13: rec_sel_reg        <= st_axil_wdata[{max(1, (len(fe_all)-1).bit_length())-1}:0];\n")
+    if ingress_port_w:
+        f.write(f"                14'd16: gen_ingress_port_reg <= st_axil_wdata[{ingress_port_w-1}:0];\n")
+    f.write('                default: ; // the rest are read-only or reserved\n')
     f.write('              endcase\n')
     f.write(f"            end else if (st_axil_awaddr_r[ST_AXIL_ADDR_W-1:2] < 14'd{cap_base_word}) begin\n")
     f.write('              // template buffer word write -- big-endian byte packing (see register\n')
@@ -696,7 +916,14 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
     f.write('  logic [13:0] st_r_row;\n')
     if words_per_row > 1:
         f.write(f'  logic [{wpr_shift-1}:0] st_r_word_off;\n')
-    f.write('  logic        st_r_is_cap;\n\n')
+    f.write('  logic        st_r_is_cap;\n')
+    if fe_all:
+        idx_w = max(1, (rec_depth - 1).bit_length())
+        f.write(f'  logic [{idx_w-1}:0] st_r_rec_idx;\n')
+        if rec_words > 1:
+            f.write(f'  logic [{max(1,(rec_words-1).bit_length())-1}:0] st_r_rec_word;\n')
+        f.write('  logic        st_r_is_rec;\n')
+    f.write('\n')
 
     f.write('  // Unconditional registered row read -- always-on, consumed only while\n')
     f.write('  // st_axil_rst==ST_AXIL_R_WAIT. Reading both arrays every cycle regardless of\n')
@@ -708,6 +935,14 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
     f.write('    tmpl_word_cp_rdata <= tmpl_word_cp[st_r_row];\n')
     f.write('    cap_word_rdata     <= cap_word[st_r_row];\n')
     f.write('  end\n\n')
+    if fe_all:
+        f.write('  // The selected record, fetched on the same R_IDLE->R_WAIT edge as the\n')
+        f.write('  // buffer rows above, so the record window shares their read timing.\n')
+        f.write('  // rec_sel_reg picks the instance; the index is within that instance.\n')
+        f.write('  logic [REC_WORDS*32-1:0] rec_entry_rdata;\n')
+        f.write('  always_ff @(posedge clk) begin\n')
+        f.write('    rec_entry_rdata <= rec_entry[rec_sel_reg*REC_DEPTH + st_r_rec_idx];\n')
+        f.write('  end\n\n')
 
     f.write('  assign st_axil_arready = (st_axil_rst == ST_AXIL_R_IDLE);\n')
     f.write('  assign st_axil_rdata   = st_r_rdata;\n')
@@ -728,6 +963,16 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
     f.write("                14'd9:  st_r_rdata <= {30'd0, cap_done, cap_busy};\n")
     f.write("                14'd10: st_r_rdata <= cap_byte_count;\n")
     f.write(f"                14'd11: st_r_rdata <= 32'd{max_pkt_bytes};\n")
+    if fe_all:
+        f.write(f"                14'd12: st_r_rdata <= {{16'd{rec_depth}, 8'd{rec_words}, 8'd{len(fe_all)}}};\n")
+        f.write("                14'd13: st_r_rdata <= {28'd0, rec_sel_reg};\n")
+        f.write("                14'd14: st_r_rdata <= rec_count_sel;\n")
+        f.write("                14'd15: st_r_rdata <= rec_total_sel;\n")
+    if ingress_port_w:
+        f.write("                14'd16: st_r_rdata <= {23'd0, gen_ingress_port_reg};\n")
+    f.write(f"                14'd17: st_r_rdata <= 32'd{tmpl_base_word};\n")
+    f.write(f"                14'd18: st_r_rdata <= 32'd{cap_base_word};\n")
+    f.write(f"                14'd19: st_r_rdata <= 32'd{rec_base_word};\n")
     f.write('                default: st_r_rdata <= 32\'d0;\n')
     f.write('              endcase\n')
     f.write('              st_axil_rst <= ST_AXIL_R_DATA;\n')
@@ -737,12 +982,33 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
         f.write(f"              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{tmpl_base_word}) & 14'd{words_per_row-1};\n")
     f.write("              st_r_is_cap <= 1'b0;\n")
     f.write('              st_axil_rst <= ST_AXIL_R_WAIT;\n')
-    f.write(f"            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd{addr_span_words}) begin\n")
+    # The cap_buf region ends where the record window begins -- NOT at
+    # addr_span_words, which now spans the records too. Using the span here
+    # made this branch swallow every record address and left the record
+    # branch below unreachable: counts read back fine and the record DATA
+    # came back as X, because the read was dispatched to cap_word.
+    f.write(f"            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd{rec_base_word}) begin\n")
     f.write(f"              st_r_row    <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{cap_base_word}) >> {wpr_shift};\n")
     if words_per_row > 1:
         f.write(f"              st_r_word_off <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{cap_base_word}) & 14'd{words_per_row-1};\n")
     f.write("              st_r_is_cap <= 1'b1;\n")
+    if fe_all:
+        f.write("              st_r_is_rec <= 1'b0;\n")
     f.write('              st_axil_rst <= ST_AXIL_R_WAIT;\n')
+    if fe_all:
+        rec_span = rec_depth * rec_words
+        f.write(f"            end else if (st_axil_araddr[ST_AXIL_ADDR_W-1:2] < 14'd{rec_base_word + rec_span}) begin\n")
+        f.write('              // Record window for rec_sel: entry e word w at e*REC_WORDS + w.\n')
+        idx_w = max(1, (rec_depth - 1).bit_length())
+        if rec_words > 1:
+            wsh = (rec_words - 1).bit_length()
+            f.write(f"              st_r_rec_idx  <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{rec_base_word}) >> {wsh};\n")
+            f.write(f"              st_r_rec_word <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{rec_base_word}) & 14'd{rec_words-1};\n")
+        else:
+            f.write(f"              st_r_rec_idx  <= (st_axil_araddr[ST_AXIL_ADDR_W-1:2] - 14'd{rec_base_word});\n")
+        f.write("              st_r_is_cap <= 1'b0;\n")
+        f.write("              st_r_is_rec <= 1'b1;\n")
+        f.write('              st_axil_rst <= ST_AXIL_R_WAIT;\n')
     f.write('            end else begin\n')
     f.write("              st_r_rdata <= 32'd0;\n")
     f.write('              st_axil_rst <= ST_AXIL_R_DATA;\n')
@@ -764,16 +1030,31 @@ def _write_axil_decoder(f, pktlen_w, vary_w, tmpl_base_word, cap_base_word, addr
         f.write(f'{indent}  ? {{cap_word_rdata[{b0} +: 8], cap_word_rdata[{b1} +: 8], cap_word_rdata[{b2} +: 8], cap_word_rdata[{b3} +: 8]}}\n')
         f.write(f'{indent}  : {{tmpl_word_cp_rdata[{b0} +: 8], tmpl_word_cp_rdata[{b1} +: 8], tmpl_word_cp_rdata[{b2} +: 8], tmpl_word_cp_rdata[{b3} +: 8]}};\n')
 
+    rec_ind = '            ' if fe_all else '          '
+    if fe_all:
+        f.write('          if (st_r_is_rec) begin\n')
+        if rec_words > 1:
+            f.write('            case (st_r_rec_word)\n')
+            for w in range(rec_words):
+                f.write(f"              {max(1,(rec_words-1).bit_length())}'d{w}: "
+                        f"st_r_rdata <= rec_entry_rdata[{w*32} +: 32];\n")
+            f.write("              default: st_r_rdata <= 32'd0;\n")
+            f.write('            endcase\n')
+        else:
+            f.write('            st_r_rdata <= rec_entry_rdata[31:0];\n')
+        f.write('          end else begin\n')
     if words_per_row > 1:
-        f.write('          case (st_r_word_off)\n')
+        f.write(f'{rec_ind}case (st_r_word_off)\n')
         for word_off in range(words_per_row):
-            f.write(f"            {wpr_shift}'d{word_off}: begin\n")
-            _emit_row_extract(word_off, '              ')
-            f.write('            end\n')
-        f.write('            default: st_r_rdata <= 32\'d0;\n')
-        f.write('          endcase\n')
+            f.write(f"{rec_ind}  {wpr_shift}'d{word_off}: begin\n")
+            _emit_row_extract(word_off, rec_ind + '    ')
+            f.write(f'{rec_ind}  end\n')
+        f.write(f"{rec_ind}  default: st_r_rdata <= 32'd0;\n")
+        f.write(f'{rec_ind}endcase\n')
     else:
-        _emit_row_extract(0, '          ')
+        _emit_row_extract(0, rec_ind)
+    if fe_all:
+        f.write('          end\n')
     f.write('          st_axil_rst <= ST_AXIL_R_DATA;\n')
     f.write('        end\n')
     f.write('        ST_AXIL_R_DATA: begin\n')

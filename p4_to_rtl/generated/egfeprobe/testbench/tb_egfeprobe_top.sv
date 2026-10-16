@@ -31,6 +31,14 @@ module tb_egfeprobe_top;
 
   parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -243,9 +251,14 @@ module tb_egfeprobe_top;
       if (int'(r0[31:16]) > max_qd) max_qd = int'(r0[31:16]);
     end
     $display("      %0d record(s), highest deq_qdepth seen = %0d", recs.size(), max_qd);
+    // NSLOT - TM_INFLIGHT = 2, less one when a whole 64-byte frame fits in a
+    // single beat: the shell retires a slot as the last beat is LOADED, so a
+    // one-beat packet stops counting toward tm_inflight while it waits for
+    // tready and one more packet escapes the queue. qdprobe explains this at
+    // length; here it just decides whether the depth is 2 or 1.
     chk("G3: records were produced for the burst", recs.size() == 4);
-    chk("G3: deq_qdepth arrives in the record, and above 1 (NSLOT-TM_INFLIGHT=2)",
-        max_qd == 2);
+    chk("G3: deq_qdepth arrives in the record with the depth the ring allows",
+        max_qd == ((64 <= TB_BEAT_BYTES) ? 1 : 2));
 
     // ── G4: a stalled consumer must not stall packets ───────────────────────
     $display("\n== G4: stalled consumer does not stall the packet path ==");

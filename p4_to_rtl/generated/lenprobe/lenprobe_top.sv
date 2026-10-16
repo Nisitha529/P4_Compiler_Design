@@ -849,7 +849,19 @@ module lenprobe_top #(
   wire tx_last_beat       = tx_done_s && (tx_left <= BEAT_BYTES);
   wire discard_pop = slot_live &&  cur_discard && pfifo_rd_valid;
   // Does this beat reach into the payload region?
-  wire tx_need_pl  = ((tx_out_byte + BEAT_BYTES) > tx_pstart);
+  // Two conditions, and the FIRST one is easy to forget: a payload
+  // region only EXISTS when the packet was longer than the header
+  // region, because the payload buffer holds exactly the bytes past
+  // HDR_MAX_BYTES. A short packet lives entirely in the header image,
+  // so every output byte comes from oimg no matter where tx_pstart
+  // falls. Without the first term, such a packet asks for a payload
+  // beat that will never arrive and TX stops dead -- which also wedges
+  // the slot ring behind it, so the LINK stalls, not just that packet.
+  // (HDR_MAX_BYTES tracks the beat width, so this is reachable with a
+  // 64-byte frame at --axi-data-width 512 and with a <=32-byte frame at
+  // the 256-bit default: it is a short-packet bug, not a width bug.)
+  wire tx_has_pl   = (tx_in_len > HDR_MAX_BYTES[15:0]);
+  wire tx_need_pl  = tx_has_pl && ((tx_out_byte + BEAT_BYTES) > tx_pstart);
   // Source bytes this beat reads, so the header part is only emitted once
   // the bytes it shifts FROM have actually arrived.
   wire signed [17:0] tx_src_need_s =

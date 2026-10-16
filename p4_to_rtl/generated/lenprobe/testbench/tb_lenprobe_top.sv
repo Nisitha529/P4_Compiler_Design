@@ -18,6 +18,12 @@
 //   T2  insert_one  : 4 bytes appear after ethernet     -> out == in + 4   (68 B)
 //   T3  insert_two  : 8 bytes appear after ethernet     -> out == in + 8   (72 B)
 //   T4  strip_vlan  : a parsed 4-byte VLAN is removed   -> out == in - 4   (60 B)
+//   T6  insert_one on a frame that fits ENTIRELY in the header region, so the
+//       payload buffer is empty -- TX used to wait for a payload beat that
+//       never comes and wedge the slot ring behind it
+//   T7  the same, shrinking
+//   T8  a normal frame after those two, because the old failure stalled the
+//       whole link rather than losing one packet
 //
 // This is the same shape as fiveTuple.p4's InsertVLAN, the flagship app's whole
 // purpose, which has never been exercisable end-to-end for exactly this reason.
@@ -31,8 +37,16 @@ module tb_lenprobe_top;
   always #(CLK_T/2) clk = ~clk;
   logic rst_n;
 
-  localparam int TB_BEAT_BYTES = 32;
+  parameter  int TB_BEAT_BYTES = 32;
   localparam int TB_AXI_DATA_W = TB_BEAT_BYTES * 8;
+  // Beats a frame of `nbytes` occupies at THIS beat width. Beat counts used to
+  // be written as literals (a 64 B frame was "2 beats"), which silently encoded
+  // --axi-data-width 256 into every such assertion; at 512 they all failed and
+  // said nothing about the design. See scripts/check_axi_width.sh.
+  function automatic int nbeats_of(input int nbytes);
+    return (nbytes + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
+  endfunction
+
 
   logic [TB_AXI_DATA_W-1:0] s_axis_tdata;
   logic [TB_BEAT_BYTES-1:0] s_axis_tkeep;
@@ -125,12 +139,17 @@ module tb_lenprobe_top;
     end
   endtask
 
+  logic tb_wedged = 0;
+
   task automatic send_pkt;
     logic [TB_AXI_DATA_W-1:0] beat;
     logic [TB_BEAT_BYTES-1:0] keep;
-    int nbeats;
+    int nbeats, stall;
     nbeats = (tx_pkt.size() + TB_BEAT_BYTES - 1) / TB_BEAT_BYTES;
-    for (int b = 0; b < nbeats; b++) begin
+    // Guarded rather than an early `return`: iverilog 11 rejects `return`
+    // from a task, so once the input is known wedged the remaining beats are
+    // simply skipped.
+    for (int b = 0; b < nbeats && !tb_wedged; b++) begin
       beat = '0; keep = '0;
       for (int i = 0; i < TB_BEAT_BYTES; i++)
         if (b*TB_BEAT_BYTES + i < tx_pkt.size()) begin
@@ -141,7 +160,22 @@ module tb_lenprobe_top;
       s_axis_tdata = beat; s_axis_tkeep = keep;
       s_axis_tvalid = 1'b1; s_axis_tlast = (b == nbeats - 1);
       @(posedge clk);
-      while (!s_axis_tready) @(posedge clk);
+      // BOUNDED. A wedged TX stops retiring slots, the ring fills, and
+      // s_axis_tready stays low forever -- an unbounded wait here turns a
+      // design failure into a testbench that never returns, which the
+      // regression can only report as a timeout. Bounded, it reports the
+      // failure and the remaining checks fail on an empty output, which says
+      // what actually happened.
+      stall = 0;
+      while (!s_axis_tready && stall < 2000) begin
+        @(posedge clk); stall = stall + 1;
+      end
+      if (stall >= 2000) begin
+        // One string literal: iverilog does not join adjacent ones.
+        $display("    [FAIL] input stalled %0d cycles on s_axis_tready -- TX is not retiring slots", stall);
+        fail_cnt++;
+        tb_wedged = 1'b1;
+      end
       #1;
     end
     @(negedge clk);
@@ -166,6 +200,11 @@ module tb_lenprobe_top;
   // Step 1 observability: sample hdr_delta while TX is on the packet.
   int    seen_delta, seen_splice;
   logic  saw_delta = 0;
+  // The DUT's header-region size, read hierarchically in T6/T7. It is
+  // BEAT-ROUNDED, so it changes with --axi-data-width (32 bytes at 256,
+  // 64 at 512) -- which is exactly why those two tests derive from it
+  // rather than naming a frame size.
+  int    hdr_region;
   // Declared ahead of the task below that clears them: xvlog rejects an
   // identifier used before its declaration, while iverilog accepts it.
 
@@ -201,9 +240,19 @@ module tb_lenprobe_top;
                tag, rx_pkt.size(), d, rx_pkt[d], expect_pkt[d]);
   endtask
 
-  always @(posedge clk) begin
-    #1;
-    if (collecting && m_axis_tvalid && m_axis_tready && !saw_delta) begin
+  // Sampled when the beat is LOADED (dut.emit_beat), not when it is accepted
+  // on m_axis. Both of these are per-slot views indexed by tx_slot, and the
+  // slot is popped as the last beat is loaded -- so while that beat is still
+  // being presented on m_axis, tx_slot already reads X and so do these. With a
+  // 64-byte frame at --axi-data-width 256 the first beat was never the last
+  // one, so sampling on the m_axis handshake happened to work; at 512 the whole
+  // frame is one beat and it returned X (printed as 0), reporting hdr_delta 0
+  // for a packet that shrank and splice 0 for a packet with a valid header.
+  // The emitted bytes were correct throughout -- only the observation point was
+  // wrong. emit_beat is the cycle these values are actually USED, which is the
+  // only point where they are guaranteed to mean something.
+  always @(negedge clk) begin
+    if (collecting && dut.emit_beat && !saw_delta) begin
       seen_delta  = dut.hdr_delta;
       seen_splice = dut.tx_splice;
       saw_delta   = 1'b1;
@@ -296,6 +345,48 @@ module tb_lenprobe_top;
     chk("T5: the stamped tag holds the received length, tail shifted",
         first_diff() == -2);
     chk("T5: packet_length == 96", o_plen == 16'd96);
+
+    // ---- T6/T7: a frame that fits ENTIRELY inside the header region ------
+    // The regression bug these exist for: the output is oimg[0..tx_pstart)
+    // followed by the payload buffer, and that buffer only ever holds the
+    // bytes PAST the header region. For a frame this short it is empty, but
+    // TX still asked it for a beat and waited forever -- wedging the slot ring
+    // behind it, so the whole link stalled on one short packet. Every earlier
+    // case here is 64 bytes, which at the 256-bit default always leaves
+    // payload; the same frame at 512 does not, which is how this surfaced.
+    hdr_region = dut.HDR_MAX_BYTES;
+
+    $display("\n== T6: insert_one on a %0d B frame -- no payload at all ==", hdr_region);
+    run_one(16'h0001, hdr_region, 0);
+    expect_pkt.delete();
+    for (i = 0; i < 14; i++) expect_pkt.push_back(tx_pkt[i]);        // ethernet
+    expect_pkt.push_back(8'hAA); expect_pkt.push_back(8'h01);        // tag.magic
+    expect_pkt.push_back(8'h11); expect_pkt.push_back(8'h11);        // tag.seq
+    for (i = 14; i < hdr_region; i++) expect_pkt.push_back(tx_pkt[i]);
+    report("T6");
+    chk("T6: hdr_delta == 4", seen_delta == 4);
+    chk("T6: the frame came out at all (it used to wedge TX)", rx_pkt.size() > 0);
+    chk("T6: grew by exactly 4", rx_pkt.size() == hdr_region + 4);
+    chk("T6: byte-for-byte correct", first_diff() == -2);
+
+    $display("\n== T7: strip_vlan on a %0d B frame -- no payload at all ==", hdr_region);
+    run_one(16'h0003, hdr_region, 1);
+    expect_pkt.delete();
+    for (i = 0; i < 14; i++) expect_pkt.push_back(tx_pkt[i]);        // ethernet
+    for (i = 18; i < hdr_region; i++) expect_pkt.push_back(tx_pkt[i]);
+    report("T7");
+    chk("T7: hdr_delta == -4", seen_delta == -4);
+    chk("T7: shrank by exactly 4", rx_pkt.size() == hdr_region - 4);
+    chk("T7: byte-for-byte correct", first_diff() == -2);
+
+    // A following packet must still flow: the old failure did not just lose
+    // the short packet, it stopped the link, so the NEXT one never came out.
+    $display("\n== T8: a normal frame still flows afterwards ==");
+    run_one(16'h0004, 64, 0);
+    expect_pkt = tx_pkt;
+    report("T8");
+    chk("T8: 64 bytes out after the short frames", rx_pkt.size() == 64);
+    chk("T8: byte-for-byte identical", first_diff() == -2);
 
     $display("\n================================================================");
     $display("  Results: %0d passed, %0d failed  (total %0d)", pass_cnt, fail_cnt, pass_cnt+fail_cnt);
