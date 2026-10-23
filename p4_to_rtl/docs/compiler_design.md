@@ -475,6 +475,63 @@ from `scripts/regress.sh`:
 | `check_axi_width.sh` | every top-level testbench at `--axi-data-width 512`. Every committed build is 256-bit, so the loop could only ever cover that — and the width is what `boards/vcu118.json` exists for |
 | `check_cp_map.py` | not a regeneration — cross-checks every `<app>_cp_map.json` against its own decoder |
 | `check_selftest_ports.py` | also not a regeneration — checks that every `--self-test` wrapper connects every INPUT of the core it instantiates (see §6's note; this is the guard for a whole class of silent bug) |
+| `check_vectors.sh` | the ORACLE test — every committed pcap through both the design and a reference model built from the same IR, compared byte for byte (see §7a) |
+
+### 7a. The pcap verification framework
+
+Everything else in this suite states expectations **a human worked out by
+reading the P4**. That checks the RTL against someone's reading of the program,
+and its blind spot is exact: a construct misread the same way in the emitter
+and in the testbench passes. `verification/framework/` closes that by comparing
+against an *executable* reading, over real traffic:
+
+```bash
+python3 verification/framework/p4v.py <app> --pcap capture.pcap --testcase entries.txt
+```
+
+It is a framework rather than a set of tests, in three specific senses:
+
+* **The oracle is driven by the IR**, so it covers any program the compiler
+  accepts — `verification/framework/refmodel.py` interprets parser, tables
+  (exact/lpm/ternary), actions, `setValid`/`setInvalid`, drop, registers,
+  `FeatureExport` pushes, `update_checksum()` and the `Hash` extern, then
+  deparses. No per-application code.
+* **The testbench is generated** (`compiler/emit_vector_tb.py`) from the
+  generated top's **own port list**, so each program's metadata sideband and
+  record streams get bound. An unrecognised port stops generation rather than
+  being left dangling — the same rule `check_selftest_ports.py` enforces.
+* **The stimulus is a pcap**, because the traffic that matters for a program is
+  the traffic the designer already has. Table entries come in a text file in the
+  same `table_add` shape Vitis Networking P4's behavioural model takes, and are
+  written **once**: translated to AXI4-Lite word writes through the `cp_map` for
+  the hardware, and to match-action entries for the model.
+
+Verdicts are `PASS`, `FAIL` (first differing packet and byte, with both sides
+written out as pcaps), `REORDERED` (same packets, different order — legal across
+queues), `VACUOUS` (nothing on either side, so the run proved nothing) and
+`NOT VERIFIED`. The last one carries the design: the model **never
+approximates**, because an oracle that guesses and reports `PASS` is worse than
+no oracle. Anything it cannot represent faithfully stops the run and names the
+construct.
+
+**13 of the 17 p4rtl/xsa apps agree with the model over their own pcap.** The
+other four are refused, for reasons that are properties of the programs rather
+than gaps to be papered over:
+
+| app | refused because |
+|---|---|
+| `ueprobe` | `UserExtern`'s RTL is user-supplied; its function is unknowable to a model |
+| `mdprobe` | a `Meter`'s debit bucket is implementation-defined, not a spec |
+| `mcprobe` | multicast turns one packet into several; the model is a per-packet function |
+| `fiveTuple` | `varbit` / runtime-length `extract` has no fixed layout to serialise |
+
+What the framework **cannot** catch, stated because overstating it would be the
+dangerous part: it consumes the same IR the emitters consume, so a
+mis-*ingested* program is mis-modelled identically and still passes. It catches
+emitter and shell bugs — which is every datapath bug this project has actually
+found. Verified by mutation: with last week's short-packet TX fix reverted,
+`lenprobe`'s pcap run reports `FAIL -- 6 packet(s) expected, 5 came out`, from
+traffic alone and with no app-specific assertion written.
 
 **Two sampling rules for a top-level testbench,** both learned from failures
 that looked like design bugs:

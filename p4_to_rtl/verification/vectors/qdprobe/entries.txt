@@ -1,0 +1,5 @@
+# qdprobe: two queues, so the traffic manager has a choice to make
+# Regenerate with verification/vectors/make_vectors.py
+table_add fwd set_port 0x0801 => 5
+table_add fwd set_port 0x0802 => 6
+run_traffic traffic

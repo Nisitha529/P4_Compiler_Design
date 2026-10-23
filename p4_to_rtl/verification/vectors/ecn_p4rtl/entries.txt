@@ -1,0 +1,4 @@
+# ecn_p4rtl: a burst at one destination, which is what builds the queue depth ECN reacts to
+# Regenerate with verification/vectors/make_vectors.py
+table_add ipv4_lpm ipv4_forward 0x0A000001/8 => 0x0000BB000001 1
+run_traffic traffic

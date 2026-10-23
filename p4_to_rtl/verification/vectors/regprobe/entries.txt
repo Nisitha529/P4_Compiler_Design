@@ -1,0 +1,4 @@
+# regprobe: repeated destinations, so a register indexed by them is hit more than once
+# Regenerate with verification/vectors/make_vectors.py
+# (this program has no tables to program)
+run_traffic traffic

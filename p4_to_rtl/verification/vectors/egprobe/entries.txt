@@ -1,0 +1,9 @@
+# egprobe: one frame per arm of l2 plus the egress-side drop
+# Regenerate with verification/vectors/make_vectors.py
+table_add l2 fwd 0x0001 => 1
+table_add l2 retag 0x00F0
+table_add l2 drop_pkt 0x00AA
+table_add l2 fwd 0xBEEF => 1
+table_add port_smac set_smac 1 => 0xAABBCCDDEEFF
+table_add port_smac set_smac 2 => 0x112233445566
+run_traffic traffic

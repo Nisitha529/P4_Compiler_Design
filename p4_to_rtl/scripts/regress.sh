@@ -123,6 +123,20 @@ if [ -f "$R/scripts/check_tm_qdepth.sh" ]; then
   fi
 fi
 
+# The ORACLE test: every committed pcap through both the design and a
+# reference model built from the same IR, compared byte for byte. The rest of
+# this suite checks the RTL against expectations a human wrote down; this
+# checks it against an executable reading of the P4, over real traffic.
+if [ -x "$R/scripts/check_vectors.sh" ]; then
+  if ! "$R/scripts/check_vectors.sh" > "$O/vectors.log" 2>&1; then
+    echo "-----"; echo "PCAP / REFERENCE-MODEL COMPARISON:"; sed 's/^/  /' "$O/vectors.log"
+    bad="$bad vectors"
+  else
+    echo "-----"
+    echo "vectors: $(grep -c '^ok ' "$O/vectors.log") app(s) agree with the reference model over their pcap"
+  fi
+fi
+
 # Every --self-test wrapper must DRIVE every input of the core it wraps. An
 # omitted port in an instantiation is legal SystemVerilog and silent, and two
 # real inputs were found undriven that way (FeatureExport's tready, and

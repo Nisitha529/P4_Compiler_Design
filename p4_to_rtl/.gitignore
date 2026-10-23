@@ -21,3 +21,5 @@ xsim.dir/
 # simulation artefacts
 *.vcd
 *.vvp
+__pycache__/
+*.pyc

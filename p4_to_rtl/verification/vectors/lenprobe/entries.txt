@@ -1,0 +1,8 @@
+# lenprobe: every length change the program can make, including a frame short enough to live entirely inside the header region
+# Regenerate with verification/vectors/make_vectors.py
+table_add cls fwd 0x0004 => 1
+table_add cls insert_one 0x0001 => 1
+table_add cls insert_two 0x0002 => 1
+table_add cls strip_vlan 0x0003 => 1
+table_add cls insert_stamp 0x0005 => 1
+run_traffic traffic

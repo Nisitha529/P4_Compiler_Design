@@ -1,0 +1,4 @@
+# lmprobe: frames that accumulate into the egress register
+# Regenerate with verification/vectors/make_vectors.py
+table_add port_fwd fwd 3 => 1
+run_traffic traffic

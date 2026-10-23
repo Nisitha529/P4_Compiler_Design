@@ -1,0 +1,4 @@
+# rawprobe: back-to-back frames, which is what the register read-after-write distance is about
+# Regenerate with verification/vectors/make_vectors.py
+table_add fwd set_port 0x0801 => 1
+run_traffic traffic

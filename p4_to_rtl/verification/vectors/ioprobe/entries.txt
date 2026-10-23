@@ -1,0 +1,4 @@
+# ioprobe: IPv4 and non-IPv4 frames arriving on the port the entry matches
+# Regenerate with verification/vectors/make_vectors.py
+table_add port_fwd fwd 3 => 7
+run_traffic traffic

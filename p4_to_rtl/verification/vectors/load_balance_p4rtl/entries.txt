@@ -1,0 +1,9 @@
+# load_balance_p4rtl: three flows that hash across two next hops, one address outside the prefix, and a non-IPv4 frame; the IPv4 checksum is recomputed for each
+# Regenerate with verification/vectors/make_vectors.py
+# ecmp_group is an LPM table: 10.0.2.0/24 spreads over two next hops
+table_add ecmp_group set_ecmp_select 0x0A000200/24 => 0 1
+table_add ecmp_nhop set_nhop 0 => 0x00000A000001 0x0A000101 1
+table_add ecmp_nhop set_nhop 1 => 0x00000A000002 0x0A000102 2
+table_add send_frame rewrite_mac 1 => 0x00AABB000001
+table_add send_frame rewrite_mac 2 => 0x00AABB000002
+run_traffic traffic

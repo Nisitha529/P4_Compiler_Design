@@ -1,0 +1,4 @@
+# smprobe: a good frame, one the parser verify() rejects, and a long one
+# Regenerate with verification/vectors/make_vectors.py
+# (this program has no tables to program)
+run_traffic traffic
