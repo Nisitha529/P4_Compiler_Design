@@ -1,0 +1,28 @@
+# de2115_bringup.qsf -- STEP 1: board-alive bring-up for the Terasic DE2-115.
+#
+#   quartus_sh --flow compile de2115_bringup
+#   quartus_pgm -m jtag -o "p;output_files/de2115_bringup.sof"
+#
+# The device is EP4CE115F29C7, which is what this project's own earlier DE2-115
+# build (quartus_setup/de2_115_setup) fitted successfully -- so it is confirmed
+# for this board, not inferred from a part number.
+
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE115F29C7
+set_global_assignment -name TOP_LEVEL_ENTITY de2115_bringup_top
+set_global_assignment -name SYSTEMVERILOG_FILE ../common/seg7.sv
+set_global_assignment -name SYSTEMVERILOG_FILE de2115_bringup_top.sv
+set_global_assignment -name SDC_FILE de2115_bringup.sdc
+
+# Unused pins: tri-stated with a weak pull-up. This is also Quartus's default
+# for this family, set explicitly because it is the setting that decides what
+# ~350 unassigned balls do on a board full of other devices -- a bring-up
+# design is exactly where that should be stated rather than inherited.
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED WITH WEAK PULL-UP"
+
+# Pin locations and I/O standards, cross-checked between the Terasic user
+# manual and a fitted DE2-115 Ethernet design (see common/make_pins.py).
+# Evaluated as Tcl, which is how a .qsf includes another assignment file.
+set_global_assignment -name SOURCE_TCL_SCRIPT_FILE ../common/pins_core.qsf
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"

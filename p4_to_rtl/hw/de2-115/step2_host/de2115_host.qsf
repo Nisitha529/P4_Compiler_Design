@@ -1,0 +1,25 @@
+# de2115_host.qsf -- STEP 2b: the PC-to-fabric path over the USB-Blaster cable.
+#
+#   make            # generates the JTAG IP, then compiles
+# or by hand:
+#   qsys-generate jtag_to_avalon_mst_brg_01.qsys --synthesis=VERILOG --family="Cyclone IV E" --part=EP4CE115F29C7
+#   quartus_sh --flow compile de2115_host
+#   quartus_pgm -m jtag -o "p;de2115_host.sof"
+#
+# Then drive it from Quartus System Console -- the commands are in the header
+# of de2115_host_top.sv.
+
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE115F29C7
+set_global_assignment -name TOP_LEVEL_ENTITY de2115_host_top
+set_global_assignment -name SYSTEMVERILOG_FILE ../common/seg7.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../../rtl/common/avmm_axil_lite_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE host_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE de2115_host_top.sv
+set_global_assignment -name QSYS_FILE jtag_to_avalon_mst_brg_01.qsys
+set_global_assignment -name SDC_FILE de2115_host.sdc
+
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED WITH WEAK PULL-UP"
+set_global_assignment -name SOURCE_TCL_SCRIPT_FILE ../common/pins_core.qsf
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"

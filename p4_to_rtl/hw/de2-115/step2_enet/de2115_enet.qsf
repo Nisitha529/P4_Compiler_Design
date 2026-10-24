@@ -1,0 +1,21 @@
+# de2115_enet.qsf -- STEP 2: Ethernet PHY bring-up on the Terasic DE2-115.
+#
+#   quartus_sh --flow compile de2115_enet
+#   quartus_pgm -m jtag -o "p;de2115_enet.sof"
+
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE115F29C7
+set_global_assignment -name TOP_LEVEL_ENTITY de2115_enet_top
+set_global_assignment -name SYSTEMVERILOG_FILE ../common/seg7.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../common/mdio_master.sv
+set_global_assignment -name SYSTEMVERILOG_FILE de2115_enet_top.sv
+set_global_assignment -name SDC_FILE de2115_enet.sdc
+
+# See step 1's .qsf: this decides what every unassigned ball does on a board
+# full of other devices, and a bring-up design should say so explicitly.
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED WITH WEAK PULL-UP"
+
+set_global_assignment -name SOURCE_TCL_SCRIPT_FILE ../common/pins_core.qsf
+set_global_assignment -name SOURCE_TCL_SCRIPT_FILE pins_enet_step2.qsf
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
