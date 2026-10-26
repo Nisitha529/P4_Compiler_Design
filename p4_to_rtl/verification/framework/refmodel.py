@@ -61,12 +61,17 @@ class Entry:
 
 
 class Result:
-    def __init__(self, out_packet, std_meta, meta, records, dropped):
+    def __init__(self, out_packet, std_meta, meta, records, dropped, truncated=False):
         self.out_packet = out_packet      # bytes, or None when dropped
         self.std_meta = std_meta
         self.meta = meta
         self.records = records            # [(feature_export_name, value)]
         self.dropped = dropped
+        # True when the PARSER ran out of bytes (P4's PacketTooShort), as
+        # distinct from the program choosing to drop. The generated design does
+        # not implement PacketTooShort, so the two legitimately differ there
+        # and the framework has to be able to say which kind of drop this was.
+        self.truncated = truncated
 
 
 class _Env:
@@ -145,6 +150,8 @@ class Model:
         if self.ectrl is not None and not (self.ectrl.tables or self.ectrl.statements):
             self.ectrl = None
         self.deparse_order = list(ir.pipeline.deparser.emit_list) if ir.pipeline.deparser else []
+        self.last_match_order = None
+        self.hit_truncation = False
         self.registers = {}
         for c in (self.ctrl, self.ectrl):
             for r in (getattr(c, 'registers', []) or []) if c else []:
@@ -214,6 +221,7 @@ class Model:
 
     # ---------------- the run ----------------
     def run(self, packet, entries, ingress_port=0, timestamp=0):
+        self.hit_truncation = False
         st = _State()
         st.std = {k: 0 for k in self.std_widths}
         if 'ingress_port' in st.std:
@@ -231,8 +239,10 @@ class Model:
         if 'parsed_bytes' in st.std:
             st.std['parsed_bytes'] = st.parsed_bytes
         if not ok:
-            # A failed verify() drops the packet in the generated shell.
-            return Result(None, st.std, st.meta, st.records, True)
+            # A failed verify() drops the packet in the generated shell; a
+            # truncated extract SHOULD, per the spec, but does not here.
+            return Result(None, st.std, st.meta, st.records, True,
+                          truncated=self.hit_truncation)
 
         self._run_control(self.ctrl, st, entries)
         dropped = bool(st.std.get('drop', 0))
@@ -303,7 +313,12 @@ class Model:
                         f'extract(hdr.{ex.header}) with a runtime length is not modelled')
                 nb = self.header_bytes(ex.header)
                 if off + nb > len(packet):
-                    return False      # ran off the end: the shell treats it as a short/bad packet
+                    # P4's PacketTooShort: extract() needs more bytes than the
+                    # packet has, the parser rejects, and in v1model the packet
+                    # is dropped. Flagged separately because the generated
+                    # design has no such check -- see the note on Result.
+                    self.hit_truncation = True
+                    return False
                 self._place(st, ex.header, packet[off:off+nb])
                 off += nb
                 st.parsed_bytes = off
@@ -397,13 +412,31 @@ class Model:
         for k in t.keys:
             v, w = Evaluator(env).eval(k.field)
             kvals.append((v, w, k.match_type))
-        best = None
-        for r in rows:
+        # Resolution follows THE HARDWARE'S DOCUMENTED CONTRACT, which is not
+        # the P4 specification's.
+        #
+        # emit_table.py builds an lpm/ternary table as an ordered array and
+        # returns the LOWEST MATCHING INDEX; it does not compare prefix
+        # lengths or mask widths. The cp_map says so in as many words:
+        # "caller-ordered: insert MOST SPECIFIC first ... The hardware does not
+        # sort and does not compare prefix lengths -- it returns the lowest
+        # matching index."
+        #
+        # This model used to implement the spec's longest-prefix-wins instead,
+        # and the randomised stimulus caught it immediately: entries
+        # 10.0.0.7/8 then 10.0.0.237/16, a packet to 10.0.0.237, the model
+        # picking /16 and the hardware /8. The hardware was right about its own
+        # contract. An oracle has to check the design against the contract the
+        # design states, so insertion order decides here too -- and
+        # order_dependent() below is what warns a caller whose entry order
+        # makes the two disagree.
+        matches = []
+        for idx, r in enumerate(rows):
             if len(r.keys) != len(kvals):
                 raise Unsupported(
                     f'table {t.name!r} has {len(kvals)} key field(s) but an entry '
                     f'supplies {len(r.keys)}')
-            ok, prio = True, r.priority
+            ok, plen = True, 0
             for i, (v, w, mt) in enumerate(kvals):
                 ek = r.keys[i]
                 if mt == 'exact':
@@ -412,17 +445,96 @@ class Model:
                     pl = r.prefix_len if r.prefix_len is not None else w
                     mask = 0 if pl == 0 else ((1 << w) - 1) ^ ((1 << (w - pl)) - 1)
                     ok &= ((ek & mask) == (v & mask))
-                    prio = max(prio, pl)      # longest prefix wins
+                    plen += pl
                 elif mt == 'ternary':
-                    m = r.masks[i] if r.masks else (1 << w) - 1
+                    m = r.masks[i] if (r.masks and r.masks[i] is not None) else (1 << w) - 1
                     ok &= ((ek & m) == (v & m))
+                    plen += bin(m).count('1')
                 else:
                     raise Unsupported(f'match kind {mt!r} is not modelled')
                 if not ok:
                     break
-            if ok and (best is None or prio > best[0]):
-                best = (prio, r)
-        return best[1] if best else None
+            if ok:
+                matches.append((idx, plen, r))
+        if not matches:
+            return None
+        self.last_match_order = matches      # order_dependent() reads this
+        return matches[0][2]                 # lowest index wins
+
+    def order_dependent(self, packet, entries, ingress_port=0):
+        """Tables where this packet's entry order makes the hardware's
+        lowest-index rule disagree with the P4 specification's
+        longest-prefix/most-specific rule.
+
+        This is a trap for a P4 programmer rather than a bug in the design: a
+        program written expecting `lpm` to mean longest-prefix-match will
+        behave differently here unless the control plane inserts the most
+        specific entry first. Reported so it is a sentence, not a hex diff.
+        """
+        out = []
+        for tname, rows in (entries or {}).items():
+            t = self.tables.get(tname)
+            if t is None or not any(k.match_type in ('lpm', 'ternary') for k in t.keys):
+                continue
+            kv = self.key_values(packet, tname, ingress_port)
+            if kv is None:
+                continue
+            st = _State()
+            st.std = {k: 0 for k in self.std_widths}
+            st.meta = {m: 0 for m in self.meta_widths}
+            for inst in self.inst:
+                st.valid[inst] = False
+                st.hdr[inst] = {f.name: 0 for f in self.inst[inst].header_type.fields}
+            self._parse(st, packet)
+            self.last_match_order = None
+            self._match(t, st, rows)
+            m = self.last_match_order
+            if m and len(m) > 1:
+                by_index = m[0]
+                by_spec = max(m, key=lambda x: x[1])
+                if by_index[0] != by_spec[0]:
+                    out.append((tname, by_index, by_spec))
+        return out
+
+    def key_values(self, packet, table_name, ingress_port=0):
+        """The key tuple `packet` presents to `table_name`: [(value, width)].
+
+        Exists for the randomised stimulus generator. Generating random KEYS
+        and hoping they match a table is hopeless -- a 16-bit exact key hits
+        one time in 65536, so a fuzzer built that way would spend all its time
+        on the miss path and never execute an action.
+
+        Inverting it works: generate random PACKETS, ask the model what keys
+        they present, and program entries for those values. That produces hits
+        and misses in whatever mixture is wanted, and it needs no per-program
+        knowledge, because the model is already evaluating the table's own key
+        expressions.
+        """
+        t = self.tables.get(table_name)
+        if t is None:
+            raise Unsupported(f'unknown table {table_name!r}')
+        st = _State()
+        st.std = {k: 0 for k in self.std_widths}
+        if 'ingress_port' in st.std:
+            st.std['ingress_port'] = ingress_port
+        if 'packet_length' in st.std:
+            st.std['packet_length'] = len(packet)
+        st.meta = {m: 0 for m in self.meta_widths}
+        for inst in self.inst:
+            st.valid[inst] = False
+            st.hdr[inst] = {f.name: 0 for f in self.inst[inst].header_type.fields}
+        if not self._parse(st, packet):
+            return None              # the parser rejects it: no keys to speak of
+        if 'parsed_bytes' in st.std:
+            st.std['parsed_bytes'] = st.parsed_bytes
+        env = _Env(self, st, {})
+        out = []
+        for k in t.keys:
+            try:
+                out.append(Evaluator(env).eval(k.field))
+            except Unsupported:
+                return None          # a key this model cannot evaluate
+        return out
 
     def _run_action(self, name, params, ctrl, st, entries):
         a = self.actions.get(name)

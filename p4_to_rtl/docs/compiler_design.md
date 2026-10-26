@@ -476,6 +476,9 @@ from `scripts/regress.sh`:
 | `check_cp_map.py` | not a regeneration — cross-checks every `<app>_cp_map.json` against its own decoder |
 | `check_selftest_ports.py` | also not a regeneration — checks that every `--self-test` wrapper connects every INPUT of the core it instantiates (see §6's note; this is the guard for a whole class of silent bug) |
 | `check_vectors.sh` | the ORACLE test — every committed pcap through both the design and a reference model built from the same IR, compared byte for byte (see §7a) |
+| `check_fuzz.sh` | a short randomised campaign per app against the oracle, **fixed seed** — a regression that generates fresh cases every run is flaky by construction |
+| `check_coverage.sh` | line coverage of the generated RTL (Verilator), against a recorded baseline — the answer to "did this change make the suite test less than it used to" |
+| `check_exact_match_ways.sh` | the d-way set-associative table, which needs `--exact-match-ways 4` to exist at all |
 
 ### 7a. The pcap verification framework
 
@@ -532,6 +535,52 @@ emitter and shell bugs — which is every datapath bug this project has actually
 found. Verified by mutation: with last week's short-packet TX fix reverted,
 `lenprobe`'s pcap run reports `FAIL -- 6 packet(s) expected, 5 came out`, from
 traffic alone and with no app-specific assertion written.
+
+### 7b. Coverage, and randomised stimulus
+
+Until 2026-10-25 nothing measured what the suite touched. 985 assertions and 58
+packets of traffic passed, and the fraction of the generated shell they executed
+was unknown — so "green" meant "nothing we thought to check is broken", with no
+way to see what nobody thought to check.
+
+**Coverage** is now measured by Verilator (which compiles the generated RTL
+cleanly), replaying each app's committed pcap through the same generated
+testbench the oracle verifies with, so what is measured is exactly what is
+verified. Per app it runs in about 10 seconds. The thirteen apps sit between
+**77% and 89% line coverage**, recorded in
+`verification/vectors/coverage_baseline.json` and enforced as a **ratchet**: a
+drop of more than one point fails. A fixed target would be a number somebody
+invented; a baseline answers the question that matters.
+
+One wrinkle worth knowing: Verilator 5.006's own `--main` does not write the
+coverage database, so a `--coverage` build measures and then discards. The
+harness in `verification/framework/verilator_main.cpp` is Verilator's own event
+loop with the write added.
+
+**Randomised stimulus** (`verification/framework/fuzz.py`) generates traffic and
+table entries, compares against the oracle, prints the **seed**, and **shrinks**
+a failure (bisecting packets, then dropping entries) to a minimal reproducer
+plus a pcap you can open. The generation is inverted on purpose: random *keys*
+would be hopeless — one 16-bit exact key hits one time in 65536 — so it
+generates random *packets*, asks the model what keys they present
+(`Model.key_values`), and programs entries for those. Hits, misses and several
+actions follow with no per-program knowledge.
+
+**What it found immediately,** and what each finding turned out to be:
+
+| finding | verdict |
+|---|---|
+| Two keys folding to the same table index displaced each other | the documented `--exact-match-ways 1` limitation. Now its own `COLLISION` verdict, computed from the cp_map by `tablemap.py`, instead of a hex diff |
+| An LPM table picking the *shorter* prefix | **the reference model was wrong.** The cp_map states the contract plainly: "the hardware does not sort and does not compare prefix lengths — it returns the lowest matching index". The model now follows the design's documented contract, and `order_dependent()` warns when an entry order makes that disagree with the spec's longest-prefix rule |
+| A frame whose parser runs past its end being forwarded | **a real compiler gap.** There is no `PacketTooShort` check anywhere: the generated parser does not bound extraction by the received length, so headers are parsed from bytes that were never received. The spec rejects such packets. Reported as `SHORT-PACKET` |
+
+**And one result that corrected an assumption:** widening the traffic barely
+moves coverage. 150 random packets took `egprobe` from 83.1% to 83.6%. The
+remaining lines are not reachable by varying packets at all — **51% of them are
+the control-plane read, table-query and delete path**, which the vector
+testbench cannot exercise because it only ever *writes* entries and sends
+packets. Extending it to issue CP reads and compare the readback against the
+model's table state is the next concrete step, and it is where the coverage is.
 
 **Two sampling rules for a top-level testbench,** both learned from failures
 that looked like design bugs:

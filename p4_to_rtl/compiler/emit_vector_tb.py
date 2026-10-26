@@ -209,15 +209,17 @@ def _write(f, app, ingress_port_w, feeds, meta_outs):
     f.write('      for (int i = 0; i < rx_n; i++) $fwrite(out_fd, " %02x", rx[i]);\n')
     f.write('      $fwrite(out_fd, "\\n");\n')
     if meta_outs:
-        f.write('      $fwrite(meta_fd, "pkt");\n')
+        f.write('      if (meta_fd != 0) begin\n')
+        f.write('        $fwrite(meta_fd, "pkt");\n')
         for nm, _ in meta_outs:
-            f.write(f'      $fwrite(meta_fd, " {nm}=%0h", {nm});\n')
-        f.write('      $fwrite(meta_fd, "\\n");\n')
+            f.write(f'        $fwrite(meta_fd, " {nm}=%0h", {nm});\n')
+        f.write('        $fwrite(meta_fd, "\\n");\n')
+        f.write('      end\n')
     f.write('      rx_n = 0; out_pkts = out_pkts + 1;\n')
     f.write('    end\n')
     f.write('  end\n\n')
     for nm, _ in feeds:
-        f.write(f'  always @(negedge clk) if (rst_n && {nm}_tvalid)\n')
+        f.write(f'  always @(negedge clk) if (rst_n && {nm}_tvalid && rec_fd != 0)\n')
         f.write(f'    $fwrite(rec_fd, "{nm} %0h\\n", {nm}_tdata);\n')
     f.write('\n')
 
@@ -266,8 +268,20 @@ def _write(f, app, ingress_port_w, feeds, meta_outs):
     f.write('    if (!$value$plusargs("meta_out=%s", meta_out_f)) meta_out_f = "";\n')
     f.write('    if (!$value$plusargs("in_port=%0d", in_port)) in_port = 0;\n')
     f.write('    out_fd = $fopen(vec_out_f, "w");\n')
-    f.write('    rec_fd = (rec_out_f != "") ? $fopen(rec_out_f, "w") : out_fd;\n')
-    f.write('    meta_fd = (meta_out_f != "") ? $fopen(meta_out_f, "w") : out_fd;\n')
+    # if/else rather than a ternary: Verilator will not parse $fopen inside a
+    # conditional expression ("unexpected $fopen, expecting TYPE-IDENTIFIER"),
+    # and this testbench is the one the coverage build runs, so it has to be
+    # readable by three simulators rather than two.
+    #
+    # Unset means fd 0 and the write is SKIPPED -- it must never fall back to
+    # the packet file. An earlier version did exactly that, so a caller that
+    # omitted +rec_out=/+meta_out= got metadata lines interleaved into its
+    # packet vector, which then failed to parse. The packet output is the one
+    # thing this file must not corrupt.
+    f.write('    rec_fd  = 0;\n')
+    f.write('    meta_fd = 0;\n')
+    f.write('    if (rec_out_f != "")  rec_fd  = $fopen(rec_out_f, "w");\n')
+    f.write('    if (meta_out_f != "") meta_fd = $fopen(meta_out_f, "w");\n')
     f.write('    if (out_fd == 0) begin $display("[VECTB-ERROR] cannot write %0s", vec_out_f); $finish; end\n\n')
     f.write('    rst_n = 0;\n')
     f.write('    repeat (5) @(posedge clk); @(negedge clk); rst_n = 1;\n')
@@ -303,8 +317,8 @@ def _write(f, app, ingress_port_w, feeds, meta_outs):
     f.write('    repeat (drain) @(posedge clk);\n')
     f.write('    $display("[VECTB] sent=%0d out=%0d", sent, out_pkts);\n')
     f.write('    $fclose(out_fd);\n')
-    f.write('    if (rec_out_f != "") $fclose(rec_fd);\n')
-    f.write('    if (meta_out_f != "") $fclose(meta_fd);\n')
+    f.write('    if (rec_fd  != 0) $fclose(rec_fd);\n')
+    f.write('    if (meta_fd != 0) $fclose(meta_fd);\n')
     f.write('    $finish;\n')
     f.write('  end\n\n')
     f.write('endmodule\n')

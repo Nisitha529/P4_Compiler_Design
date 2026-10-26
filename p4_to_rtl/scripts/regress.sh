@@ -123,7 +123,41 @@ if [ -f "$R/scripts/check_tm_qdepth.sh" ]; then
   fi
 fi
 
-# The ORACLE test: every committed pcap through both the design and a
+# A short randomised campaign per app, fixed seed (see the script for why).
+if [ -x "$R/scripts/check_fuzz.sh" ]; then
+  if ! "$R/scripts/check_fuzz.sh" > "$O/fuzz.log" 2>&1; then
+    echo "-----"; echo "RANDOMISED STIMULUS:"; sed 's/^/  /' "$O/fuzz.log"
+    bad="$bad fuzz"
+  else
+    echo "-----"
+    echo "fuzz: $(grep -c '^ok ' "$O/fuzz.log") app(s) survive a randomised campaign"
+  fi
+fi
+
+# Line coverage of the generated RTL, against a recorded baseline -- the answer
+# to "did a change make this suite test less than it used to".
+if [ -x "$R/scripts/check_coverage.sh" ]; then
+  if ! "$R/scripts/check_coverage.sh" > "$O/coverage.log" 2>&1; then
+    echo "-----"; echo "COVERAGE:"; sed 's/^/  /' "$O/coverage.log"
+    bad="$bad coverage"
+  else
+    echo "-----"
+    echo "coverage: $(grep -c '^ok ' "$O/coverage.log") app(s) at or above baseline" \
+         "(lowest $(grep -oE '[0-9]+\.[0-9]+%' "$O/coverage.log" | sort -n | head -1))"
+  fi
+fi
+
+# The d-way set-associative table, which needs its own generation.
+if [ -x "$R/scripts/check_exact_match_ways.sh" ]; then
+  if ! "$R/scripts/check_exact_match_ways.sh" > "$O/ways.log" 2>&1; then
+    echo "-----"; echo "SET-ASSOCIATIVE TABLE:"; sed 's/^/  /' "$O/ways.log"
+    bad="$bad exact_match_ways"
+  else
+    echo "-----"; sed 's/^/ways: /' "$O/ways.log"
+  fi
+fi
+
+# The ORACLE test: every committed pcap through both the design and a# The ORACLE test: every committed pcap through both the design and a
 # reference model built from the same IR, compared byte for byte. The rest of
 # this suite checks the RTL against expectations a human wrote down; this
 # checks it against an executable reading of the P4, over real traffic.

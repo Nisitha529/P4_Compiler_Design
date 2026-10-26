@@ -42,6 +42,7 @@ from build_ir import build_ir                           # noqa: E402
 from refmodel import Model, Entry                       # noqa: E402
 from expr import Unsupported                            # noqa: E402
 from emit_vector_tb import emit_vector_tb, PortError    # noqa: E402
+from tablemap import collisions, describe                # noqa: E402
 
 import json                                             # noqa: E402
 
@@ -245,6 +246,9 @@ def main(argv=None):
     ap.add_argument('--in-port', type=int, default=0, help='ingress_port for every packet')
     ap.add_argument('--keep', metavar='DIR', help='keep artifacts (pcaps, vectors) here')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--allow-collisions', action='store_true',
+                    help='run even when entries cannot coexist in the hardware '
+                         '(the comparison will then legitimately differ)')
     a = ap.parse_args(argv)
 
     work = a.keep or tempfile.mkdtemp(prefix='p4v_')
@@ -282,21 +286,53 @@ def main(argv=None):
     except TestcaseError as e:
         print(f'{a.app}: testcase error -- {e}')
         return 2
+    # Entries the hardware cannot hold at once are reported as their own
+    # outcome. The model is an ideal table and the hardware is a hash-addressed
+    # one, so a colliding entry set makes the two disagree for a reason that
+    # has nothing to do with the datapath -- and it reads as a byte diff unless
+    # something says otherwise.
+    coll = collisions(cpmap, raw)
+    if coll and not a.allow_collisions:
+        print(f'{a.app}: COLLISION -- these entries cannot coexist in the '
+              f'generated table(s):')
+        for c in coll:
+            print('  ' + describe(cpmap, c))
+        print('  (pass --allow-collisions to run anyway)')
+        return 4
+
     packets = [d for _, _, d in pcapmod.read_pcap(a.pcap)]
     say(f'{a.app}: {len(packets)} packet(s) from {os.path.basename(a.pcap)}, '
         f'{sum(len(v) for v in raw.values())} table entry/entries')
 
     # 4. the model's answer
     expected, records = [], []
+    n_short, order_warn = 0, []
     try:
         for pkt in packets:
             r = model.run(pkt, ments, ingress_port=a.in_port)
             if r.out_packet is not None:
                 expected.append(r.out_packet)
+            if r.truncated:
+                n_short += 1
+            order_warn += model.order_dependent(pkt, ments, a.in_port)
             records += r.records
     except Unsupported as u:
         print(f'{a.app}: NOT VERIFIED -- {u}')
         return 3
+
+    # An entry order the hardware resolves differently from the P4
+    # specification is a trap for the PROGRAM, not a mismatch: say so in words
+    # rather than letting it surface as a wrong-looking packet.
+    if order_warn:
+        seen = set()
+        for tname, by_idx, by_spec in order_warn:
+            if tname in seen:
+                continue
+            seen.add(tname)
+            say(f'  NOTE: table {tname!r} has entries whose order matters: the '
+                f'hardware takes the lowest matching index (entry {by_idx[0]}), '
+                f'the P4 specification\'s longest-prefix rule would take entry '
+                f'{by_spec[0]}. Insert the most specific entry FIRST.')
 
     # 5. the design's answer
     vec_in = os.path.join(work, 'in.vec')
@@ -332,6 +368,17 @@ def main(argv=None):
     pcapmod.write_pcap(os.path.join(work, 'expected.pcap'), expected)
     pcapmod.write_pcap(os.path.join(work, 'actual.pcap'), actual)
     verdict, detail = compare(expected, actual)
+    # A packet the model dropped for PacketTooShort, which the design forwards
+    # because it implements no such check, is a known difference between the
+    # two -- not a datapath mismatch. Reported on its own so it neither hides a
+    # real failure nor masquerades as one.
+    if verdict == 'FAIL' and n_short and len(actual) == len(expected) + n_short:
+        verdict = 'SHORT-PACKET'
+        detail = (f'{n_short} packet(s) ran the parser past the end of the frame. '
+                  f'The P4 specification rejects those (PacketTooShort) and this '
+                  f'model drops them; the generated design has no such check and '
+                  f'forwards them, having parsed header fields from bytes that '
+                  f'were never received. Everything else matched.')
     print(f'{a.app}: {verdict} -- {detail}')
     if a.keep or verdict not in ('PASS',):
         print(f'  artifacts: {work}  (expected.pcap, actual.pcap, in.vec, entries.cp)')
