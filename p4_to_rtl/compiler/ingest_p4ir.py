@@ -557,6 +557,15 @@ def _flatten(items):
     return result
 
 
+
+class UnsupportedP4(Exception):
+    """A P4 construct this ingester will not pretend to have compiled.
+
+    Raised instead of skipping: a construct silently dropped here becomes RTL
+    that is missing behaviour the program asked for, and the compiler reports
+    success. See the switch(...action_run) refusal in _parse_one.
+    """
+
 class _ApplyParser:
     """Recursive-descent parser for a P4 control apply block."""
 
@@ -629,6 +638,39 @@ class _ApplyParser:
         # if statement
         if re.match(r'if\s*\(', rest):
             return self._parse_if()
+
+        # switch (<table>.apply().action_run) -- REFUSED, not skipped.
+        #
+        # This construct used to fall through every branch below and be
+        # consumed as unrecognised text, which left the control block with ZERO
+        # statements: the table was instantiated and never applied, no arm ever
+        # ran, and the design came out inert while the compiler reported
+        # success. A program that forwards nothing and drops nothing, compiled
+        # "successfully", is the worst failure this compiler can have, so it is
+        # now a hard error.
+        #
+        # Supporting it is tractable and is the obvious follow-on: p4test keeps
+        # the switch and lifts each arm into a hidden table
+        # (`a_one: { tbl_xxx.apply(); }`), and emit_processing already
+        # dispatches per action id inside _emit_table_case -- so the arms would
+        # become statements guarded by that same action id. Until that exists,
+        # refusing is the only honest option.
+        m = re.match(r'switch\s*\(\s*(\w+)\s*\.\s*apply\s*\(\s*\)\s*'
+                     r'\.\s*action_run\s*\)', rest)
+        if m:
+            local = m.group(1)
+            canon = self.name_map.get(local, local)
+            raise UnsupportedP4(
+                f"switch ({canon}.apply().action_run) is not supported by this "
+                f"compiler.\n"
+                f"  It was previously accepted and silently produced an INERT "
+                f"control block -- the table was never applied and no switch "
+                f"arm ran -- so it is refused rather than miscompiled.\n"
+                f"  Rewrite it as explicit applies and conditions, for example:\n"
+                f"      {canon}.apply();\n"
+                f"      if (<condition on what the action set>) {{ ... }}\n"
+                f"  A plain `switch (<value>)` IS supported: p4c lowers that to "
+                f"a table, which this compiler handles.")
 
         # NAME.apply() as a standalone statement
         m = re.match(r'(\w+)\.apply\(\)', rest)

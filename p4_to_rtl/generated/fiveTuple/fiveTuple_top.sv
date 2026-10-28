@@ -87,6 +87,7 @@ module fiveTuple_top #(
   // output-image block -- stops iverilog advancing simulation time. It is
   // also just a per-packet fact, so a register is the honest home for it.
   logic signed [8:0] slot_hdr_delta [0:NSLOT-1];
+  logic slot_too_short [0:NSLOT-1];   // parser ran past the frame end
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -802,6 +803,7 @@ module fiveTuple_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
+        slot_too_short[sl] <= 1'b0;
         slot_byte_len[sl] <= '0;
       end
     end else begin
@@ -854,10 +856,13 @@ module fiveTuple_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
+  wire iss_too_short = slot_done[iss_slot]
+                       && (slot_byte_len[iss_slot] < cutoff_byte);
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_too_short[iss_slot] <= iss_too_short;
       slot_in_valid_eth[iss_slot] <= w_eth_valid;
       slot_in_valid_vlan[iss_slot] <= w_vlan_valid;
       slot_in_valid_ipv4[iss_slot] <= w_ipv4_valid;
@@ -876,7 +881,7 @@ module fiveTuple_top #(
     end else begin
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
-        slot_drop[cmp_slot] <= proc_drop;
+        slot_drop[cmp_slot] <= proc_drop || slot_too_short[cmp_slot];
         slot_hdr_delta[cmp_slot] <=
             (out_eth_valid ? 9'sd14 : 9'sd0) - (slot_in_valid_eth[cmp_slot] ? 9'sd14 : 9'sd0)
           + (out_new_vlan_valid ? 9'sd4 : 9'sd0) - (slot_in_valid_new_vlan[cmp_slot] ? 9'sd4 : 9'sd0)

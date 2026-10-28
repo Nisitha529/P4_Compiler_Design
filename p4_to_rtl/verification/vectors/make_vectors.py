@@ -141,11 +141,23 @@ SPEC['smprobe'] = (
     '',
     'a good frame, one the parser verify() rejects, and a long one')
 
+# A frame that ENDS before its parse path completes: IPv4 says proto=6 so the
+# parser wants a TCP header, and there isn't one. P4 calls that PacketTooShort
+# and the parser rejects; the design discards it. This frame is here because
+# that check was ADDED on 2026-10-28 after the randomised stimulus found the
+# design forwarding such packets, having read TCP fields out of bytes that were
+# never received -- so the committed stimulus should keep exercising it.
+def truncated_tcp():
+    return (bytes(DST) + bytes(SRC) + bytes([0x08, 0x00])
+            + ipv4([10, 0, 1, 1], [10, 0, 2, 1], proto=6))   # no TCP header
+
+
 SPEC['load_balance_p4rtl'] = (
     [pad_to(eth(0x0800, ipv4([10, 0, 1, 1], [10, 0, 2, n], payload=tcp(1000 + n, 80))), 78)
      for n in (1, 2, 3)]
     + [pad_to(eth(0x0800, ipv4([10, 0, 1, 1], [192, 168, 0, 1], payload=tcp(5000, 80))), 78),
-       pad_to(eth(0x1234, b''), 64)],
+       pad_to(eth(0x1234, b''), 64),
+       truncated_tcp()],
     """# ecmp_group is an LPM table: 10.0.2.0/24 spreads over two next hops
 table_add ecmp_group set_ecmp_select 0x0A000200/24 => 0 1
 table_add ecmp_nhop set_nhop 0 => 0x00000A000001 0x0A000101 1
@@ -154,7 +166,8 @@ table_add send_frame rewrite_mac 1 => 0x00AABB000001
 table_add send_frame rewrite_mac 2 => 0x00AABB000002
 """,
     'three flows that hash across two next hops, one address outside the '
-    'prefix, and a non-IPv4 frame; the IPv4 checksum is recomputed for each')
+    'prefix, a non-IPv4 frame, and one frame that ends before its TCP header '
+    '(PacketTooShort); the IPv4 checksum is recomputed for each')
 
 SPEC['ecn_p4rtl'] = (
     [pad_to(eth(0x0800, ipv4([10, 0, 0, 1], [10, 0, 0, 1], proto=17,

@@ -74,6 +74,7 @@ module smprobe_top #(
   logic slot_overflow [0:NSLOT-1];
   logic [15:0] slot_byte_len [0:NSLOT-1];
   logic [63:0] slot_sop_ingress_timestamp [0:NSLOT-1];   // sampled at SOP
+  logic slot_too_short [0:NSLOT-1];   // parser ran past the frame end
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -275,6 +276,7 @@ module smprobe_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
+        slot_too_short[sl] <= 1'b0;
         slot_byte_len[sl] <= '0;
       end
     end else begin
@@ -330,10 +332,13 @@ module smprobe_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
+  wire iss_too_short = slot_done[iss_slot]
+                       && (slot_byte_len[iss_slot] < cutoff_byte);
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_too_short[iss_slot] <= iss_too_short;
     end
   end
 
@@ -344,7 +349,7 @@ module smprobe_top #(
     end else begin
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
-        slot_drop[cmp_slot] <= proc_drop;
+        slot_drop[cmp_slot] <= proc_drop || slot_too_short[cmp_slot];
         slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
         slot_phv_eth_dst[cmp_slot] <= out_eth_dst;
         slot_phv_eth_src[cmp_slot] <= out_eth_src;

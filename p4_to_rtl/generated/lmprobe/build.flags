@@ -1,0 +1,10 @@
+# Generator flags this committed build was made with.
+# Regenerate:  python3 compiler/main.py lmprobe --self-test
+#
+# NOT --board de2-115, despite the leftover .qsf/.sdc in this directory: the
+# committed RTL has the default Xilinx fsm_encoding pragma, not the Altera
+# comment, so it was generated without a board. Those constraint files are
+# leftovers from a board run that was reverted, and they fooled
+# make_build_flags.py into inferring --board on its first pass -- which is
+# exactly the kind of mistake this file exists to stop.
+--self-test

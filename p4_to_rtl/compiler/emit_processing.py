@@ -2269,13 +2269,31 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
             # trusting it would space packets too closely.
             _bump = 2 if register_ram else 1
             _reg.raw_distance = max(1, _ws - _rs + _bump)
-            print(f"[INFO] Register '{_reg.name}': RAW distance "
-                  f"{_reg.raw_distance} packet(s) (read stage {_rs}, "
-                  f"write-back stage {_ws}"
-                  f"{', synchronous read' if register_ram else ''})"
-                  + ("" if _reg.raw_distance == 1 else
-                     " -- two packets closer than this may both read the "
-                     "pre-update value"))
+            # A distance above 1 is a HAZARD the program cannot see and the
+            # hardware does not interlock: two packets closer together than
+            # this both read the pre-update value, silently. It was reported as
+            # [INFO] among dozens of other INFO lines, which is where a hazard
+            # goes to be ignored. [WARN] for the hazardous case, [INFO] only
+            # when there is nothing to worry about.
+            if _reg.raw_distance == 1:
+                print(f"[INFO] Register '{_reg.name}': RAW distance 1 packet "
+                      f"(read stage {_rs}, write-back stage {_ws}"
+                      f"{', synchronous read' if register_ram else ''}) -- "
+                      f"back-to-back packets are safe")
+            else:
+                print(f"[WARN] Register '{_reg.name}': READ-AFTER-WRITE HAZARD, "
+                      f"distance {_reg.raw_distance} packets (read stage {_rs}, "
+                      f"write-back stage {_ws}"
+                      f"{', synchronous read' if register_ram else ''}).")
+                print(f"       Two packets arriving closer than "
+                      f"{_reg.raw_distance} apart will BOTH read the "
+                      f"pre-update value. There is no interlock: this is a "
+                      f"property of the program, not something the hardware "
+                      f"will catch at run time.")
+                print(f"       If '{_reg.name}' is a per-flow counter or state "
+                      f"machine fed by back-to-back packets, that is a bug in "
+                      f"the design as written. The distance is also recorded in "
+                      f"the cp_map as registers[].raw_distance.")
 
         def _ue_apply_stage(ue_name):
             for i, stg in enumerate(stages):

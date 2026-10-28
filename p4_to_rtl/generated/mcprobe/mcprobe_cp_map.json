@@ -1,6 +1,6 @@
 {
   "app": "mcprobe",
-  "compiler_git": "e7d6147-dirty",
+  "compiler_git": "c2b5d61-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {

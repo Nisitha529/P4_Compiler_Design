@@ -1,15 +1,15 @@
 {
- "ecn_p4rtl": 80.64,
- "egfeprobe": 83.35,
- "egprobe": 83.07,
- "feprobe": 81.48,
- "ioprobe": 85.22,
- "lenprobe": 85.21,
- "lmprobe": 77.22,
- "load_balance_p4rtl": 89.27,
- "load_balance_xsa": 88.9,
- "qdprobe": 81.14,
- "rawprobe": 83.48,
- "regprobe": 81.19,
- "smprobe": 88.06
+ "ecn_p4rtl": 80.6,
+ "egfeprobe": 83.28,
+ "egprobe": 83.02,
+ "feprobe": 81.33,
+ "ioprobe": 85.09,
+ "lenprobe": 85.11,
+ "lmprobe": 77.08,
+ "load_balance_p4rtl": 89.89,
+ "load_balance_xsa": 89.07,
+ "qdprobe": 81.08,
+ "rawprobe": 83.38,
+ "regprobe": 81.05,
+ "smprobe": 87.61
 }

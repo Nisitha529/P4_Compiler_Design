@@ -1484,7 +1484,18 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     ig_counters  = list(ctrl.counters)
     eg_counters  = list(ectrl.counters) if ectrl else []
     all_counters = ig_counters + eg_counters
-    needs_byte_len = any(c.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
+    # slot_byte_len -- the received byte count per slot -- used to be emitted
+    # only for programs that read a length field or own a BYTES counter. It is
+    # now UNCONDITIONAL, because the PacketTooShort check needs the real
+    # received length for every program: a frame that ends before its parse
+    # path completes must be rejected whether or not the program ever asks how
+    # long it was. The cost is one 16-bit register and its adder per slot.
+    # (A cheaper test against slot_beat_cnt * BEAT_BYTES does not work: that
+    # over-counts the partial last beat, so it would miss exactly the case
+    # being caught -- a 34-byte frame needing 54 bytes occupies two 32-byte
+    # beats and would look long enough.)
+    needs_byte_len = True
+    _unused_byte_len_heuristic = any(c.counter_type in ('BYTES', 'PACKETS_AND_BYTES')
                           for c in all_counters)
 
     # Standard-metadata inputs the processing module declares (same scan
@@ -1825,6 +1836,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         f.write(f'  logic [{tm_std["enq_qdepth"]-1}:0] slot_enq_qdepth [0:NSLOT-1];   // depth at enqueue\n')
     for fn, fw in sorted(slot_std.items()):
         f.write(f'  logic [{fw-1}:0] slot_std_meta_{fn} [0:NSLOT-1];\n')
+    # A packet whose parse path needs more bytes than the frame carries. One
+    # bit per slot rather than a signal travelling the pipeline: it is decided
+    # at issue and consumed at ingress completion, which is exactly the shape
+    # the other per-packet facts (slot_sop_*, slot_hdr_delta) already use, and
+    # it needs no knowledge of the pipeline's latency.
+    f.write('  logic slot_too_short [0:NSLOT-1];   // parser ran past the frame end\n')
     f.write('  logic slot_drop     [0:NSLOT-1];\n')
     f.write('  logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot\n')
     f.write('  logic tx_finish;    // driven in the TX section; read here to set slot_txdone\n')
@@ -2579,6 +2596,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     f.write('      for (int sl = 0; sl < NSLOT; sl++) begin\n')
     f.write('        slot_beat_cnt[sl] <= \'0; slot_done[sl] <= 1\'b0; slot_overflow[sl] <= 1\'b0;\n')
     f.write('        slot_txdone[sl] <= 1\'b0;\n')
+    f.write('        slot_too_short[sl] <= 1\'b0;\n')
     if needs_byte_len:
         f.write('        slot_byte_len[sl] <= \'0;\n')
     f.write('      end\n')
@@ -2654,10 +2672,27 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     else:
         f.write('  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];\n')
     f.write('  assign iss_fire = iss_allocated && iss_hdr_ready;\n')
+    # ── P4's PacketTooShort ──────────────────────────────────────────────────
+    # cutoff_byte is the byte position at which every header THIS packet could
+    # contain has fully landed. iss_hdr_ready above fires either when that many
+    # bytes have arrived OR when the packet has ENDED -- and that second term
+    # is the hole: a frame that ends before cutoff_byte is issued anyway, and
+    # the parser then reads header fields out of bytes that were never
+    # received. A 34-byte frame claiming TCP gets a TCP header from whatever
+    # the buffer holds.
+    #
+    # The P4 specification calls that PacketTooShort and the parser rejects,
+    # which in this architecture means the architecture discards the packet.
+    # The test costs nothing and needs no store-and-forward, because it can
+    # only be true once the packet is already complete (slot_done), so the
+    # length is final at the moment it is asked.
+    f.write('  wire iss_too_short = slot_done[iss_slot]\n')
+    f.write('                       && (slot_byte_len[iss_slot] < cutoff_byte);\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')
     f.write('      iss_ptr <= iss_ptr + 1\'b1;\n')
+    f.write('      slot_too_short[iss_slot] <= iss_too_short;\n')
     if can_change_len:
         for hname in in_valid_names:
             f.write(f'      slot_in_valid_{hname}[iss_slot] <= w_{hname}_valid;\n')
@@ -2745,9 +2780,13 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write('        // manager discards this packet. It still walks the rest of the\n')
             f.write('        // pipeline as a dropped packet (egress side effects suppressed,\n')
             f.write('        // TX discards the bytes), which is how its slot gets released.\n')
-            f.write('        slot_drop[ig_slot] <= proc_drop || tail_drop;\n')
+            f.write('        slot_drop[ig_slot] <= proc_drop || tail_drop\n')
+            f.write('                              || slot_too_short[ig_slot];\n')
         else:
-            f.write('        slot_drop[ig_slot] <= proc_drop;\n')
+            # The architecture discards a packet whose parser rejected, which
+            # is what PacketTooShort is. The program's own drop decision still
+            # applies; this only ever adds to it.
+            f.write('        slot_drop[ig_slot] <= proc_drop || slot_too_short[ig_slot];\n')
         if mcast:
             f.write('        slot_ig_drop[ig_slot] <= proc_drop;\n')
         for hname in all_hdr_names:
@@ -2768,7 +2807,11 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         # No egress stage: completion order is issue order, so the ring pointer
         # still names the completing slot. With egress it comes off egq.
         f.write('        cmp_ptr <= cmp_ptr + 1\'b1;\n')
-    f.write(f'        slot_drop[cmp_slot] <= {fin_drop};\n')
+    # The same PacketTooShort rejection as the ectrl path above. This is the
+    # write site for a program with no egress control, and patching only the
+    # other one left eleven of eighteen apps DETECTING a too-short packet and
+    # then forwarding it anyway -- the detection without the consequence.
+    f.write(f'        slot_drop[cmp_slot] <= {fin_drop} || slot_too_short[cmp_slot];\n')
     if can_change_len:
         _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
         terms = []

@@ -1417,3 +1417,30 @@ def emit_tables(ir, out_dir, stage='ingress', budget_levels=None, ways=1, enable
         out_path = os.path.join(out_dir, f'{tbl.name}_table.sv')
         _emit_one_table(ir, tbl, amap, fwmap, out_path, budget_levels=budget_levels, ways=ways, enable_query=enable_query)
         print(f'[SUCCESS] Table RTL      -> {out_path}')
+        # An lpm or ternary table here does NOT mean what the P4 specification
+        # says it means, and the difference is silent. The generated table is
+        # an ordered array that returns the LOWEST MATCHING INDEX; it does not
+        # compare prefix lengths or count mask bits. So for entries
+        # 10.0.0.0/8 then 10.0.0.0/16, a packet matching both takes the /8 --
+        # the opposite of longest-prefix-match.
+        #
+        # This was already stated in the cp_map's `addressing.ordering` field,
+        # which is to say it was stated where nobody reads it. The randomised
+        # stimulus found the divergence on its first run and it took half an
+        # hour to work out that the hardware was right about its own contract.
+        # Anyone writing an `lpm` table deserves to be told at compile time.
+        _om = [k.match_type for k in tbl.keys
+               if k.match_type in ('lpm', 'ternary')]
+        if _om:
+            kinds = ' and '.join(sorted(set(_om)))
+            print(f"[WARN] Table '{tbl.name}' has {kinds} key(s): matching is "
+                  f"LOWEST MATCHING INDEX, not longest-prefix/most-specific.")
+            print(f"       The hardware does not compare prefix lengths or mask "
+                  f"widths, so the CONTROL PLANE must insert entries "
+                  f"most-specific-FIRST. Insert 10.0.0.0/16 before 10.0.0.0/8, "
+                  f"not after.")
+            print(f"       A program that assumes P4's longest-prefix-match "
+                  f"will behave differently here. See the table's "
+                  f"addressing.ordering in the cp_map, and "
+                  f"verification/framework/p4v.py, which warns when an entry "
+                  f"order makes the two rules disagree.")

@@ -479,6 +479,68 @@ from `scripts/regress.sh`:
 | `check_fuzz.sh` | a short randomised campaign per app against the oracle, **fixed seed** — a regression that generates fresh cases every run is flaky by construction |
 | `check_coverage.sh` | line coverage of the generated RTL (Verilator), against a recorded baseline — the answer to "did this change make the suite test less than it used to" |
 | `check_exact_match_ways.sh` | the d-way set-associative table, which needs `--exact-match-ways 4` to exist at all |
+| `check_refusals.sh` | programs the compiler must REFUSE, and the message it must refuse them with — each one was once accepted and silently miscompiled |
+| `make_build_flags.py --check` | every committed build reproduces from its recorded `build.flags` |
+
+### 6c. Two hazards the compiler now says out loud
+
+Both were documented in places nobody reads, and both were found the hard way
+by the randomised stimulus.
+
+**`lpm` and `ternary` do not mean what P4 says they mean.** The generated table
+is an ordered array that returns the **lowest matching index**; it does not
+compare prefix lengths or count mask bits. Entries `10.0.0.0/8` then
+`10.0.0.0/16`, and a packet matching both takes the `/8` — the opposite of
+longest-prefix-match. The control plane must insert **most-specific-first**.
+This was stated only in the cp_map's `addressing.ordering` field; `emit_tables`
+now prints a `[WARN]` for every such table, and `p4v` warns when a specific
+entry order makes the two rules disagree.
+
+**A `Register` read-after-write distance above 1 is an uninterlocked hazard.**
+Two packets arriving closer together than the reported distance both read the
+pre-update value, silently — it is a property of the program, and no hardware
+check will catch it at run time. It used to be reported as `[INFO]` among dozens
+of other INFO lines; it is now a `[WARN]` that says what will go wrong.
+
+### 6d. PacketTooShort
+
+Until 2026-10-28 the generated design had **no short-packet check at all**. The
+parser did not bound extraction by the received length, so a 34-byte frame
+whose IPv4 header claimed `proto = 6` had a 20-byte TCP header read out of
+whatever the buffer held — bytes that were never received, and in a reused slot
+potentially a previous packet's. The P4 specification calls this
+`PacketTooShort`, rejects in the parser, and the architecture discards the
+packet.
+
+The fix turned out to be one condition, because the shell already computed what
+it needed. `cutoff_byte` is "the byte position at which every header this packet
+could contain has fully landed", and issue fired on
+
+```systemverilog
+(slot_beat_cnt * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot]
+```
+
+That second term is the hole: a frame that **ended** before `cutoff_byte` was
+issued regardless. So the test is `slot_done && (slot_byte_len < cutoff_byte)`,
+evaluated at issue, and it costs no store-and-forward because it can only be
+true once the packet is already complete. A rejected packet is marked in a
+per-slot flag and discarded at TX.
+
+Two things that made it more than a one-liner, both worth knowing:
+
+* `slot_byte_len` (the received byte count) used to be emitted **only** for
+  programs that read a length field or own a BYTES counter. It is now
+  unconditional — the check needs the real received length for every program.
+  A cheaper test against `slot_beat_cnt * BEAT_BYTES` does **not** work: it
+  over-counts the partial last beat, so a 34-byte frame needing 54 occupies two
+  32-byte beats and looks long enough, which is exactly the case being caught.
+* There are **two** places the shell records a drop — one for programs with an
+  egress control and one for those without. Patching only the first left eleven
+  of eighteen apps detecting a too-short packet and forwarding it anyway.
+
+`verification/vectors/load_balance_p4rtl/` carries such a frame so the path
+stays exercised, and the fuzzer now generates them by default rather than
+filtering them out as a known divergence.
 
 ### 7a. The pcap verification framework
 
@@ -644,6 +706,7 @@ traffic manager.
 | `range` match kind | no demand; `exact`/`lpm`/`ternary` are what the emitters implement |
 | `clone`, `recirculate`, `resubmit` | need packet replication paths the shell does not have |
 | A v1model top-level shell | v1model apps stay module-level; new work targets P4RTL |
+| `switch (t.apply().action_run)` | **refused** since 2026-10-28 (exit 2). It used to be accepted and produce an INERT control block — table never applied, no arm run, `egress_port` only ever assigned its default, compiler reporting success. `switch (<value>)` IS supported, because p4c lowers that to a table. Support is tractable: p4test keeps the switch and lifts each arm into a hidden table, and `emit_processing` already dispatches per action id |
 
 That fifth row is worth knowing about: `p4rtl.p4` declares `Meter` and `Digest`
 but nothing compiles them. This breaks the architecture's own rule #3 and is a

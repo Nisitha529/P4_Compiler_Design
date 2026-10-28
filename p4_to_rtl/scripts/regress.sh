@@ -123,7 +123,33 @@ if [ -f "$R/scripts/check_tm_qdepth.sh" ]; then
   fi
 fi
 
-# A short randomised campaign per app, fixed seed (see the script for why).
+# Programs the compiler must REFUSE. Each one was once accepted and silently
+# miscompiled, so a refusal regressing is as serious as a wrong answer.
+if [ -x "$R/scripts/check_refusals.sh" ]; then
+  if ! "$R/scripts/check_refusals.sh" > "$O/refusals.log" 2>&1; then
+    echo "-----"; echo "COMPILER REFUSALS:"; sed 's/^/  /' "$O/refusals.log"
+    bad="$bad refusals"
+  else
+    echo "-----"
+    echo "refusals: $(grep -c '^ok ' "$O/refusals.log") construct(s) correctly refused"
+  fi
+fi
+
+# Every committed build must be reproducible from its recorded flags. The flags
+# used to exist only as artifacts you had to infer, and three regenerations
+# silently lost one.
+if [ -f "$R/scripts/make_build_flags.py" ]; then
+  if ! python3 "$R/scripts/make_build_flags.py" --check > "$O/buildflags.log" 2>&1; then
+    echo "-----"; echo "BUILD REPRODUCIBILITY:"
+    grep -vE "reproduces" "$O/buildflags.log" | sed 's/^/  /'
+    bad="$bad build_flags"
+  else
+    echo "-----"
+    echo "build_flags: $(grep -c 'reproduces' "$O/buildflags.log") build(s) reproduce from their recorded flags"
+  fi
+fi
+
+# A short randomised campaign per app, fixed seed (see the script for why).# A short randomised campaign per app, fixed seed (see the script for why).
 if [ -x "$R/scripts/check_fuzz.sh" ]; then
   if ! "$R/scripts/check_fuzz.sh" > "$O/fuzz.log" 2>&1; then
     echo "-----"; echo "RANDOMISED STIMULUS:"; sed 's/^/  /' "$O/fuzz.log"

@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import glob
 import shutil
@@ -16,7 +17,7 @@ from emit_user_extern import emit_user_extern_module
 from emit_fifo import emit_pkt_beat_buf
 from emit_pkg import emit_pkg
 from ingest_bmv2 import ingest_bmv2
-from ingest_p4ir import ingest_p4ir
+from ingest_p4ir import ingest_p4ir, UnsupportedP4
 from emit_top import emit_top, DEFAULT_AXI_DATA_W, MAX_AXI_DATA_W
 from timing_model import budget_levels as _budget_levels, DEVICE_FACTOR
 from boards import available_boards, load_board
@@ -865,4 +866,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # A REFUSED program is a user-facing message, not a stack trace. The
+    # compiler refuses constructs it cannot represent rather than emitting RTL
+    # that is missing behaviour the program asked for (see
+    # ingest_p4ir.UnsupportedP4), and that message is the whole point -- a
+    # traceback buries it under this file's call stack.
+    try:
+        main()
+    except UnsupportedP4 as e:
+        print(f"\n[ERROR] unsupported P4 construct\n{e}", file=sys.stderr)
+        sys.exit(2)

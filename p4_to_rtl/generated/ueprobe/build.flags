@@ -1,0 +1,4 @@
+# Generator flags this committed build was made with.
+# Regenerate:  python3 compiler/main.py ueprobe 
+# Checked by scripts/make_build_flags.py --check.
+

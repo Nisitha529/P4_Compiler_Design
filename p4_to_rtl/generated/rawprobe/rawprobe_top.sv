@@ -73,7 +73,9 @@ module rawprobe_top #(
   logic [8:0] slot_beat_cnt [0:NSLOT-1];
   logic slot_done     [0:NSLOT-1];
   logic slot_overflow [0:NSLOT-1];
+  logic [15:0] slot_byte_len [0:NSLOT-1];
   logic [8:0] slot_std_meta_egress_port [0:NSLOT-1];
+  logic slot_too_short [0:NSLOT-1];   // parser ran past the frame end
   logic slot_drop     [0:NSLOT-1];
   logic slot_txdone   [0:NSLOT-1];   // TX has sent (or discarded) this slot
   logic tx_finish;    // driven in the TX section; read here to set slot_txdone
@@ -406,9 +408,12 @@ module rawprobe_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
+        slot_too_short[sl] <= 1'b0;
+        slot_byte_len[sl] <= '0;
       end
     end else begin
       if (accept_beat) begin
+        slot_byte_len[wr_slot] <= slot_byte_len[wr_slot] + ({15'd0, s_axis_tkeep[0]} + {15'd0, s_axis_tkeep[1]} + {15'd0, s_axis_tkeep[2]} + {15'd0, s_axis_tkeep[3]} + {15'd0, s_axis_tkeep[4]} + {15'd0, s_axis_tkeep[5]} + {15'd0, s_axis_tkeep[6]} + {15'd0, s_axis_tkeep[7]} + {15'd0, s_axis_tkeep[8]} + {15'd0, s_axis_tkeep[9]} + {15'd0, s_axis_tkeep[10]} + {15'd0, s_axis_tkeep[11]} + {15'd0, s_axis_tkeep[12]} + {15'd0, s_axis_tkeep[13]} + {15'd0, s_axis_tkeep[14]} + {15'd0, s_axis_tkeep[15]} + {15'd0, s_axis_tkeep[16]} + {15'd0, s_axis_tkeep[17]} + {15'd0, s_axis_tkeep[18]} + {15'd0, s_axis_tkeep[19]} + {15'd0, s_axis_tkeep[20]} + {15'd0, s_axis_tkeep[21]} + {15'd0, s_axis_tkeep[22]} + {15'd0, s_axis_tkeep[23]} + {15'd0, s_axis_tkeep[24]} + {15'd0, s_axis_tkeep[25]} + {15'd0, s_axis_tkeep[26]} + {15'd0, s_axis_tkeep[27]} + {15'd0, s_axis_tkeep[28]} + {15'd0, s_axis_tkeep[29]} + {15'd0, s_axis_tkeep[30]} + {15'd0, s_axis_tkeep[31]});
         if (rx_beat_cnt < HDR_MAX_BEATS) begin
           for (int i = 0; i < 32; i++)
             if (s_axis_tkeep[i])
@@ -434,6 +439,7 @@ module rawprobe_top #(
         rel_ptr <= rel_ptr + 1'b1;
         slot_txdone[rel_slot] <= 1'b0;
         slot_beat_cnt[rel_slot] <= '0; slot_done[rel_slot] <= 1'b0; slot_overflow[rel_slot] <= 1'b0;
+        slot_byte_len[rel_slot] <= '0;
       end
     end
   end
@@ -455,10 +461,13 @@ module rawprobe_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
+  wire iss_too_short = slot_done[iss_slot]
+                       && (slot_byte_len[iss_slot] < cutoff_byte);
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
+      slot_too_short[iss_slot] <= iss_too_short;
     end
   end
 
@@ -469,7 +478,7 @@ module rawprobe_top #(
     end else begin
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
-        slot_drop[cmp_slot] <= proc_drop;
+        slot_drop[cmp_slot] <= proc_drop || slot_too_short[cmp_slot];
         slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
         slot_phv_eth_dst[cmp_slot] <= out_eth_dst;
         slot_phv_eth_src[cmp_slot] <= out_eth_src;

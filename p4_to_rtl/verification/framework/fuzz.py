@@ -240,10 +240,11 @@ def main(argv=None):
     ap.add_argument('--axi-data-width', type=int, default=256)
     ap.add_argument('--gen-flags', default='')
     ap.add_argument('--work', default=None)
-    ap.add_argument('--truncated', action='store_true',
-                    help='also generate frames that run the parser past the '
-                         'end (a known divergence: the design has no '
-                         'PacketTooShort check)')
+    ap.add_argument('--no-truncated', action='store_true',
+                    help='exclude frames that run the parser past the end of '
+                         'the frame (they are INCLUDED by default: the design '
+                         'implements PacketTooShort and drops them, so they are '
+                         'ordinary stimulus now rather than a known divergence)')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args(argv)
 
@@ -270,15 +271,15 @@ def main(argv=None):
         while len(packets) < a.packets and tries < a.packets * 40:
             tries += 1
             p = random_frame(rng)
-            if not a.truncated:
-                # Ask the MODEL whether this frame runs the parser past its
-                # end, rather than reasoning about which protocols this
-                # particular program parses -- that keeps the filter
-                # app-agnostic. Such frames are a known divergence (the design
-                # implements no PacketTooShort check, see p4v's SHORT-PACKET
-                # verdict), so including them by default would make every
-                # iteration fail for the same already-known reason and hide
-                # everything else.
+            if a.no_truncated:
+                # --no-truncated only. The model is asked whether the frame
+                # runs the parser past its end, rather than reasoning about
+                # which protocols this program parses, which keeps the filter
+                # app-agnostic. These frames USED to be excluded by default,
+                # because the design had no PacketTooShort check and every one
+                # of them failed for that same already-known reason; now that
+                # it rejects them like the specification says, they are useful
+                # stimulus and the exclusion is only for diagnosis.
                 try:
                     if h.model.run(p, {}).truncated:
                         continue

@@ -1,0 +1,4 @@
+# Generator flags this committed build was made with.
+# Regenerate:  python3 compiler/main.py mdprobe --cp-map --clock-hz 250000000
+# Checked by scripts/make_build_flags.py --check.
+--cp-map --clock-hz 250000000
