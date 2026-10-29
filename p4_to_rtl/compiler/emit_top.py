@@ -2686,8 +2686,54 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # The test costs nothing and needs no store-and-forward, because it can
     # only be true once the packet is already complete (slot_done), so the
     # length is final at the moment it is asked.
-    f.write('  wire iss_too_short = slot_done[iss_slot]\n')
-    f.write('                       && (slot_byte_len[iss_slot] < cutoff_byte);\n')
+    # ...but ONLY when cutoff_byte is exact. For a varbit / variable-length
+    # header its term is the header's MAXIMUM size (a varbit<320> contributes
+    # +40 bytes whatever the actual option length is), because that is all a
+    # cut-through TRIGGER needs: waiting too long is safe, waiting too little
+    # is not. A too-short TEST reads it the other way round, and an upper
+    # bound there is a false positive -- it rejects perfectly good packets.
+    #
+    # That is not hypothetical: enabling this for fiveTuple (varbit IPv4 and
+    # TCP options) dropped every packet it was given, and all four of its
+    # testbenches hung waiting for output that was discarded. So a program
+    # with a variable-length header keeps the old behaviour and is told so,
+    # rather than being given a check that is wrong in the unsafe direction.
+    # The condition is "does a header carry a VARBIT field", not the broader
+    # layout var_pred. var_pred is also set for a header whose BASE OFFSET is
+    # data-dependent -- tcp sitting after an ipv4 whose length comes from
+    # hdr_len -- and such a header still contributes its own EXACT size to
+    # cutoff_byte (`w_tcp_base + 20`). Using var_pred disabled the check for
+    # load_balance, whose tcp_t is a fixed 20 bytes, and silently gave back
+    # the bug for one of the two programs it had just been shown to fix.
+    # Header.is_variable_length() is the exact question.
+    _varlen = sorted(inst.inst_name for inst in ir.header_instances
+                     # a PROPERTY, not a method: calling it raises
+                     # TypeError, which crashed the compiler for every
+                     # app while a grep for the warning read the crash
+                     # as "check enabled".
+                     if not inst.is_stack and inst.header_type.is_variable_length)
+    if _varlen:
+        f.write('  // PacketTooShort is NOT checked in this design.\n')
+        f.write(f'  // {", ".join(_varlen)} '
+                f'{"is" if len(_varlen) == 1 else "are"} variable-length '
+                f'(varbit), so cutoff_byte\n')
+        f.write('  // below is the WORST-CASE header size, not the number of bytes this\n')
+        f.write('  // packet\'s parse path actually needs. Comparing a received length\n')
+        f.write('  // against an upper bound would reject valid packets, so the check is\n')
+        f.write('  // omitted here. An exact minimum-bytes expression using the real\n')
+        f.write('  // length fields would restore it; see emit_top.py.\n')
+        f.write('  wire iss_too_short = 1\'b0;\n')
+        print(f"[WARN] PacketTooShort is not checked for this program: "
+              f"{', '.join(_varlen)} "
+              f"{'is' if len(_varlen) == 1 else 'are'} variable-length "
+              f"(varbit), so the shell's byte-position bound is a worst case "
+              f"rather than this packet's actual parse length.")
+        print(f"       A frame that ends before its headers do will be "
+              f"processed with fields read from bytes that were never "
+              f"received, as it was for every program before 2026-10-28.")
+    else:
+        f.write('  wire iss_too_short = slot_done[iss_slot]\n')
+        f.write('                       && (slot_byte_len[iss_slot] < cutoff_byte);\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')

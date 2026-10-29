@@ -2281,12 +2281,16 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                       f"{', synchronous read' if register_ram else ''}) -- "
                       f"back-to-back packets are safe")
             else:
+                # The phrase "RAW distance <n>" is load-bearing:
+                # scripts/check_raw_distance.sh greps for it to compare the
+                # compiler's claim against measured behaviour. Rewording it
+                # without that phrase broke the script silently.
                 print(f"[WARN] Register '{_reg.name}': READ-AFTER-WRITE HAZARD, "
-                      f"distance {_reg.raw_distance} packets (read stage {_rs}, "
+                      f"RAW distance {_reg.raw_distance} packets (read stage {_rs}, "
                       f"write-back stage {_ws}"
                       f"{', synchronous read' if register_ram else ''}).")
                 print(f"       Two packets arriving closer than "
-                      f"{_reg.raw_distance} apart will BOTH read the "
+                      f"{_reg.raw_distance} packets apart will BOTH read the "
                       f"pre-update value. There is no interlock: this is a "
                       f"property of the program, not something the hardware "
                       f"will catch at run time.")

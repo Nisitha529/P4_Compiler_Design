@@ -522,8 +522,14 @@ module echo_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
-  wire iss_too_short = slot_done[iss_slot]
-                       && (slot_byte_len[iss_slot] < cutoff_byte);
+  // PacketTooShort is NOT checked in this design.
+  // ipv4opt is variable-length (varbit), so cutoff_byte
+  // below is the WORST-CASE header size, not the number of bytes this
+  // packet's parse path actually needs. Comparing a received length
+  // against an upper bound would reject valid packets, so the check is
+  // omitted here. An exact minimum-bytes expression using the real
+  // length fields would restore it; see emit_top.py.
+  wire iss_too_short = 1'b0;
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
