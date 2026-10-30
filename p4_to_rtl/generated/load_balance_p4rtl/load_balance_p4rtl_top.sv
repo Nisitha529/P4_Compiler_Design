@@ -46,10 +46,10 @@ module load_balance_p4rtl_top #(
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BEATS = 256;
   localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 8192
-  localparam int HDR_MAX_BYTES = 96;
-  localparam int HDR_MAX_BEATS = 3;
-  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8096
-  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 253
+  localparam int HDR_MAX_BYTES = 64;
+  localparam int HDR_MAX_BEATS = 2;
+  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8128
+  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 254
 
   // ── Header slot ring ─────────────────────────────────────────────────────
   // NSLOT packets can be in flight at once. Each slot holds one packet's
@@ -290,9 +290,7 @@ module load_balance_p4rtl_top #(
     w_ipv4_dstAddr = {x_hdr[14+16], x_hdr[14+17], x_hdr[14+18], x_hdr[14+19]};
   end
 
-  wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_ihl} << 2;
-  wire [13:0] w_tcp_base = 14 + w_ipv4_hdr_bytes;
-  // tcp — base: w_tcp_base
+  // tcp — base: 34
   logic [15:0] w_tcp_srcPort;
   logic [15:0] w_tcp_dstPort;
   logic [31:0] w_tcp_seqNo;
@@ -305,17 +303,17 @@ module load_balance_p4rtl_top #(
   logic [15:0] w_tcp_checksum;
   logic [15:0] w_tcp_urgentPtr;
   always_comb begin
-    w_tcp_srcPort = {x_hdr[w_tcp_base], x_hdr[w_tcp_base+1]};
-    w_tcp_dstPort = {x_hdr[w_tcp_base+2], x_hdr[w_tcp_base+3]};
-    w_tcp_seqNo = {x_hdr[w_tcp_base+4], x_hdr[w_tcp_base+5], x_hdr[w_tcp_base+6], x_hdr[w_tcp_base+7]};
-    w_tcp_ackNo = {x_hdr[w_tcp_base+8], x_hdr[w_tcp_base+9], x_hdr[w_tcp_base+10], x_hdr[w_tcp_base+11]};
-    w_tcp_dataOffset = x_hdr[w_tcp_base+12][7:4];
-    w_tcp_res = x_hdr[w_tcp_base+12][3:1];
-    w_tcp_ecn = {x_hdr[w_tcp_base+12][0:0], x_hdr[w_tcp_base+13][7:6]};
-    w_tcp_ctrl = x_hdr[w_tcp_base+13][5:0];
-    w_tcp_window = {x_hdr[w_tcp_base+14], x_hdr[w_tcp_base+15]};
-    w_tcp_checksum = {x_hdr[w_tcp_base+16], x_hdr[w_tcp_base+17]};
-    w_tcp_urgentPtr = {x_hdr[w_tcp_base+18], x_hdr[w_tcp_base+19]};
+    w_tcp_srcPort = {x_hdr[34], x_hdr[34+1]};
+    w_tcp_dstPort = {x_hdr[34+2], x_hdr[34+3]};
+    w_tcp_seqNo = {x_hdr[34+4], x_hdr[34+5], x_hdr[34+6], x_hdr[34+7]};
+    w_tcp_ackNo = {x_hdr[34+8], x_hdr[34+9], x_hdr[34+10], x_hdr[34+11]};
+    w_tcp_dataOffset = x_hdr[34+12][7:4];
+    w_tcp_res = x_hdr[34+12][3:1];
+    w_tcp_ecn = {x_hdr[34+12][0:0], x_hdr[34+13][7:6]};
+    w_tcp_ctrl = x_hdr[34+13][5:0];
+    w_tcp_window = {x_hdr[34+14], x_hdr[34+15]};
+    w_tcp_checksum = {x_hdr[34+16], x_hdr[34+17]};
+    w_tcp_urgentPtr = {x_hdr[34+18], x_hdr[34+19]};
   end
 
   // ── Header validity (derived from extracted fields) ──────────────────────
@@ -326,7 +324,7 @@ module load_balance_p4rtl_top #(
   // ── Header-region cutoff ──────────────────────────────────────────────────
   wire [13:0] w_ethernet_cutoff_term = 0 + 14;
   wire [13:0] w_ipv4_cutoff_term = (w_ethernet_etherType == 16'h0800) ? (14 + 20) : 14'd0;
-  wire [13:0] w_tcp_cutoff_term = ((w_ethernet_etherType == 16'h0800) && (w_ipv4_protocol == 8'd6)) ? (w_tcp_base + 20) : 14'd0;
+  wire [13:0] w_tcp_cutoff_term = ((w_ethernet_etherType == 16'h0800) && (w_ipv4_protocol == 8'd6)) ? (34 + 20) : 14'd0;
   wire [13:0] w_cutoff_max_1 = (w_ethernet_cutoff_term > w_ipv4_cutoff_term) ? w_ethernet_cutoff_term : w_ipv4_cutoff_term;
   wire [13:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_tcp_cutoff_term) ? w_cutoff_max_1 : w_tcp_cutoff_term;
   wire [13:0] cutoff_byte = w_cutoff_max_2;
@@ -908,8 +906,16 @@ module load_balance_p4rtl_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
-  wire iss_too_short = slot_done[iss_slot]
-                       && (slot_byte_len[iss_slot] < cutoff_byte);
+  wire iss_too_short = (slot_done[iss_slot]
+                        && (slot_byte_len[iss_slot] < cutoff_byte))
+                       ;
+  // See the note in emit_top.py: a zero-latency pipeline issues and
+  // completes in one cycle, before slot_too_short[] has been written.
+  function automatic logic rejected(input [SLOT_AW-1:0] sl);
+    rejected = slot_too_short[sl]
+               || (iss_fire && (iss_slot == sl) && iss_too_short);
+  endfunction
+
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
@@ -931,7 +937,7 @@ module load_balance_p4rtl_top #(
     end else begin
       if (proc_out_valid) begin
         ig_ptr <= ig_ptr + 1'b1;
-        slot_drop[ig_slot] <= proc_drop || slot_too_short[ig_slot];
+        slot_drop[ig_slot] <= proc_drop || rejected(ig_slot);
         slot_phv_ethernet_valid[ig_slot] <= out_ethernet_valid;
         slot_phv_ipv4_valid[ig_slot] <= out_ipv4_valid;
         slot_phv_tcp_valid[ig_slot] <= out_tcp_valid;
@@ -965,7 +971,7 @@ module load_balance_p4rtl_top #(
         slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
       end
       if (eg_out_valid) begin
-        slot_drop[cmp_slot] <= eg_drop || slot_too_short[cmp_slot];
+        slot_drop[cmp_slot] <= eg_drop || rejected(cmp_slot);
         slot_phv_ethernet_valid[cmp_slot] <= eg_out_ethernet_valid;
         slot_phv_ipv4_valid[cmp_slot] <= eg_out_ipv4_valid;
         slot_phv_tcp_valid[cmp_slot] <= eg_out_tcp_valid;
@@ -1064,10 +1070,6 @@ module load_balance_p4rtl_top #(
   // Declared here, driven further down. The output-image block below reads
   // it, and xvlog will not accept a use that precedes the declaration.
   logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
-  // header byte offsets over the stored PHV (same arithmetic as w_*_base)
-  wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_ihl} << 2;
-  wire [13:0] phv_tcp_base = 14 + phv_ipv4_hdr_bytes;
-
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
   // header's layout offset, guarded by the stored output validity.
@@ -1110,26 +1112,26 @@ module load_balance_p4rtl_top #(
         hdr_out[14+19] = phv_ipv4_dstAddr[7:0];
     end
     if (phv_tcp_valid) begin
-        hdr_out[phv_tcp_base] = phv_tcp_srcPort[15:8];
-        hdr_out[phv_tcp_base+1] = phv_tcp_srcPort[7:0];
-        hdr_out[phv_tcp_base+2] = phv_tcp_dstPort[15:8];
-        hdr_out[phv_tcp_base+3] = phv_tcp_dstPort[7:0];
-        hdr_out[phv_tcp_base+4] = phv_tcp_seqNo[31:24];
-        hdr_out[phv_tcp_base+5] = phv_tcp_seqNo[23:16];
-        hdr_out[phv_tcp_base+6] = phv_tcp_seqNo[15:8];
-        hdr_out[phv_tcp_base+7] = phv_tcp_seqNo[7:0];
-        hdr_out[phv_tcp_base+8] = phv_tcp_ackNo[31:24];
-        hdr_out[phv_tcp_base+9] = phv_tcp_ackNo[23:16];
-        hdr_out[phv_tcp_base+10] = phv_tcp_ackNo[15:8];
-        hdr_out[phv_tcp_base+11] = phv_tcp_ackNo[7:0];
-        hdr_out[phv_tcp_base+12] = {phv_tcp_dataOffset, phv_tcp_res, phv_tcp_ecn[2]};
-        hdr_out[phv_tcp_base+13] = {phv_tcp_ecn[1:0], phv_tcp_ctrl};
-        hdr_out[phv_tcp_base+14] = phv_tcp_window[15:8];
-        hdr_out[phv_tcp_base+15] = phv_tcp_window[7:0];
-        hdr_out[phv_tcp_base+16] = phv_tcp_checksum[15:8];
-        hdr_out[phv_tcp_base+17] = phv_tcp_checksum[7:0];
-        hdr_out[phv_tcp_base+18] = phv_tcp_urgentPtr[15:8];
-        hdr_out[phv_tcp_base+19] = phv_tcp_urgentPtr[7:0];
+        hdr_out[34] = phv_tcp_srcPort[15:8];
+        hdr_out[34+1] = phv_tcp_srcPort[7:0];
+        hdr_out[34+2] = phv_tcp_dstPort[15:8];
+        hdr_out[34+3] = phv_tcp_dstPort[7:0];
+        hdr_out[34+4] = phv_tcp_seqNo[31:24];
+        hdr_out[34+5] = phv_tcp_seqNo[23:16];
+        hdr_out[34+6] = phv_tcp_seqNo[15:8];
+        hdr_out[34+7] = phv_tcp_seqNo[7:0];
+        hdr_out[34+8] = phv_tcp_ackNo[31:24];
+        hdr_out[34+9] = phv_tcp_ackNo[23:16];
+        hdr_out[34+10] = phv_tcp_ackNo[15:8];
+        hdr_out[34+11] = phv_tcp_ackNo[7:0];
+        hdr_out[34+12] = {phv_tcp_dataOffset, phv_tcp_res, phv_tcp_ecn[2]};
+        hdr_out[34+13] = {phv_tcp_ecn[1:0], phv_tcp_ctrl};
+        hdr_out[34+14] = phv_tcp_window[15:8];
+        hdr_out[34+15] = phv_tcp_window[7:0];
+        hdr_out[34+16] = phv_tcp_checksum[15:8];
+        hdr_out[34+17] = phv_tcp_checksum[7:0];
+        hdr_out[34+18] = phv_tcp_urgentPtr[15:8];
+        hdr_out[34+19] = phv_tcp_urgentPtr[7:0];
     end
   end
 

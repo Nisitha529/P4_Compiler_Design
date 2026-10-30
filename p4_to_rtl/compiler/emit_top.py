@@ -37,7 +37,7 @@ import re
 from collections import defaultdict, deque
 
 from boards import validate_board
-from ir import ExternCall, IfStatement
+from ir import Assignment, ExternCall, IfStatement
 from emit_processing import (
     _find_processing_ctrl,
     _table_params,
@@ -112,26 +112,47 @@ def _hdr_bytes_total(inst):
     return _hdr_bits_total(inst) // 8
 
 
+def _hdr_fixed_bytes(inst):
+    """Bytes contributed by this header's FIXED fields (varbit fields excluded)."""
+    bits = sum(f.width or 0 for f in inst.header_type.fields
+               if not getattr(f, 'is_varbit', False))
+    return bits // 8
+
+
+def _varbit_max_bytes(inst):
+    """Bytes the varbit fields of this header can occupy at most."""
+    bits = sum(f.width or 0 for f in inst.header_type.fields
+               if getattr(f, 'is_varbit', False))
+    return (bits + 7) // 8
+
+
+def _varbytes_var(inst_name):
+    return f'w_{inst_name}_varbytes'
+
+
 def _is_len_field(fname):
-    """True if this field carries the header's own byte-length (like IP IHL)."""
+    """True if this field looks like it carries a header's own byte-length
+    (IPv4's IHL, TCP's dataOffset). Used ONLY to diagnose the hazard in
+    _compute_layout: a program that extracts a fixed header straight after
+    one of these, without extracting the variable region in between, parses
+    the following header at the wrong offset for any packet that actually
+    carries options. It is NOT used to place headers any more -- see the
+    note in _compute_layout."""
     return fname.lower() in ('hdr_len', 'ihl', 'data_offset', 'dataoffset', 'doff')
 
 
 def _worst_case_hdr_bytes(layouts, inst_map):
     """
     Compile-time upper bound on the byte position one-past-the-end of every
-    header in `layouts`, accounting for the *worst-case runtime value* of
-    every length field feeding a variable header's base offset (e.g. IPv4
-    hdr_len maxes at 15 -> 60 bytes of header+options), not just nominal
-    fixed header sizes. Mirrors _emit_offset_vars's var_pred walk but
-    computes a Python int instead of emitting a wire -- used only to size
-    pkt_buf_hdr; the real, tighter, per-packet cutoff is computed at
-    runtime by _emit_cutoff_expr.
+    header in `layouts`, accounting for the *worst-case runtime size* of
+    every variable-length (varbit) header on the path -- used only to size
+    pkt_buf_hdr; the real, tighter, per-packet cutoff is computed at runtime
+    by _emit_cutoff_expr.
 
-    Requires every var_pred length field to be unsigned (true for hdr_len/
-    dataOffset-style fields) -- the sizing (and the separate runtime cutoff
-    safety argument) both rely on a length field's contribution only ever
-    adding bytes, never subtracting.
+    A varbit header's worst case is its DECLARED maximum (a varbit<320>
+    contributes 40 bytes), which is also the bound the runtime offset
+    arithmetic is saturated to, so the buffer is big enough for every offset
+    the design can compute -- see _emit_offset_var_for.
     """
     worst_base = {}  # inst_name -> worst-case base offset (bytes)
 
@@ -139,26 +160,13 @@ def _worst_case_hdr_bytes(layouts, inst_map):
         inst_name      = layout['inst_name']
         mandatory_base = layout['mandatory_base']
         optional_preds = layout['optional_preds']
-        var_pred       = layout['var_pred']
+        dyn_preds      = layout['dyn_preds']
 
-        if not optional_preds and var_pred is None:
-            worst_base[inst_name] = mandatory_base
-        elif var_pred is None:
-            # Worst case: every optional predecessor present.
-            worst_base[inst_name] = mandatory_base + sum(sz for _, sz in optional_preds)
-        else:
-            vname, vfield = var_pred
-            prev_worst = worst_base.get(vname, 0)
-            vinst = inst_map.get(vname)
-            width = None
-            if vinst:
-                for fld in vinst.header_type.fields:
-                    if fld.name == vfield:
-                        width = fld.width
-                        break
-            max_len_words = (2 ** (width or 4)) - 1
-            # Same scale factor (32-bit words -> bytes) as _emit_offset_vars.
-            worst_base[inst_name] = prev_worst + max_len_words * 4
+        base = mandatory_base + sum(sz for _, sz in optional_preds)
+        for dname in dyn_preds:
+            dinst = inst_map.get(dname)
+            base += _varbit_max_bytes(dinst) if dinst else 0
+        worst_base[inst_name] = base
 
     worst_end = 0
     for layout in layouts:
@@ -205,6 +213,39 @@ def _validity_changing_headers(controls):
     return found
 
 
+def _varbit_fields_written(controls, inst_map):
+    """Variable-length header fields a control assigns to, as 'inst.field'.
+
+    A varbit field's PHV signal is a fixed maximum-width bus, so the shell has
+    nowhere to put a NEW value of a different length: write-back would place
+    the full declared width over whatever follows the real options. Programs
+    here only ever pass these fields through, so rather than emit a write-back
+    that is wrong for a case nobody exercises, the compiler refuses it."""
+    found = set()
+
+    def _scan(stmts):
+        for st in stmts or []:
+            if isinstance(st, Assignment):
+                m = re.match(r'(?:hdr\.)?(\w+)\.(\w+)$', (st.lhs or '').strip())
+                if m:
+                    inst = inst_map.get(m.group(1))
+                    if inst:
+                        for fl in inst.header_type.fields:
+                            if fl.name == m.group(2) and getattr(fl, 'is_varbit', False):
+                                found.add(f'{m.group(1)}.{m.group(2)}')
+            elif isinstance(st, IfStatement):
+                _scan(st.then_body)
+                _scan(st.else_body)
+
+    for c in controls:
+        if c is None:
+            continue
+        for action in c.actions:
+            _scan(action.body)
+        _scan(c.statements)
+    return sorted(found)
+
+
 def _compute_layout(ir, inst_map):
     """
     Walk all paths from 'start', computing byte offsets for each header.
@@ -212,24 +253,52 @@ def _compute_layout(ir, inst_map):
     Returns list of dicts (in extraction order):
       {
         'inst_name':      str,
-        'mandatory_base': int,   # bytes always preceding this header
-        'optional_preds': list of (inst_name, size_bytes),  # conditional predecessors
-        'var_pred':       (inst_name, len_field_name) or None,
+        'mandatory_base': int,   # fixed bytes always preceding this header
+        'optional_preds': list of (inst_name, size_bytes),  # conditional preds
+        'dyn_preds':      list of inst_name,   # variable-length preds, runtime size
+        'dyn_len_expr':   str or None,         # this header's own runtime length,
+                                               # in bits, if it is varbit
       }
+
+    Offsets are the program's OWN parse arithmetic: each header sits after
+    the bytes of the headers extracted before it on the path, and a
+    variable-length extract contributes a runtime byte count rather than a
+    constant.
+
+    This used to work differently, and the difference was a silent
+    mis-parse. A field whose NAME looked like a length (ipv4.hdr_len,
+    tcp.dataOffset -- see _is_len_field) was taken to mean "every header
+    after this one starts at base + len*4", which skips IPv4 options. That
+    is not what a P4 parser does: `extract(hdr.ipv4); extract(hdr.tcp)`
+    places tcp at ipv4 + 20 whatever hdr_len says, and a program that wants
+    the options skipped has to extract them. The heuristic got the right
+    answer for exactly one header -- the one immediately after the variable
+    region -- and the wrong one for the variable header itself (it was
+    placed at the END of its own options) and for anything after a SECOND
+    variable region (fiveTuple's tcpopt landed on top of tcp). Measured
+    against the reference model, load_balance_xsa sent a packet carrying 4
+    bytes of IPv4 options to the wrong next hop, because the hardware read
+    its TCP ports 4 bytes further along than the program says.
+
+    A program that carries a length field but never consumes the variable
+    region now gets a warning instead of a silent re-interpretation.
     """
     header_occurrences = defaultdict(list)  # inst_name -> list of frozenset
-    header_var_pred    = {}                 # inst_name -> (var_inst, len_field)
+    header_dyn_preds   = defaultdict(set)   # inst_name -> set of varbit preds
+    header_dyn_len     = {}                 # inst_name -> runtime length expr (bits)
     header_order       = []
     header_order_set   = set()
+    unconsumed_len     = {}                 # (len_inst, field) -> next fixed header
 
     visited = set()
     queue   = deque()
-    queue.append(('start', frozenset(), None))  # (state, mand_set, var_pred)
+    # (state, fixed preds so far, varbit preds so far, pending length field)
+    queue.append(('start', frozenset(), frozenset(), None))
 
     while queue:
-        state_name, mand_before, var_pred_in = queue.popleft()
+        state_name, mand_before, dyn_before, pending_len = queue.popleft()
 
-        key = (state_name, mand_before, var_pred_in)
+        key = (state_name, mand_before, dyn_before, pending_len)
         if key in visited:
             continue
         visited.add(key)
@@ -238,8 +307,9 @@ def _compute_layout(ir, inst_map):
         if not state:
             continue
 
-        cur_mand     = set(mand_before)
-        cur_var_pred = var_pred_in
+        cur_mand = set(mand_before)
+        cur_dyn  = set(dyn_before)
+        cur_pend = pending_len
 
         for ext in state.extracts:
             inst_name = ext.header
@@ -248,23 +318,38 @@ def _compute_layout(ir, inst_map):
                 header_order_set.add(inst_name)
 
             header_occurrences[inst_name].append(frozenset(cur_mand))
-            if cur_var_pred and inst_name not in header_var_pred:
-                header_var_pred[inst_name] = cur_var_pred
+            header_dyn_preds[inst_name] |= cur_dyn
 
             inst = inst_map.get(inst_name)
-            if not ext.dynamic and inst:
-                size = _hdr_bytes_total(inst)
-                cur_mand.add((inst_name, size))
-                # If this header has a length field, mark successors as variable-offset
-                for f in inst.header_type.fields:
-                    if _is_len_field(f.name) and cur_var_pred is None:
-                        cur_var_pred = (inst_name, f.name)
+            if not inst:
+                continue
+
+            if ext.dynamic:
+                # The variable region is consumed explicitly, as P4 requires.
+                if cur_pend is not None:
+                    cur_pend = None
+                if ext.length_expr:
+                    header_dyn_len[inst_name] = ext.length_expr
+                fixed = _hdr_fixed_bytes(inst)
+                if fixed:
+                    cur_mand.add((inst_name, fixed))
+                cur_dyn.add(inst_name)
+            else:
+                # A fixed extract right after a length field skips nothing --
+                # which is correct P4 and wrong for any packet with options.
+                if cur_pend is not None:
+                    unconsumed_len.setdefault(cur_pend, inst_name)
+                    cur_pend = None
+                cur_mand.add((inst_name, _hdr_bytes_total(inst)))
+                for fl in inst.header_type.fields:
+                    if _is_len_field(fl.name):
+                        cur_pend = (inst_name, fl.name)
                         break
 
         def propagate(nxt):
             if nxt in ('accept', 'reject', None):
                 return
-            queue.append((nxt, frozenset(cur_mand), cur_var_pred))
+            queue.append((nxt, frozenset(cur_mand), frozenset(cur_dyn), cur_pend))
 
         if state.next_state:
             propagate(state.next_state)
@@ -273,6 +358,18 @@ def _compute_layout(ir, inst_map):
                 propagate(dst)
             if state.select.default:
                 propagate(state.select.default)
+
+    for (len_inst, len_field), nxt_inst in sorted(unconsumed_len.items()):
+        print(f"[WARN] hdr.{len_inst}.{len_field} looks like a header-length "
+              f"field, but the parser extracts hdr.{nxt_inst} straight after "
+              f"hdr.{len_inst} without consuming the variable region.")
+        print(f"       hdr.{nxt_inst} is therefore placed at a FIXED offset, "
+              f"which is what P4 specifies -- so any packet whose "
+              f"{len_field} exceeds the fixed header size (IPv4 with options) "
+              f"is parsed from the wrong bytes.")
+        print(f"       Extract the variable region to fix it, e.g. "
+              f"`packet.extract(hdr.{len_inst}opt, "
+              f"((bit<32>)hdr.{len_inst}.{len_field} - 5) * 32);`.")
 
     # Build layout entries
     layouts = []
@@ -299,11 +396,20 @@ def _compute_layout(ir, inst_map):
         mandatory_base = sum(s for _, s in mandatory)
         optional_preds = sorted(optional, key=lambda x: x[0])
 
+        # A varbit predecessor is taken from the UNION over paths, not the
+        # intersection, because its term is gated by its own validity wire --
+        # on a path where it was never extracted that wire is false and the
+        # term is zero, so a union term costs nothing and an intersection
+        # would drop a real one.
+        dyn_preds = sorted(d for d in header_dyn_preds[inst_name] if d in inst_map)
+
         layouts.append({
             'inst_name':      inst_name,
             'mandatory_base': mandatory_base,
             'optional_preds': optional_preds,
-            'var_pred':       header_var_pred.get(inst_name),
+            'dyn_preds':      dyn_preds,
+            'dyn_len_expr':   header_dyn_len.get(inst_name),
+            'dyn_max_bytes':  _varbit_max_bytes(inst),
         })
 
     return layouts
@@ -1295,14 +1401,6 @@ def _offset_var(inst_name):
     return f'w_{inst_name}_base'
 
 
-def _has_var_pred_on_non_dynamic(var_pred, inst_map):
-    """Return True if the variable predecessor header is NOT dynamic."""
-    if var_pred is None:
-        return False
-    vname, _ = var_pred
-    return True  # if listed, it's real
-
-
 # ── Main emitter ──────────────────────────────────────────────────────────────
 
 def emit_top(ir, app_name, output_path, axi_data_width=DEFAULT_AXI_DATA_W, board=None, nslot=4,
@@ -1523,6 +1621,39 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # is structurally zero and the shell keeps the simpler fixed-length TX path,
     # which is what every existing app gets -- byte-identical RTL.
     split_names = []           # emitted headers needing an OUTPUT offset (up to the splice)
+    # A varbit must be the LAST field of its header. Field placement walks
+    # declaration order using each field's DECLARED width, and a varbit's
+    # declared width is its maximum -- so a fixed field after one would be
+    # read from the end of the maximum-size options rather than the end of
+    # the real ones, for every packet that carries fewer. No program here
+    # does it, and the reference model refuses it too, so refuse rather than
+    # emit offsets that are wrong whenever the option block is short.
+    _vb_mid = []
+    for inst in ir.header_instances:
+        if inst.is_stack:
+            continue
+        flds = inst.header_type.fields
+        for i, fl in enumerate(flds):
+            if getattr(fl, 'is_varbit', False) and i != len(flds) - 1:
+                _vb_mid.append(f'{inst.inst_name}.{fl.name}')
+    if _vb_mid:
+        raise ValueError(
+            f"{app_name}: variable-length field(s) "
+            f"{', '.join('hdr.' + v for v in _vb_mid)} are followed by more "
+            f"fields in the same header. Every field after a varbit would be "
+            f"placed at the varbit's MAXIMUM width rather than the length "
+            f"this packet carries. Put the varbit last, or split the header.")
+
+    _vb_written = _varbit_fields_written([ctrl, ectrl], inst_map)
+    if _vb_written:
+        raise ValueError(
+            f"{app_name}: the program assigns to variable-length header "
+            f"field(s) {', '.join('hdr.' + v for v in _vb_written)}. Their PHV "
+            f"signal is a fixed maximum-width bus, so the deparser has no way "
+            f"to place a new value of the packet's actual option length -- see "
+            f"_varbit_fields_written in emit_top.py. Read them, or pass them "
+            f"through, but do not write them.")
+
     _vc = _validity_changing_headers([ctrl, ectrl])
     _vc_emitted = sorted(_vc & set(emit_names))
     can_change_len = bool(_vc_emitted)
@@ -2154,7 +2285,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if not inst:
             continue
         base_expr = _choose_base_expr(inst_name, layout['mandatory_base'],
-                                       layout['optional_preds'], layout['var_pred'])
+                                       layout['optional_preds'], layout['dyn_preds'])
         f.write(f'  // {inst_name} — base: {base_expr}\n')
         # Declared as `logic` and read inside always_comb, NOT as
         # `wire x = pkt_buf_hdr[...]`. A continuous assign that reads an
@@ -2672,7 +2803,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     else:
         f.write('  wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];\n')
     f.write('  assign iss_fire = iss_allocated && iss_hdr_ready;\n')
-    # ── P4's PacketTooShort ──────────────────────────────────────────────────
+    # ── P4's PacketTooShort ────────────────────────────────────
     # cutoff_byte is the byte position at which every header THIS packet could
     # contain has fully landed. iss_hdr_ready above fires either when that many
     # bytes have arrived OR when the packet has ENDED -- and that second term
@@ -2686,54 +2817,52 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # The test costs nothing and needs no store-and-forward, because it can
     # only be true once the packet is already complete (slot_done), so the
     # length is final at the moment it is asked.
-    # ...but ONLY when cutoff_byte is exact. For a varbit / variable-length
-    # header its term is the header's MAXIMUM size (a varbit<320> contributes
-    # +40 bytes whatever the actual option length is), because that is all a
-    # cut-through TRIGGER needs: waiting too long is safe, waiting too little
-    # is not. A too-short TEST reads it the other way round, and an upper
-    # bound there is a false positive -- it rejects perfectly good packets.
     #
-    # That is not hypothetical: enabling this for fiveTuple (varbit IPv4 and
-    # TCP options) dropped every packet it was given, and all four of its
-    # testbenches hung waiting for output that was discarded. So a program
-    # with a variable-length header keeps the old behaviour and is told so,
-    # rather than being given a check that is wrong in the unsafe direction.
-    # The condition is "does a header carry a VARBIT field", not the broader
-    # layout var_pred. var_pred is also set for a header whose BASE OFFSET is
-    # data-dependent -- tcp sitting after an ipv4 whose length comes from
-    # hdr_len -- and such a header still contributes its own EXACT size to
-    # cutoff_byte (`w_tcp_base + 20`). Using var_pred disabled the check for
-    # load_balance, whose tcp_t is a fixed 20 bytes, and silently gave back
-    # the bug for one of the two programs it had just been shown to fix.
-    # Header.is_variable_length() is the exact question.
-    _varlen = sorted(inst.inst_name for inst in ir.header_instances
-                     # a PROPERTY, not a method: calling it raises
-                     # TypeError, which crashed the compiler for every
-                     # app while a grep for the warning read the crash
-                     # as "check enabled".
-                     if not inst.is_stack and inst.header_type.is_variable_length)
-    if _varlen:
-        f.write('  // PacketTooShort is NOT checked in this design.\n')
-        f.write(f'  // {", ".join(_varlen)} '
-                f'{"is" if len(_varlen) == 1 else "are"} variable-length '
-                f'(varbit), so cutoff_byte\n')
-        f.write('  // below is the WORST-CASE header size, not the number of bytes this\n')
-        f.write('  // packet\'s parse path actually needs. Comparing a received length\n')
-        f.write('  // against an upper bound would reject valid packets, so the check is\n')
-        f.write('  // omitted here. An exact minimum-bytes expression using the real\n')
-        f.write('  // length fields would restore it; see emit_top.py.\n')
-        f.write('  wire iss_too_short = 1\'b0;\n')
-        print(f"[WARN] PacketTooShort is not checked for this program: "
-              f"{', '.join(_varlen)} "
-              f"{'is' if len(_varlen) == 1 else 'are'} variable-length "
-              f"(varbit), so the shell's byte-position bound is a worst case "
-              f"rather than this packet's actual parse length.")
-        print(f"       A frame that ends before its headers do will be "
-              f"processed with fields read from bytes that were never "
-              f"received, as it was for every program before 2026-10-28.")
-    else:
-        f.write('  wire iss_too_short = slot_done[iss_slot]\n')
-        f.write('                       && (slot_byte_len[iss_slot] < cutoff_byte);\n')
+    # It applies to EVERY program, variable-length headers included, because
+    # cutoff_byte is exact: a varbit header contributes its runtime size
+    # (w_<hdr>_varbytes, from the program's own extract length) rather than
+    # its declared maximum. While that term was a maximum this test had to be
+    # switched off for fiveTuple and echo -- an upper bound rejects valid
+    # packets, and it dropped every frame they were given.
+    #
+    # P4's HeaderTooShort joins it here. A variable-length extract whose
+    # length expression asks for more bits than the varbit field was declared
+    # to hold is a parser error too, and it is the SAME kind of error: the
+    # length field is nonsense, so every offset derived from it is nonsense.
+    # The architecture's answer to a rejecting parser is to discard (§6d), so
+    # both reject the packet through one wire.
+    #
+    # Found by the randomised stimulus, the first time fiveTuple could be
+    # modelled at all: one frame with tcp.dataOffset = 0, which makes
+    # (dataOffset - 5) * 32 wrap to four billion bits. The design saturated
+    # that at 40 bytes and forwarded the packet, having placed tcp's options
+    # 40 bytes past a header that has none. fiveTuple's own
+    # verify(dataOffset >= 5) sees the same thing, but a verify only sets
+    # parser_error and this program never reads it.
+    _hts = sorted(l['inst_name'] for l in layouts if l['dyn_len_expr'])
+    f.write('  wire iss_too_short = (slot_done[iss_slot]\n')
+    f.write('                        && (slot_byte_len[iss_slot] < cutoff_byte))\n')
+    if _hts:
+        f.write('                       || '
+                + '\n                       || '.join(
+                    f'w_{h}_hdr_too_short' for h in _hts) + '\n')
+    f.write('                       ;\n')
+    # slot_too_short[] is written at the END of the issue cycle, so a site
+    # that reads it in that same cycle sees the PREVIOUS packet's value. That
+    # is not hypothetical: a program with no tables has a zero-latency
+    # match-action pipeline, so proc_out_valid rises in the very cycle
+    # iss_fire does, and the completion sites below are exactly such readers.
+    # echo forwarded a 34-byte frame whose parse path needs 42, with
+    # iss_too_short = 1 at issue and slot_too_short still 0 one delta later --
+    # found by the randomised stimulus, and true of every zero-latency app
+    # since the check was added. The reads below take the live decision when
+    # the two coincide.
+    f.write('  // See the note in emit_top.py: a zero-latency pipeline issues and\n')
+    f.write('  // completes in one cycle, before slot_too_short[] has been written.\n')
+    f.write('  function automatic logic rejected(input [SLOT_AW-1:0] sl);\n')
+    f.write('    rejected = slot_too_short[sl]\n')
+    f.write('               || (iss_fire && (iss_slot == sl) && iss_too_short);\n')
+    f.write('  endfunction\n\n')
     f.write('  always_ff @(posedge clk) begin\n')
     f.write('    if (!rst_n) iss_ptr <= \'0;\n')
     f.write('    else if (iss_fire) begin\n')
@@ -2827,12 +2956,12 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
             f.write('        // pipeline as a dropped packet (egress side effects suppressed,\n')
             f.write('        // TX discards the bytes), which is how its slot gets released.\n')
             f.write('        slot_drop[ig_slot] <= proc_drop || tail_drop\n')
-            f.write('                              || slot_too_short[ig_slot];\n')
+            f.write('                              || rejected(ig_slot);\n')
         else:
             # The architecture discards a packet whose parser rejected, which
             # is what PacketTooShort is. The program's own drop decision still
             # applies; this only ever adds to it.
-            f.write('        slot_drop[ig_slot] <= proc_drop || slot_too_short[ig_slot];\n')
+            f.write('        slot_drop[ig_slot] <= proc_drop || rejected(ig_slot);\n')
         if mcast:
             f.write('        slot_ig_drop[ig_slot] <= proc_drop;\n')
         for hname in all_hdr_names:
@@ -2857,7 +2986,7 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     # write site for a program with no egress control, and patching only the
     # other one left eleven of eighteen apps DETECTING a too-short packet and
     # then forwarding it anyway -- the detection without the consequence.
-    f.write(f'        slot_drop[cmp_slot] <= {fin_drop} || slot_too_short[cmp_slot];\n')
+    f.write(f'        slot_drop[cmp_slot] <= {fin_drop} || rejected(cmp_slot);\n')
     if can_change_len:
         _dw = max(8, max(sz for _h, sz in len_changing).bit_length() + 4)
         terms = []
@@ -3128,7 +3257,8 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
     _vmap_in = ({h: f'phv_in_valid_{h}' for h in in_valid_names}
                 if can_change_len else valid_map)
     for layout in layouts:
-        _emit_offset_var_for(_buf, layout, layouts, _vmap_in, hdr_idx_w, _emitted)
+        _emit_offset_var_for(_buf, layout, layouts, _vmap_in, hdr_idx_w, _emitted,
+                             want_too_short=False)
     _txt = _re.sub(r'\bw_', 'phv_', _buf.getvalue())
     if _txt.strip():
         f.write('  // header byte offsets over the stored PHV (same arithmetic as w_*_base)\n')
@@ -3434,24 +3564,71 @@ def _counter_idx_w(cnt):
     return max(1, math.ceil(math.log2(cnt.size))) if cnt.size > 1 else 1
 
 
-def _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted):
+def _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted,
+                         want_too_short=True):
     """
-    Emit the wire declaration for one header's runtime-computed byte offset
-    (a no-op if this header has only mandatory predecessors -- fixed offset,
-    no variable needed -- or its var was already emitted). Factored out of
-    _emit_offset_vars so callers can interleave this per-header, in the same
-    topological (parse) order as field-wire emission -- required because a
-    var_pred offset can reference an EARLIER header's own field (e.g. an
-    ipv4-options header's offset depending on ipv4's hdr_len field), which
-    must itself already be declared. See the caller in _write_module for the
-    full cross-toolchain (Vivado xvlog vs iverilog) rationale.
+    Emit, for one header, the wires its byte offset needs:
+
+      w_<inst>_varbits   this header's own runtime length in BITS, if it is a
+                         variable-length (varbit) extract
+      w_<inst>_varbytes  the same, in bytes, saturated at the varbit field's
+                         declared maximum
+      w_<inst>_base      its runtime byte offset, when that offset is not a
+                         compile-time constant
+
+    Factored out of _emit_offset_vars so callers can interleave this
+    per-header, in the same topological (parse) order as field-wire emission
+    -- required because a runtime length references an EARLIER header's own
+    field (an IPv4-options length depending on ipv4.hdr_len), which must
+    itself already be declared. See the caller in _write_module for the full
+    cross-toolchain (Vivado xvlog vs iverilog) rationale.
     """
     inst_name      = layout['inst_name']
     mandatory_base = layout['mandatory_base']
     optional_preds = layout['optional_preds']
-    var_pred       = layout['var_pred']
+    dyn_preds      = layout['dyn_preds']
+    len_expr       = layout['dyn_len_expr']
 
-    if not optional_preds and var_pred is None:
+    # ── this header's own runtime length ─────────────────────────────────────
+    if len_expr:
+        bits_var  = f'w_{inst_name}_varbits'
+        bytes_var = _varbytes_var(inst_name)
+        if bits_var not in emitted:
+            emitted.add(bits_var)
+            # [31:0], not the natural width of the expression: the P4 source
+            # reads `((bit<32>)hdr.ipv4.hdr_len - 5) * 32` and the MidEnd
+            # hands that over as `32'(...) + 32'd4294967291 << 5`, i.e. the
+            # subtraction is a 32-bit WRAPAROUND add. Verilog makes the left
+            # operand of << context-determined by the assignment, so a wider
+            # target would evaluate the add without wrapping and the 5-word
+            # offset would come out as four billion bytes instead of zero.
+            f.write(f'  wire [31:0] {bits_var} = '
+                    f'{_verify_cond_to_w(len_expr)};\n')
+            f.write(f'  wire [31:0] w_{inst_name}_varbytes_raw = '
+                    f'({bits_var} + 32\'d7) >> 3;\n')
+            # Saturated at the declared varbit width, which keeps every
+            # offset computed from it inside pkt_buf_hdr -- what
+            # _worst_case_hdr_bytes sized for. A length that needed the
+            # saturation is P4's HeaderTooShort, and the shell rejects the
+            # packet on it (see _write_module); the saturation is still here
+            # so the offsets stay in range on the way to that decision.
+            vmax    = layout['dyn_max_bytes']
+            raw_var = f'w_{inst_name}_varbytes_raw'
+            f.write(f'  wire [{hdr_idx_w-1}:0] {bytes_var} = '
+                    f'({raw_var} > 32\'d{vmax}) ? {hdr_idx_w}\'d{vmax} '
+                    f': {raw_var}[{hdr_idx_w-1}:0];\n')
+            # P4's HeaderTooShort: the program asked for more bits than the
+            # varbit field was declared to hold. Gated by this header's own
+            # validity, so a nonsense length field in a header this packet
+            # does not have cannot reject it.
+            if want_too_short:
+                vexpr = valid_map.get(inst_name, "1'b1")
+                f.write(f'  wire w_{inst_name}_hdr_too_short = '
+                        f'({raw_var} > 32\'d{vmax})'
+                        + ('' if vexpr == "1'b1" else f' && ({vexpr})') + ';\n')
+
+    # ── its base offset ──────────────────────────────────────────────────────
+    if not optional_preds and not dyn_preds:
         return  # fixed offset, no var needed
 
     var_name = _offset_var(inst_name)
@@ -3459,32 +3636,15 @@ def _emit_offset_var_for(f, layout, layouts, valid_map, hdr_idx_w, emitted):
         return
     emitted.add(var_name)
 
-    if optional_preds and var_pred is None:
-        # offset = mandatory_base + sum(size if opt_valid else 0 for opt, size in optional_preds)
-        terms = [str(mandatory_base)]
-        for opt_name, opt_size in optional_preds:
-            vexpr = valid_map.get(opt_name, "1'b0")
-            terms.append(f'({vexpr} ? {opt_size} : 0)')
-        expr = ' + '.join(terms)
-        f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = {expr};\n')
-
-    elif var_pred is not None:
-        vname, vfield = var_pred
-        # base = previous header's offset + (length_field * scale)
-        # hdr_len field has scale factor 4 (32-bit words → bytes)
-        prev_var = _offset_var(vname)
-        prev_layout = next((l for l in layouts if l['inst_name'] == vname), None)
-        has_prev_var = (prev_layout and
-                        (prev_layout['optional_preds'] or prev_layout['var_pred'] is not None))
-        prev_base_expr = prev_var if has_prev_var else str(
-            prev_layout['mandatory_base'] if prev_layout else 0)
-        hdr_bytes_var = f'w_{vname}_hdr_bytes'
-        if hdr_bytes_var not in emitted:
-            emitted.add(hdr_bytes_var)
-            f.write(f'  wire [{hdr_idx_w-1}:0] {hdr_bytes_var} = '
-                    f'{{{hdr_idx_w-4}\'b0, w_{vname}_{vfield}}} << 2;\n')
-        f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = '
-                f'{prev_base_expr} + {hdr_bytes_var};\n')
+    terms = [str(mandatory_base)]
+    for opt_name, opt_size in optional_preds:
+        vexpr = valid_map.get(opt_name, "1'b0")
+        terms.append(f'({vexpr} ? {opt_size} : 0)')
+    for dname in dyn_preds:
+        bvar  = _varbytes_var(dname)
+        vexpr = valid_map.get(dname, "1'b1")
+        terms.append(bvar if vexpr == "1'b1" else f'({vexpr} ? {bvar} : 0)')
+    f.write(f'  wire [{hdr_idx_w-1}:0] {var_name} = {" + ".join(terms)};\n')
 
 
 def _emit_offset_vars(f, layouts, inst_map, valid_map, hdr_idx_w):
@@ -3524,12 +3684,16 @@ def _emit_cutoff_expr(f, layouts, inst_map, valid_map, hdr_idx_w):
     safe to sample every cycle and trigger on first-true despite depending
     on not-yet-fully-arrived data early on: a header's own term always
     dominates (shields) any later header's data-dependent base-offset
-    computation from false-triggering on stale bytes, because every
-    var_pred length field is unsigned (see _worst_case_hdr_bytes) -- if a
-    length field's own byte hasn't arrived yet, its stale value can only
-    make a later term compute too LOW, never mask a still-outstanding
-    earlier one, since the earlier header's own (always-correct) term is
-    already in the max.
+    computation from false-triggering on stale bytes -- if a length field's
+    own byte hasn't arrived yet, its stale value can only make a later term
+    compute too LOW, never mask a still-outstanding earlier one, since the
+    earlier header's own (always-correct) term is already in the max, and
+    that earlier header is the one the length field lives in.
+
+    Because every term is EXACT -- a variable-length header contributes its
+    runtime size, not its declared maximum -- cutoff_byte is also the exact
+    number of bytes this packet's parse path needs, which is what lets the
+    shell test for P4's PacketTooShort (see _write_module).
     """
     terms = []
     for layout in layouts:
@@ -3539,9 +3703,12 @@ def _emit_cutoff_expr(f, layouts, inst_map, valid_map, hdr_idx_w):
             continue
         mandatory_base = layout['mandatory_base']
         optional_preds = layout['optional_preds']
-        var_pred       = layout['var_pred']
-        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred)
-        size  = _hdr_bytes_total(inst)
+        dyn_preds      = layout['dyn_preds']
+        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, dyn_preds)
+        if layout['dyn_len_expr']:
+            size = f'{_hdr_fixed_bytes(inst)} + {_varbytes_var(inst_name)}'
+        else:
+            size = str(_hdr_bytes_total(inst))
         vexpr = valid_map.get(inst_name, "1'b1")
         term_name = f'w_{inst_name}_cutoff_term'
         if vexpr == "1'b1":
@@ -3569,9 +3736,9 @@ def _emit_cutoff_expr(f, layouts, inst_map, valid_map, hdr_idx_w):
     f.write('\n')
 
 
-def _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred):
+def _choose_base_expr(inst_name, mandatory_base, optional_preds, dyn_preds):
     """Return the SV base expression for a header's byte offset."""
-    if not optional_preds and var_pred is None:
+    if not optional_preds and not dyn_preds:
         return mandatory_base   # plain int
     return _offset_var(inst_name)
 
@@ -3588,11 +3755,22 @@ def _emit_writeback_block(f, layouts, inst_map, valid_map, ind,
         inst         = inst_map.get(inst_name)
         if not inst:
             continue
+        # A variable-length header is NOT written back. Its PHV field is a
+        # fixed max-width signal (varbit<320> is 40 bytes wide whatever the
+        # packet carries), so writing it back would place 40 bytes over
+        # whatever follows the real options -- and, now that cutoff_byte is
+        # exact, over bytes that have not arrived yet at issue. The received
+        # bytes already sit in hdr_out, so passing them through is both
+        # correct and what every program here wants; a program that MODIFIES
+        # a varbit field is rejected in _write_module rather than written
+        # back wrongly.
+        if getattr(inst.header_type, 'is_variable_length', False):
+            continue
         mandatory_base = layout['mandatory_base']
         optional_preds = layout['optional_preds']
-        var_pred       = layout['var_pred']
+        dyn_preds      = layout['dyn_preds']
 
-        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, var_pred)
+        base_expr = _choose_base_expr(inst_name, mandatory_base, optional_preds, dyn_preds)
         if not isinstance(base_expr, int):
             base_expr = base_expr.replace('w_', base_pfx, 1)
         vexpr     = valid_map.get(inst_name, "1'b1")

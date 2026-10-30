@@ -1,4 +1,4 @@
-# smprobe: a good frame, one the parser verify() rejects, and a long one
+# smprobe: a good frame, one the parser verify() rejects, a long one, and one too short to hold an Ethernet header
 # Regenerate with verification/vectors/make_vectors.py
 # (this program has no tables to program)
 run_traffic traffic

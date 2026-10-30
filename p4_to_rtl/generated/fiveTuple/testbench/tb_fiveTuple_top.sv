@@ -29,14 +29,19 @@
 //     which carry a VLAN tag into the table), even with action=NoAction. A
 //     MISS leaves eth.type untouched. Tests below that expect a hit build
 //     their expected-output array with this rewrite applied; miss-path
-//     tests compare directly against the unmodified input. This also means
-//     the tests don't need to route around _compute_layout's pre-existing
-//     ipv4opt/tcpopt base-offset sharing bug (both var_preds resolve to the
-//     same "ipv4_base + ipv4.hdr_len*4" formula, so ipv4opt/tcpopt's write-
-//     back window can overlap tcp/udp's, and even each other's) -- since
-//     every write-back for those two headers is a pure, unmodified pass-
-//     through, any such overlap is self-cancelling (read X, write X back)
-//     and produces no observable difference in the transmitted packet.
+//     tests compare directly against the unmodified input.
+//   - The ipv4opt/tcpopt base-offset sharing bug this note used to describe
+//     (both resolving to the same "ipv4_base + ipv4.hdr_len*4" formula, so
+//     their write-back windows overlapped tcp/udp's and each other's) was
+//     FIXED on 2026-10-30. _compute_layout now follows the program's own
+//     parse arithmetic: ipv4opt starts where its options start, tcpopt after
+//     tcp, and each variable region contributes its runtime length to what
+//     follows. A varbit header is no longer written back at all (its PHV
+//     field is a fixed maximum width, so there is nothing faithful to write),
+//     which is what made the old overlap harmless in the first place.
+//     verification/vectors/fiveTuple/ now drives the same 5-tuple with 0, 4
+//     and 8 bytes of IPv4 options and with TCP options, checked against the
+//     reference model, so the offsets are tested rather than argued about.
 //
 // Compile (from this directory):
 //   iverilog -g2012 -o sim tb_fiveTuple_top.sv \

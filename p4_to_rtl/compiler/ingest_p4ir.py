@@ -1177,9 +1177,19 @@ def _parse_parser_states(body_text):
         state = ParserState(sname)
 
         # packet.extract<TYPE>(hdr.FIELD)  or  packet.extract<TYPE>(hdr.FIELD, LEN)
-        for em in re.finditer(r'packet\s*\.\s*extract\s*<\s*(\w+)\s*>\s*\(([^)]*)\)', body):
-            args_str = em.group(2)
-            args = [a.strip() for a in args_str.split(',')]
+        #
+        # The argument list is read with a DEPTH COUNT, not `[^)]*`. A varbit
+        # extract's length argument contains parentheses of its own -- the
+        # MidEnd spells it `(bit<32>)hdr.ipv4.hdr_len + 32w4294967291 << 5` --
+        # so a non-greedy "anything but )" stopped inside the width cast and
+        # handed _convert_expr the fragment `(((bit<32>`. Every dynamic
+        # extract in the project recorded a length_expr of `'(bit<32>'`, and
+        # nothing noticed because nothing read the field yet.
+        for em in re.finditer(r'packet\s*\.\s*extract\s*<\s*(\w+)\s*>\s*\(', body):
+            args_str, _ = _read_matching_paren(body, em.end() - 1)
+            args = _split_top_level_commas(args_str)
+            if not args:
+                continue
             hdr_ref = args[0]
             hdr_field = hdr_ref.split('.')[-1] if '.' in hdr_ref else hdr_ref
             hdr_field = _sanitize_stack_idx(hdr_field)

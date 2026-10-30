@@ -13,9 +13,9 @@
 #
 # Every app directory under verification/vectors/ MUST pass. Programs whose
 # constructs the model cannot represent (a UserExtern's RTL is unknowable, a
-# Meter's bucket is implementation-defined, multicast replicates, a varbit
-# header has no fixed layout) have no directory here, and p4v reports them as
-# NOT VERIFIED rather than passing them -- see docs/compiler_design.md.
+# Meter's bucket is implementation-defined, multicast replicates) have no
+# directory here, and p4v reports them as NOT VERIFIED rather than passing
+# them -- see docs/compiler_design.md.
 set -u
 R="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="${P4C_BIN:-/home/nisitha/p4c/build}:$PATH"

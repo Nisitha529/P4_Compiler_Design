@@ -87,12 +87,21 @@ Two more limits worth stating plainly:
 | `UserExtern` | its RTL is supplied by the user; its function is unknowable to a model |
 | `Meter` | the generated debit bucket is implementation-defined, not a spec |
 | multicast (`mcast_group`) | one packet in, several out; the model is a per-packet function |
-| `varbit` / runtime-length `extract` | the header has no fixed layout to serialise |
+| reading a `varbit` field as a value | the field has no fixed width to read; parsing and re-emitting one IS modelled (below) |
+| a `varbit` that is not the last field of its header | placing it would need the following fixed widths subtracted first; no program here does it |
 | header stacks | descoped in this compiler, so also in the model |
 
 Each raises with the construct named. Extending the model is how that list
-shrinks; the four apps in this repository that hit it are listed in
+shrinks; the three apps in this repository that hit it are listed in
 `docs/compiler_design.md`.
+
+A runtime-length `extract(hdr.X, <bits>)` **is** modelled: the length
+expression is evaluated against the fields parsed so far, that many bytes are
+consumed, and the deparser emits the field back at the length it was parsed
+with — which is what the design does by leaving those received bytes in place.
+A length longer than the varbit's declared width is P4's `HeaderTooShort` and
+the model rejects the packet, as the design does by saturating the same offset
+at that width.
 
 ## Files
 

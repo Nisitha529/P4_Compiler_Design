@@ -45,10 +45,10 @@ module echo_top #(
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BEATS = 256;
   localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 8192
-  localparam int HDR_MAX_BYTES = 128;
-  localparam int HDR_MAX_BEATS = 4;
-  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8064
-  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 252
+  localparam int HDR_MAX_BYTES = 96;
+  localparam int HDR_MAX_BEATS = 3;
+  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8096
+  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 253
 
   // ── Header slot ring ─────────────────────────────────────────────────────
   // NSLOT packets can be in flight at once. Each slot holds one packet's
@@ -226,8 +226,11 @@ module echo_top #(
     w_ipv4_dst = {x_hdr[w_ipv4_base+16], x_hdr[w_ipv4_base+17], x_hdr[w_ipv4_base+18], x_hdr[w_ipv4_base+19]};
   end
 
-  wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_hdr_len} << 2;
-  wire [13:0] w_ipv4opt_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [31:0] w_ipv4opt_varbits = 32'(w_ipv4_hdr_len) + 32'd4294967291 << 5;
+  wire [31:0] w_ipv4opt_varbytes_raw = (w_ipv4opt_varbits + 32'd7) >> 3;
+  wire [13:0] w_ipv4opt_varbytes = (w_ipv4opt_varbytes_raw > 32'd40) ? 14'd40 : w_ipv4opt_varbytes_raw[13:0];
+  wire w_ipv4opt_hdr_too_short = (w_ipv4opt_varbytes_raw > 32'd40) && ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))));
+  wire [13:0] w_ipv4opt_base = 34 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? 4 : 0);
   // ipv4opt — base: w_ipv4opt_base
   logic [319:0] w_ipv4opt_options;
   always_comb begin
@@ -246,7 +249,7 @@ module echo_top #(
     w_vlan_1_tpid = {x_hdr[18+2], x_hdr[18+3]};
   end
 
-  wire [13:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_udp_base = 34 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? 4 : 0) + ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? w_ipv4opt_varbytes : 0);
   // udp — base: w_udp_base
   logic [15:0] w_udp_src_port;
   logic [15:0] w_udp_dst_port;
@@ -274,7 +277,7 @@ module echo_top #(
   wire [13:0] w_eth_cutoff_term = 0 + 14;
   wire [13:0] w_vlan_0_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 14'd0;
   wire [13:0] w_ipv4_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
-  wire [13:0] w_ipv4opt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
+  wire [13:0] w_ipv4opt_cutoff_term = (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) ? (w_ipv4opt_base + 0 + w_ipv4opt_varbytes) : 14'd0;
   wire [13:0] w_vlan_1_cutoff_term = ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) ? (18 + 4) : 14'd0;
   wire [13:0] w_udp_cutoff_term = (((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h0800))) || (((w_eth_type == 16'h8100) && (w_vlan_0_tpid == 16'h8100)) && (w_vlan_1_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_udp_base + 8) : 14'd0;
   wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_0_cutoff_term) ? w_eth_cutoff_term : w_vlan_0_cutoff_term;
@@ -522,14 +525,17 @@ module echo_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
-  // PacketTooShort is NOT checked in this design.
-  // ipv4opt is variable-length (varbit), so cutoff_byte
-  // below is the WORST-CASE header size, not the number of bytes this
-  // packet's parse path actually needs. Comparing a received length
-  // against an upper bound would reject valid packets, so the check is
-  // omitted here. An exact minimum-bytes expression using the real
-  // length fields would restore it; see emit_top.py.
-  wire iss_too_short = 1'b0;
+  wire iss_too_short = (slot_done[iss_slot]
+                        && (slot_byte_len[iss_slot] < cutoff_byte))
+                       || w_ipv4opt_hdr_too_short
+                       ;
+  // See the note in emit_top.py: a zero-latency pipeline issues and
+  // completes in one cycle, before slot_too_short[] has been written.
+  function automatic logic rejected(input [SLOT_AW-1:0] sl);
+    rejected = slot_too_short[sl]
+               || (iss_fire && (iss_slot == sl) && iss_too_short);
+  endfunction
+
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
@@ -545,7 +551,7 @@ module echo_top #(
     end else begin
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
-        slot_drop[cmp_slot] <= proc_drop || slot_too_short[cmp_slot];
+        slot_drop[cmp_slot] <= proc_drop || rejected(cmp_slot);
         slot_phv_eth_valid[cmp_slot] <= out_eth_valid;
         slot_phv_vlan_0_valid[cmp_slot] <= out_vlan_0_valid;
         slot_phv_ipv4_valid[cmp_slot] <= out_ipv4_valid;
@@ -641,9 +647,11 @@ module echo_top #(
   logic [7:0] hdr_out [0:HDR_MAX_BYTES-1];
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_base = 14 + ((phv_eth_type == 16'h8100) ? 4 : 0) + (((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h8100)) ? 4 : 0);
-  wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_hdr_len} << 2;
-  wire [13:0] phv_ipv4opt_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
-  wire [13:0] phv_udp_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
+  wire [31:0] phv_ipv4opt_varbits = 32'(phv_ipv4_hdr_len) + 32'd4294967291 << 5;
+  wire [31:0] phv_ipv4opt_varbytes_raw = (phv_ipv4opt_varbits + 32'd7) >> 3;
+  wire [13:0] phv_ipv4opt_varbytes = (phv_ipv4opt_varbytes_raw > 32'd40) ? 14'd40 : phv_ipv4opt_varbytes_raw[13:0];
+  wire [13:0] phv_ipv4opt_base = 34 + ((phv_eth_type == 16'h8100) ? 4 : 0) + (((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h8100)) ? 4 : 0);
+  wire [13:0] phv_udp_base = 34 + ((phv_eth_type == 16'h8100) ? 4 : 0) + (((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h8100)) ? 4 : 0) + ((((phv_eth_type == 16'h0800) || ((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h0800))) || (((phv_eth_type == 16'h8100) && (phv_vlan_0_tpid == 16'h8100)) && (phv_vlan_1_tpid == 16'h0800))) ? phv_ipv4opt_varbytes : 0);
 
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
@@ -691,48 +699,6 @@ module echo_top #(
         hdr_out[phv_ipv4_base+17] = phv_ipv4_dst[23:16];
         hdr_out[phv_ipv4_base+18] = phv_ipv4_dst[15:8];
         hdr_out[phv_ipv4_base+19] = phv_ipv4_dst[7:0];
-    end
-    if (phv_ipv4opt_valid) begin
-        hdr_out[phv_ipv4opt_base] = phv_ipv4opt_options[319:312];
-        hdr_out[phv_ipv4opt_base+1] = phv_ipv4opt_options[311:304];
-        hdr_out[phv_ipv4opt_base+2] = phv_ipv4opt_options[303:296];
-        hdr_out[phv_ipv4opt_base+3] = phv_ipv4opt_options[295:288];
-        hdr_out[phv_ipv4opt_base+4] = phv_ipv4opt_options[287:280];
-        hdr_out[phv_ipv4opt_base+5] = phv_ipv4opt_options[279:272];
-        hdr_out[phv_ipv4opt_base+6] = phv_ipv4opt_options[271:264];
-        hdr_out[phv_ipv4opt_base+7] = phv_ipv4opt_options[263:256];
-        hdr_out[phv_ipv4opt_base+8] = phv_ipv4opt_options[255:248];
-        hdr_out[phv_ipv4opt_base+9] = phv_ipv4opt_options[247:240];
-        hdr_out[phv_ipv4opt_base+10] = phv_ipv4opt_options[239:232];
-        hdr_out[phv_ipv4opt_base+11] = phv_ipv4opt_options[231:224];
-        hdr_out[phv_ipv4opt_base+12] = phv_ipv4opt_options[223:216];
-        hdr_out[phv_ipv4opt_base+13] = phv_ipv4opt_options[215:208];
-        hdr_out[phv_ipv4opt_base+14] = phv_ipv4opt_options[207:200];
-        hdr_out[phv_ipv4opt_base+15] = phv_ipv4opt_options[199:192];
-        hdr_out[phv_ipv4opt_base+16] = phv_ipv4opt_options[191:184];
-        hdr_out[phv_ipv4opt_base+17] = phv_ipv4opt_options[183:176];
-        hdr_out[phv_ipv4opt_base+18] = phv_ipv4opt_options[175:168];
-        hdr_out[phv_ipv4opt_base+19] = phv_ipv4opt_options[167:160];
-        hdr_out[phv_ipv4opt_base+20] = phv_ipv4opt_options[159:152];
-        hdr_out[phv_ipv4opt_base+21] = phv_ipv4opt_options[151:144];
-        hdr_out[phv_ipv4opt_base+22] = phv_ipv4opt_options[143:136];
-        hdr_out[phv_ipv4opt_base+23] = phv_ipv4opt_options[135:128];
-        hdr_out[phv_ipv4opt_base+24] = phv_ipv4opt_options[127:120];
-        hdr_out[phv_ipv4opt_base+25] = phv_ipv4opt_options[119:112];
-        hdr_out[phv_ipv4opt_base+26] = phv_ipv4opt_options[111:104];
-        hdr_out[phv_ipv4opt_base+27] = phv_ipv4opt_options[103:96];
-        hdr_out[phv_ipv4opt_base+28] = phv_ipv4opt_options[95:88];
-        hdr_out[phv_ipv4opt_base+29] = phv_ipv4opt_options[87:80];
-        hdr_out[phv_ipv4opt_base+30] = phv_ipv4opt_options[79:72];
-        hdr_out[phv_ipv4opt_base+31] = phv_ipv4opt_options[71:64];
-        hdr_out[phv_ipv4opt_base+32] = phv_ipv4opt_options[63:56];
-        hdr_out[phv_ipv4opt_base+33] = phv_ipv4opt_options[55:48];
-        hdr_out[phv_ipv4opt_base+34] = phv_ipv4opt_options[47:40];
-        hdr_out[phv_ipv4opt_base+35] = phv_ipv4opt_options[39:32];
-        hdr_out[phv_ipv4opt_base+36] = phv_ipv4opt_options[31:24];
-        hdr_out[phv_ipv4opt_base+37] = phv_ipv4opt_options[23:16];
-        hdr_out[phv_ipv4opt_base+38] = phv_ipv4opt_options[15:8];
-        hdr_out[phv_ipv4opt_base+39] = phv_ipv4opt_options[7:0];
     end
     if (phv_vlan_1_valid) begin
         hdr_out[18] = {phv_vlan_1_pcp, phv_vlan_1_cfi, phv_vlan_1_vid[11:8]};

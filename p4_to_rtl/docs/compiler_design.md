@@ -537,10 +537,114 @@ Two things that made it more than a one-liner, both worth knowing:
 * There are **two** places the shell records a drop — one for programs with an
   egress control and one for those without. Patching only the first left eleven
   of eighteen apps detecting a too-short packet and forwarding it anyway.
+* Both of those places used to read the per-slot flag out of a **register
+  written at the end of the issue cycle**, which is correct only if completion
+  is at least one cycle later. A program with no match table has a
+  **zero-latency** match-action pipeline: `proc_out_valid` rises in the very
+  cycle `iss_fire` does, so the read came one delta too early and saw the
+  previous packet's value. The check was therefore dead for `echo`, `regprobe`
+  and `smprobe` from the day it was added until 2026-10-30, and no committed
+  pcap had a frame short enough to notice. The drop sites now go through
+
+  ```systemverilog
+  function automatic logic rejected(input [SLOT_AW-1:0] sl);
+    rejected = slot_too_short[sl]
+               || (iss_fire && (iss_slot == sl) && iss_too_short);
+  endfunction
+  ```
+
+  and all three pcaps carry a frame that is too short, so the case is tested
+  rather than assumed. Reverting the function makes all three report
+  `SHORT-PACKET`.
 
 `verification/vectors/load_balance_p4rtl/` carries such a frame so the path
 stays exercised, and the fuzzer now generates them by default rather than
 filtering them out as a known divergence.
+
+The check was initially switched **off** for `fiveTuple` and `echo`, because a
+variable-length header contributed its *declared maximum* to `cutoff_byte` (a
+`varbit<320>` adds 40 bytes whatever the packet carries) and an upper bound in
+a too-short test is a false positive — it dropped every frame those two
+programs were given. Since 2026-10-30 `cutoff_byte` is exact for every
+program, so the check applies to all of them; see §6e.
+
+### 6e. Variable-length headers
+
+`extract(hdr.ipv4opt, ((bit<32>)hdr.ipv4.hdr_len - 5) * 32)` gives the parser a
+length computed at run time. The compiler now uses that expression. It used to
+guess instead, and the guess was wrong in three ways at once.
+
+**What it did.** Any field whose *name* looked like a header length —
+`hdr_len`, `ihl`, `dataOffset` (`_is_len_field`) — was taken to mean "every
+header after this one starts at `base + len*4`". That skips IPv4 options.
+
+**Why that is wrong.** It is not what a P4 parser does. `extract(hdr.ipv4);
+extract(hdr.tcp)` places `tcp` 20 bytes after `ipv4` whatever `hdr_len` says; a
+program that wants the options skipped has to extract them. The guess happened
+to be right for exactly one header — the one immediately after the variable
+region — and wrong for:
+
+* **the variable header itself**, which was placed at the *end* of its own
+  options rather than the start, and
+* **anything after a second variable region**: `fiveTuple`'s `tcpopt` landed on
+  top of `tcp`, 20 bytes early.
+
+**What it cost.** Measured against the reference model, `load_balance_xsa` sent
+a packet carrying 4 bytes of IPv4 options to the **wrong next hop** — the
+design read its TCP ports from bytes 38–58, the program says 34–54, so the ECMP
+hash, the egress port and the rewritten MAC all differed. No committed pcap
+carried an IPv4 option, so the oracle had never seen it.
+
+**What it does now.** A header's offset is the sum of the sizes of the headers
+extracted before it on the path, and a variable-length extract contributes a
+runtime byte count (`w_<hdr>_varbytes`) rather than a constant. Three
+consequences worth knowing:
+
+* The runtime length is evaluated in a `[31:0]` intermediate, not the natural
+  width of its target. The MidEnd spells `- 5` as `+ 32w4294967291`, a 32-bit
+  wraparound add, and Verilog makes the left operand of `<<` context-determined
+  by the assignment — so a wider target computes the add without wrapping and a
+  5-word header offset comes out as four billion bytes instead of zero.
+* A varbit header is **not written back**. Its PHV field is a fixed
+  maximum-width bus, so a write-back would place 40 bytes over whatever follows
+  the real options, and — now that `cutoff_byte` is exact — over bytes that have
+  not arrived. The received bytes are already in place, so pass-through is both
+  correct and what every program here wants. A program that *assigns* to a
+  varbit field is refused rather than written back wrongly.
+* Because the terms are exact, `cutoff_byte` doubles as the exact number of
+  bytes this packet's parse path needs, which is what enables `PacketTooShort`
+  (§6d) for these programs. `verification/vectors/fiveTuple/` pins the
+  boundary: with 4 bytes of IPv4 options the parse path needs exactly 58
+  bytes, so a 58-byte frame is forwarded and a 57-byte one dropped. A bound
+  using the declared maximum would have demanded 134 and rejected both.
+* A length expression asking for more bits than the varbit field holds is
+  P4's **HeaderTooShort**, and the shell rejects the packet on the same wire
+  as `PacketTooShort` — the length field is nonsense, so every offset derived
+  from it is too. The randomised stimulus found this one: `tcp.dataOffset = 0`
+  makes `(dataOffset - 5) * 32` wrap to four billion bits, which the design
+  saturated at 40 bytes and then forwarded, having placed TCP options 40 bytes
+  past a header with none. `fiveTuple`'s own `verify(dataOffset >= 5)` sees the
+  same thing, but a `verify` only sets `parser_error` and that program never
+  reads it.
+
+**And the deviation is now diagnosed rather than silent.** A program carrying a
+length field that never consumes the variable region gets
+
+```
+[WARN] hdr.ipv4.ihl looks like a header-length field, but the parser extracts
+       hdr.tcp straight after hdr.ipv4 without consuming the variable region.
+       hdr.tcp is therefore placed at a FIXED offset, which is what P4
+       specifies -- so any packet whose ihl exceeds the fixed header size
+       (IPv4 with options) is parsed from the wrong bytes.
+```
+
+Across the whole tree it fires on exactly two apps, `load_balance_p4rtl` and
+`load_balance_xsa` — the only two that both build a top-level shell and extract
+a fixed header after one carrying a length field. Other apps carry an
+`ihl`/`hdr_len`, but either they stop at that header (nothing is placed
+wrongly) or they are v1model and module-level, so no layout is computed for
+them at all. The fix is in the P4, not the compiler. Side effect: dropping the invented worst case shrank
+`load_balance_xsa`'s header buffer from 96 bytes to 64.
 
 ### 7a. The pcap verification framework
 
@@ -579,8 +683,8 @@ approximates**, because an oracle that guesses and reports `PASS` is worse than
 no oracle. Anything it cannot represent faithfully stops the run and names the
 construct.
 
-**13 of the 17 p4rtl/xsa apps agree with the model over their own pcap.** The
-other four are refused, for reasons that are properties of the programs rather
+**15 of the 18 p4rtl/xsa apps agree with the model over their own pcap.** The
+other three are refused, for reasons that are properties of the programs rather
 than gaps to be papered over:
 
 | app | refused because |
@@ -588,7 +692,14 @@ than gaps to be papered over:
 | `ueprobe` | `UserExtern`'s RTL is user-supplied; its function is unknowable to a model |
 | `mdprobe` | a `Meter`'s debit bucket is implementation-defined, not a spec |
 | `mcprobe` | multicast turns one packet into several; the model is a per-packet function |
-| `fiveTuple` | `varbit` / runtime-length `extract` has no fixed layout to serialise |
+
+`fiveTuple` and `echo` used to be refused for `varbit`; the model now parses a
+runtime-length `extract` by evaluating its length expression and emits the
+field back at the length it was parsed with, so both are verified — and
+`fiveTuple`'s pcap drives the same 5-tuple with 0, 4 and 8 bytes of IPv4
+options plus TCP options, which is what tests the offsets. (The count was
+previously given as "13 of 17", which undercounted: `echo` is an xsa app and
+was not in the total at all.)
 
 What the framework **cannot** catch, stated because overstating it would be the
 dangerous part: it consumes the same IR the emitters consume, so a
@@ -634,7 +745,12 @@ actions follow with no per-program knowledge.
 |---|---|
 | Two keys folding to the same table index displaced each other | the documented `--exact-match-ways 1` limitation. Now its own `COLLISION` verdict, computed from the cp_map by `tablemap.py`, instead of a hex diff |
 | An LPM table picking the *shorter* prefix | **the reference model was wrong.** The cp_map states the contract plainly: "the hardware does not sort and does not compare prefix lengths — it returns the lowest matching index". The model now follows the design's documented contract, and `order_dependent()` warns when an entry order makes that disagree with the spec's longest-prefix rule |
-| A frame whose parser runs past its end being forwarded | **a real compiler gap.** There is no `PacketTooShort` check anywhere: the generated parser does not bound extraction by the received length, so headers are parsed from bytes that were never received. The spec rejects such packets. Reported as `SHORT-PACKET` |
+| A frame whose parser runs past its end being forwarded | **a real compiler gap**, fixed 2026-10-28: there was no `PacketTooShort` check anywhere, so headers were parsed from bytes that were never received. See §6d |
+| A packet with 4 bytes of IPv4 options going to the wrong next hop | **a real compiler gap**, fixed 2026-10-30: header offsets came from a field-NAME heuristic that silently skipped variable-length regions. See §6e. It needed a packet carrying an option to see, and no committed pcap had one |
+| A frame with `tcp.dataOffset = 0` being forwarded with garbage option offsets | **a real compiler gap**, fixed 2026-10-30: `HeaderTooShort` was not checked. See §6e |
+| A frame failing `verify()` being forwarded | **the reference model was wrong**, the second time this has happened. A failed `verify` sends the parser to `reject`, and what follows is *architecture*-defined: both v1model and `xsa.p4` hand the packet to ingress with `standard_metadata.parser_error` set and let the program decide. `smprobe.p4` is this project's own statement of that contract — `if (smeta.parser_error != error.NoError) { smeta.drop = 1; }`. The model dropped instead, which agreed with the design only for programs that check the field |
+| A frame too short for its FIRST extract being forwarded by three apps | **a real shell bug, introduced by the PacketTooShort fix itself.** The drop sites read the reject flag out of a register in the same cycle it was written, which only works when the match-action pipeline has at least one stage. See §6d |
+| `fiveTuple`'s table matching nothing at all | **the framework's own bug.** Every generated table runs a power-on clear sweep over all `DEPTH` addresses and silently drops a CP write that arrives during it. The vector testbench waited 8 cycles; `fiveTuple`'s table is 8192 deep, so every entry was thrown away. It now waits out the deepest table (`_cp_ready_cycles`). Latent for any table deeper than the lead-in — `load_balance`'s 64-deep `ecmp_group` only survived because writing one entry takes ~50 cycles. The table still offers the control plane no way to ask whether it is ready, which is a real gap |
 
 **And one result that corrected an assumption:** widening the traffic barely
 moves coverage. 150 random packets took `egprobe` from 83.1% to 83.6%. The
@@ -702,16 +818,16 @@ traffic manager.
 | Gap | Why |
 |---|---|
 | Dynamic header stacks (`hdr.x.next`, `.last`, `push_front`) | explicitly descoped |
-| Anything that **changes packet length** (`setValid` on a new header, header push) | the header/payload split is at a fixed beat boundary; needs a byte shifter |
 | `range` match kind | no demand; `exact`/`lpm`/`ternary` are what the emitters implement |
 | `clone`, `recirculate`, `resubmit` | need packet replication paths the shell does not have |
 | A v1model top-level shell | v1model apps stay module-level; new work targets P4RTL |
 | `switch (t.apply().action_run)` | **refused** since 2026-10-28 (exit 2). It used to be accepted and produce an INERT control block — table never applied, no arm run, `egress_port` only ever assigned its default, compiler reporting success. `switch (<value>)` IS supported, because p4c lowers that to a table. Support is tractable: p4test keeps the switch and lifts each arm into a hidden table, and `emit_processing` already dispatches per action id |
 
-That fifth row is worth knowing about: `p4rtl.p4` declares `Meter` and `Digest`
-but nothing compiles them. This breaks the architecture's own rule #3 and is a
-good first task — `Register<T,S>` was in exactly that state until recently and
-produced RTL that referenced undeclared signals.
+Two rows have been **removed** from that table because they are no longer
+true, and were contradicting the externs table above them: length-changing
+deparsing landed on 2026-10-03 (the TX shifter, `hdr_delta`/`tx_splice` — a
+program may add or remove a header, which is what `lenprobe` and `fiveTuple`
+exercise), and `Meter`/`Digest` were implemented on 2026-10-06.
 
 **Which real apps are still blocked, and by what** (surveyed, not assumed):
 
@@ -1047,17 +1163,40 @@ ten minutes on this tree.
 
 ## 11. Where to look next
 
-Ranked by value, with the reasoning:
+Ranked by value, with the reasoning. (The previous list is gone: its first,
+second and fifth items — length-changing deparser, `Meter`/`Digest`, a
+committed regression runner — are all done.)
 
-1. **Length-changing deparser.** The only remaining *structural* blocker for real
-   apps (`flowcache`, and half of `mri`/`link_monitor`). Needs a byte shifter in
-   the TX path.
-2. **`Meter` and `Digest`.** Declared in `p4rtl.p4` and not implemented, which
-   violates the architecture's own rule. `emit_counters.py` is the model.
-3. **Pipeline the `InternetChecksum` adder tree.** It is the critical path; this
+1. **Control-plane reads in the vector testbench.** The single biggest
+   measurable gap: **51% of the uncovered lines are the CP read, table-query
+   and delete path**, which no pcap can reach because the testbench only ever
+   *writes* entries and sends packets. Issuing reads and comparing the
+   readback against the model's table state is what moves coverage, and the
+   decoder is already described by the cp_map.
+2. **A readiness bit on each table.** A CP write that lands during a table's
+   power-on clear sweep is silently dropped and the table reports no hit, with
+   nothing to say it happened — found the hard way this session (§7a). The only
+   thing a writer can do today is wait out the deepest table. One status word
+   would make it answerable.
+3. **Support `switch (t.apply().action_run)`** rather than refusing it (§10).
+   p4test keeps the switch and lifts each arm into a hidden table, and
+   `emit_processing` already dispatches per action id.
+4. **A resource and timing regression.** Quartus numbers live in prose in these
+   docs; nothing fails if logic jumps 30% or Fmax drops below the DE2-115's
+   50 MHz. The board bring-up flow under `hw/de2-115/` is a working harness to
+   borrow.
+5. **Specify the `Meter` bucket, and model multicast.** Both are why `mdprobe`
+   and `mcprobe` are the apps the oracle still refuses. The Meter needs a
+   written-down semantics first; multicast's replication rule is already known,
+   so it is a model gap rather than a spec one.
+6. **Emit the URAM pragma.** `boards/vcu118.json` carries `uram_style_pragma`
+   and says in its own notes that no emitter reads it. On VU9P that is the
+   difference between a large table fitting and not.
+7. **Pipeline the `InternetChecksum` adder tree.** It is the critical path; this
    is what would take Fmax past ~70 MHz.
-4. **Collapse `valid_out` / `out_valid`.** Pure cleanup; touches ~10 testbenches.
-5. **A committed regression runner**, and CI if you want it.
+8. **Finish DE2-115 bring-up (step 3).** Steps 1 and 2 are compiled and
+   verified; step 3 is a P4RTL app on the board.
+9. **Collapse `valid_out` / `out_valid`.** Pure cleanup; touches ~10 testbenches.
 
 ### The history, if you need the reasoning
 

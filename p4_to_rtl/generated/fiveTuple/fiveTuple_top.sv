@@ -42,10 +42,10 @@ module fiveTuple_top #(
   localparam int BEAT_BYTES    = AXI_DATA_W / 8;  // 32
   localparam int MAX_PKT_BEATS = 256;
   localparam int MAX_PKT_BYTES = MAX_PKT_BEATS * BEAT_BYTES;  // 8192
-  localparam int HDR_MAX_BYTES = 128;
-  localparam int HDR_MAX_BEATS = 4;
-  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8064
-  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 252
+  localparam int HDR_MAX_BYTES = 160;
+  localparam int HDR_MAX_BEATS = 5;
+  localparam int PAYLOAD_MAX_BYTES = MAX_PKT_BYTES - HDR_MAX_BYTES;  // 8032
+  localparam int PAYLOAD_MAX_BEATS = PAYLOAD_MAX_BYTES / BEAT_BYTES;  // 251
 
   // ── Header slot ring ─────────────────────────────────────────────────────
   // NSLOT packets can be in flight at once. Each slot holds one packet's
@@ -241,15 +241,18 @@ module fiveTuple_top #(
     w_ipv4_dst = {x_hdr[w_ipv4_base+16], x_hdr[w_ipv4_base+17], x_hdr[w_ipv4_base+18], x_hdr[w_ipv4_base+19]};
   end
 
-  wire [13:0] w_ipv4_hdr_bytes = {10'b0, w_ipv4_hdr_len} << 2;
-  wire [13:0] w_ipv4opt_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [31:0] w_ipv4opt_varbits = 32'(w_ipv4_hdr_len) + 32'd4294967291 << 5;
+  wire [31:0] w_ipv4opt_varbytes_raw = (w_ipv4opt_varbits + 32'd7) >> 3;
+  wire [13:0] w_ipv4opt_varbytes = (w_ipv4opt_varbytes_raw > 32'd40) ? 14'd40 : w_ipv4opt_varbytes_raw[13:0];
+  wire w_ipv4opt_hdr_too_short = (w_ipv4opt_varbytes_raw > 32'd40) && (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))));
+  wire [13:0] w_ipv4opt_base = 34 + ((w_eth_type == 16'h8100) ? 4 : 0);
   // ipv4opt — base: w_ipv4opt_base
   logic [319:0] w_ipv4opt_options;
   always_comb begin
     w_ipv4opt_options = {x_hdr[w_ipv4opt_base], x_hdr[w_ipv4opt_base+1], x_hdr[w_ipv4opt_base+2], x_hdr[w_ipv4opt_base+3], x_hdr[w_ipv4opt_base+4], x_hdr[w_ipv4opt_base+5], x_hdr[w_ipv4opt_base+6], x_hdr[w_ipv4opt_base+7], x_hdr[w_ipv4opt_base+8], x_hdr[w_ipv4opt_base+9], x_hdr[w_ipv4opt_base+10], x_hdr[w_ipv4opt_base+11], x_hdr[w_ipv4opt_base+12], x_hdr[w_ipv4opt_base+13], x_hdr[w_ipv4opt_base+14], x_hdr[w_ipv4opt_base+15], x_hdr[w_ipv4opt_base+16], x_hdr[w_ipv4opt_base+17], x_hdr[w_ipv4opt_base+18], x_hdr[w_ipv4opt_base+19], x_hdr[w_ipv4opt_base+20], x_hdr[w_ipv4opt_base+21], x_hdr[w_ipv4opt_base+22], x_hdr[w_ipv4opt_base+23], x_hdr[w_ipv4opt_base+24], x_hdr[w_ipv4opt_base+25], x_hdr[w_ipv4opt_base+26], x_hdr[w_ipv4opt_base+27], x_hdr[w_ipv4opt_base+28], x_hdr[w_ipv4opt_base+29], x_hdr[w_ipv4opt_base+30], x_hdr[w_ipv4opt_base+31], x_hdr[w_ipv4opt_base+32], x_hdr[w_ipv4opt_base+33], x_hdr[w_ipv4opt_base+34], x_hdr[w_ipv4opt_base+35], x_hdr[w_ipv4opt_base+36], x_hdr[w_ipv4opt_base+37], x_hdr[w_ipv4opt_base+38], x_hdr[w_ipv4opt_base+39]};
   end
 
-  wire [13:0] w_tcp_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_tcp_base = 34 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? w_ipv4opt_varbytes : 0);
   // tcp — base: w_tcp_base
   logic [15:0] w_tcp_src_port;
   logic [15:0] w_tcp_dst_port;
@@ -274,14 +277,18 @@ module fiveTuple_top #(
     w_tcp_urgPtr = {x_hdr[w_tcp_base+18], x_hdr[w_tcp_base+19]};
   end
 
-  wire [13:0] w_tcpopt_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [31:0] w_tcpopt_varbits = 32'(w_tcp_dataOffset) + 32'd4294967291 << 5;
+  wire [31:0] w_tcpopt_varbytes_raw = (w_tcpopt_varbits + 32'd7) >> 3;
+  wire [13:0] w_tcpopt_varbytes = (w_tcpopt_varbytes_raw > 32'd40) ? 14'd40 : w_tcpopt_varbytes_raw[13:0];
+  wire w_tcpopt_hdr_too_short = (w_tcpopt_varbytes_raw > 32'd40) && (((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)));
+  wire [13:0] w_tcpopt_base = 54 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? w_ipv4opt_varbytes : 0);
   // tcpopt — base: w_tcpopt_base
   logic [319:0] w_tcpopt_options;
   always_comb begin
     w_tcpopt_options = {x_hdr[w_tcpopt_base], x_hdr[w_tcpopt_base+1], x_hdr[w_tcpopt_base+2], x_hdr[w_tcpopt_base+3], x_hdr[w_tcpopt_base+4], x_hdr[w_tcpopt_base+5], x_hdr[w_tcpopt_base+6], x_hdr[w_tcpopt_base+7], x_hdr[w_tcpopt_base+8], x_hdr[w_tcpopt_base+9], x_hdr[w_tcpopt_base+10], x_hdr[w_tcpopt_base+11], x_hdr[w_tcpopt_base+12], x_hdr[w_tcpopt_base+13], x_hdr[w_tcpopt_base+14], x_hdr[w_tcpopt_base+15], x_hdr[w_tcpopt_base+16], x_hdr[w_tcpopt_base+17], x_hdr[w_tcpopt_base+18], x_hdr[w_tcpopt_base+19], x_hdr[w_tcpopt_base+20], x_hdr[w_tcpopt_base+21], x_hdr[w_tcpopt_base+22], x_hdr[w_tcpopt_base+23], x_hdr[w_tcpopt_base+24], x_hdr[w_tcpopt_base+25], x_hdr[w_tcpopt_base+26], x_hdr[w_tcpopt_base+27], x_hdr[w_tcpopt_base+28], x_hdr[w_tcpopt_base+29], x_hdr[w_tcpopt_base+30], x_hdr[w_tcpopt_base+31], x_hdr[w_tcpopt_base+32], x_hdr[w_tcpopt_base+33], x_hdr[w_tcpopt_base+34], x_hdr[w_tcpopt_base+35], x_hdr[w_tcpopt_base+36], x_hdr[w_tcpopt_base+37], x_hdr[w_tcpopt_base+38], x_hdr[w_tcpopt_base+39]};
   end
 
-  wire [13:0] w_udp_base = w_ipv4_base + w_ipv4_hdr_bytes;
+  wire [13:0] w_udp_base = 34 + ((w_eth_type == 16'h8100) ? 4 : 0) + (((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? w_ipv4opt_varbytes : 0);
   // udp — base: w_udp_base
   logic [15:0] w_udp_src_port;
   logic [15:0] w_udp_dst_port;
@@ -311,9 +318,9 @@ module fiveTuple_top #(
   wire [13:0] w_eth_cutoff_term = 0 + 14;
   wire [13:0] w_vlan_cutoff_term = (w_eth_type == 16'h8100) ? (14 + 4) : 14'd0;
   wire [13:0] w_ipv4_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4_base + 20) : 14'd0;
-  wire [13:0] w_ipv4opt_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4opt_base + 40) : 14'd0;
+  wire [13:0] w_ipv4opt_cutoff_term = ((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) ? (w_ipv4opt_base + 0 + w_ipv4opt_varbytes) : 14'd0;
   wire [13:0] w_tcp_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_tcp_base + 20) : 14'd0;
-  wire [13:0] w_tcpopt_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_tcpopt_base + 40) : 14'd0;
+  wire [13:0] w_tcpopt_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h06)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_tcpopt_base + 0 + w_tcpopt_varbytes) : 14'd0;
   wire [13:0] w_udp_cutoff_term = ((((w_eth_type == 16'h0800) || ((w_eth_type == 16'h8100) && (w_vlan_tpid == 16'h0800))) && (w_ipv4_protocol == 8'h11)) && (w_ipv4_version == 4'd4 && w_ipv4_hdr_len >= 4'd5)) ? (w_udp_base + 8) : 14'd0;
   wire [13:0] w_cutoff_max_1 = (w_eth_cutoff_term > w_vlan_cutoff_term) ? w_eth_cutoff_term : w_vlan_cutoff_term;
   wire [13:0] w_cutoff_max_2 = (w_cutoff_max_1 > w_ipv4_cutoff_term) ? w_cutoff_max_1 : w_ipv4_cutoff_term;
@@ -856,14 +863,18 @@ module fiveTuple_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
-  // PacketTooShort is NOT checked in this design.
-  // ipv4opt, tcpopt are variable-length (varbit), so cutoff_byte
-  // below is the WORST-CASE header size, not the number of bytes this
-  // packet's parse path actually needs. Comparing a received length
-  // against an upper bound would reject valid packets, so the check is
-  // omitted here. An exact minimum-bytes expression using the real
-  // length fields would restore it; see emit_top.py.
-  wire iss_too_short = 1'b0;
+  wire iss_too_short = (slot_done[iss_slot]
+                        && (slot_byte_len[iss_slot] < cutoff_byte))
+                       || w_ipv4opt_hdr_too_short
+                       || w_tcpopt_hdr_too_short
+                       ;
+  // See the note in emit_top.py: a zero-latency pipeline issues and
+  // completes in one cycle, before slot_too_short[] has been written.
+  function automatic logic rejected(input [SLOT_AW-1:0] sl);
+    rejected = slot_too_short[sl]
+               || (iss_fire && (iss_slot == sl) && iss_too_short);
+  endfunction
+
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
@@ -887,7 +898,7 @@ module fiveTuple_top #(
     end else begin
       if (proc_out_valid) begin
         cmp_ptr <= cmp_ptr + 1'b1;
-        slot_drop[cmp_slot] <= proc_drop || slot_too_short[cmp_slot];
+        slot_drop[cmp_slot] <= proc_drop || rejected(cmp_slot);
         slot_hdr_delta[cmp_slot] <=
             (out_eth_valid ? 9'sd14 : 9'sd0) - (slot_in_valid_eth[cmp_slot] ? 9'sd14 : 9'sd0)
           + (out_new_vlan_valid ? 9'sd4 : 9'sd0) - (slot_in_valid_new_vlan[cmp_slot] ? 9'sd4 : 9'sd0)
@@ -1048,7 +1059,7 @@ module fiveTuple_top #(
       + (phv_new_vlan_valid ? 14'd4 : 14'd0);
 
   // ── Output header image (length-changing deparser) ──────────────────────
-  localparam int HDR_OUT_BYTES = 160;  // HDR_MAX_BYTES + max growth, beat-rounded
+  localparam int HDR_OUT_BYTES = 192;  // HDR_MAX_BYTES + max growth, beat-rounded
   logic [7:0] oimg [0:HDR_OUT_BYTES-1];
   // The shift, as a case over every achievable hdr_delta so that each
   // branch reads hdr_out at a CONSTANT offset, and each branch writes
@@ -1058,9 +1069,9 @@ module fiveTuple_top #(
   always_comb begin
     // 1. the original stream, shifted
     case (hdr_delta)
-      -9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 124) ? hdr_out[p + 4] : 8'h00;
-      9'sd0: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 128) ? hdr_out[p] : 8'h00;
-      9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p >= 4 && p < 132) ? hdr_out[p - 4] : 8'h00;
+      -9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 156) ? hdr_out[p + 4] : 8'h00;
+      9'sd0: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p < 160) ? hdr_out[p] : 8'h00;
+      9'sd4: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = (p >= 4 && p < 164) ? hdr_out[p - 4] : 8'h00;
       default: for (int p = 0; p < HDR_OUT_BYTES; p++) oimg[p] = 8'h00;
     endcase
     // 2. the headers that moved differently, at their OUTPUT offsets
@@ -1254,15 +1265,52 @@ module fiveTuple_top #(
     oflat[1263:1256] = oimg[157];
     oflat[1271:1264] = oimg[158];
     oflat[1279:1272] = oimg[159];
+    oflat[1287:1280] = oimg[160];
+    oflat[1295:1288] = oimg[161];
+    oflat[1303:1296] = oimg[162];
+    oflat[1311:1304] = oimg[163];
+    oflat[1319:1312] = oimg[164];
+    oflat[1327:1320] = oimg[165];
+    oflat[1335:1328] = oimg[166];
+    oflat[1343:1336] = oimg[167];
+    oflat[1351:1344] = oimg[168];
+    oflat[1359:1352] = oimg[169];
+    oflat[1367:1360] = oimg[170];
+    oflat[1375:1368] = oimg[171];
+    oflat[1383:1376] = oimg[172];
+    oflat[1391:1384] = oimg[173];
+    oflat[1399:1392] = oimg[174];
+    oflat[1407:1400] = oimg[175];
+    oflat[1415:1408] = oimg[176];
+    oflat[1423:1416] = oimg[177];
+    oflat[1431:1424] = oimg[178];
+    oflat[1439:1432] = oimg[179];
+    oflat[1447:1440] = oimg[180];
+    oflat[1455:1448] = oimg[181];
+    oflat[1463:1456] = oimg[182];
+    oflat[1471:1464] = oimg[183];
+    oflat[1479:1472] = oimg[184];
+    oflat[1487:1480] = oimg[185];
+    oflat[1495:1488] = oimg[186];
+    oflat[1503:1496] = oimg[187];
+    oflat[1511:1504] = oimg[188];
+    oflat[1519:1512] = oimg[189];
+    oflat[1527:1520] = oimg[190];
+    oflat[1535:1528] = oimg[191];
   end
 
   // header byte offsets over the stored PHV (same arithmetic as w_*_base)
   wire [13:0] phv_ipv4_base = 14 + (phv_in_valid_vlan ? 4 : 0);
-  wire [13:0] phv_ipv4_hdr_bytes = {10'b0, phv_ipv4_hdr_len} << 2;
-  wire [13:0] phv_ipv4opt_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
-  wire [13:0] phv_tcp_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
-  wire [13:0] phv_tcpopt_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
-  wire [13:0] phv_udp_base = phv_ipv4_base + phv_ipv4_hdr_bytes;
+  wire [31:0] phv_ipv4opt_varbits = 32'(phv_ipv4_hdr_len) + 32'd4294967291 << 5;
+  wire [31:0] phv_ipv4opt_varbytes_raw = (phv_ipv4opt_varbits + 32'd7) >> 3;
+  wire [13:0] phv_ipv4opt_varbytes = (phv_ipv4opt_varbytes_raw > 32'd40) ? 14'd40 : phv_ipv4opt_varbytes_raw[13:0];
+  wire [13:0] phv_ipv4opt_base = 34 + (phv_in_valid_vlan ? 4 : 0);
+  wire [13:0] phv_tcp_base = 34 + (phv_in_valid_vlan ? 4 : 0) + (phv_in_valid_ipv4opt ? phv_ipv4opt_varbytes : 0);
+  wire [31:0] phv_tcpopt_varbits = 32'(phv_tcp_dataOffset) + 32'd4294967291 << 5;
+  wire [31:0] phv_tcpopt_varbytes_raw = (phv_tcpopt_varbits + 32'd7) >> 3;
+  wire [13:0] phv_tcpopt_varbytes = (phv_tcpopt_varbytes_raw > 32'd40) ? 14'd40 : phv_tcpopt_varbytes_raw[13:0];
+  wire [13:0] phv_tcpopt_base = 54 + (phv_in_valid_vlan ? 4 : 0) + (phv_in_valid_ipv4opt ? phv_ipv4opt_varbytes : 0);
+  wire [13:0] phv_udp_base = 34 + (phv_in_valid_vlan ? 4 : 0) + (phv_in_valid_ipv4opt ? phv_ipv4opt_varbytes : 0);
 
   // ── Deparser: header-region assembly for slot tx_slot ────────────────────
   // Received bytes of the slot with its stored output PHV overlaid at each
@@ -1311,48 +1359,6 @@ module fiveTuple_top #(
         hdr_out[phv_ipv4_base+18] = phv_ipv4_dst[15:8];
         hdr_out[phv_ipv4_base+19] = phv_ipv4_dst[7:0];
     end
-    if (phv_ipv4opt_valid) begin
-        hdr_out[phv_ipv4opt_base] = phv_ipv4opt_options[319:312];
-        hdr_out[phv_ipv4opt_base+1] = phv_ipv4opt_options[311:304];
-        hdr_out[phv_ipv4opt_base+2] = phv_ipv4opt_options[303:296];
-        hdr_out[phv_ipv4opt_base+3] = phv_ipv4opt_options[295:288];
-        hdr_out[phv_ipv4opt_base+4] = phv_ipv4opt_options[287:280];
-        hdr_out[phv_ipv4opt_base+5] = phv_ipv4opt_options[279:272];
-        hdr_out[phv_ipv4opt_base+6] = phv_ipv4opt_options[271:264];
-        hdr_out[phv_ipv4opt_base+7] = phv_ipv4opt_options[263:256];
-        hdr_out[phv_ipv4opt_base+8] = phv_ipv4opt_options[255:248];
-        hdr_out[phv_ipv4opt_base+9] = phv_ipv4opt_options[247:240];
-        hdr_out[phv_ipv4opt_base+10] = phv_ipv4opt_options[239:232];
-        hdr_out[phv_ipv4opt_base+11] = phv_ipv4opt_options[231:224];
-        hdr_out[phv_ipv4opt_base+12] = phv_ipv4opt_options[223:216];
-        hdr_out[phv_ipv4opt_base+13] = phv_ipv4opt_options[215:208];
-        hdr_out[phv_ipv4opt_base+14] = phv_ipv4opt_options[207:200];
-        hdr_out[phv_ipv4opt_base+15] = phv_ipv4opt_options[199:192];
-        hdr_out[phv_ipv4opt_base+16] = phv_ipv4opt_options[191:184];
-        hdr_out[phv_ipv4opt_base+17] = phv_ipv4opt_options[183:176];
-        hdr_out[phv_ipv4opt_base+18] = phv_ipv4opt_options[175:168];
-        hdr_out[phv_ipv4opt_base+19] = phv_ipv4opt_options[167:160];
-        hdr_out[phv_ipv4opt_base+20] = phv_ipv4opt_options[159:152];
-        hdr_out[phv_ipv4opt_base+21] = phv_ipv4opt_options[151:144];
-        hdr_out[phv_ipv4opt_base+22] = phv_ipv4opt_options[143:136];
-        hdr_out[phv_ipv4opt_base+23] = phv_ipv4opt_options[135:128];
-        hdr_out[phv_ipv4opt_base+24] = phv_ipv4opt_options[127:120];
-        hdr_out[phv_ipv4opt_base+25] = phv_ipv4opt_options[119:112];
-        hdr_out[phv_ipv4opt_base+26] = phv_ipv4opt_options[111:104];
-        hdr_out[phv_ipv4opt_base+27] = phv_ipv4opt_options[103:96];
-        hdr_out[phv_ipv4opt_base+28] = phv_ipv4opt_options[95:88];
-        hdr_out[phv_ipv4opt_base+29] = phv_ipv4opt_options[87:80];
-        hdr_out[phv_ipv4opt_base+30] = phv_ipv4opt_options[79:72];
-        hdr_out[phv_ipv4opt_base+31] = phv_ipv4opt_options[71:64];
-        hdr_out[phv_ipv4opt_base+32] = phv_ipv4opt_options[63:56];
-        hdr_out[phv_ipv4opt_base+33] = phv_ipv4opt_options[55:48];
-        hdr_out[phv_ipv4opt_base+34] = phv_ipv4opt_options[47:40];
-        hdr_out[phv_ipv4opt_base+35] = phv_ipv4opt_options[39:32];
-        hdr_out[phv_ipv4opt_base+36] = phv_ipv4opt_options[31:24];
-        hdr_out[phv_ipv4opt_base+37] = phv_ipv4opt_options[23:16];
-        hdr_out[phv_ipv4opt_base+38] = phv_ipv4opt_options[15:8];
-        hdr_out[phv_ipv4opt_base+39] = phv_ipv4opt_options[7:0];
-    end
     if (phv_tcp_valid) begin
         hdr_out[phv_tcp_base] = phv_tcp_src_port[15:8];
         hdr_out[phv_tcp_base+1] = phv_tcp_src_port[7:0];
@@ -1374,48 +1380,6 @@ module fiveTuple_top #(
         hdr_out[phv_tcp_base+17] = phv_tcp_checksum[7:0];
         hdr_out[phv_tcp_base+18] = phv_tcp_urgPtr[15:8];
         hdr_out[phv_tcp_base+19] = phv_tcp_urgPtr[7:0];
-    end
-    if (phv_tcpopt_valid) begin
-        hdr_out[phv_tcpopt_base] = phv_tcpopt_options[319:312];
-        hdr_out[phv_tcpopt_base+1] = phv_tcpopt_options[311:304];
-        hdr_out[phv_tcpopt_base+2] = phv_tcpopt_options[303:296];
-        hdr_out[phv_tcpopt_base+3] = phv_tcpopt_options[295:288];
-        hdr_out[phv_tcpopt_base+4] = phv_tcpopt_options[287:280];
-        hdr_out[phv_tcpopt_base+5] = phv_tcpopt_options[279:272];
-        hdr_out[phv_tcpopt_base+6] = phv_tcpopt_options[271:264];
-        hdr_out[phv_tcpopt_base+7] = phv_tcpopt_options[263:256];
-        hdr_out[phv_tcpopt_base+8] = phv_tcpopt_options[255:248];
-        hdr_out[phv_tcpopt_base+9] = phv_tcpopt_options[247:240];
-        hdr_out[phv_tcpopt_base+10] = phv_tcpopt_options[239:232];
-        hdr_out[phv_tcpopt_base+11] = phv_tcpopt_options[231:224];
-        hdr_out[phv_tcpopt_base+12] = phv_tcpopt_options[223:216];
-        hdr_out[phv_tcpopt_base+13] = phv_tcpopt_options[215:208];
-        hdr_out[phv_tcpopt_base+14] = phv_tcpopt_options[207:200];
-        hdr_out[phv_tcpopt_base+15] = phv_tcpopt_options[199:192];
-        hdr_out[phv_tcpopt_base+16] = phv_tcpopt_options[191:184];
-        hdr_out[phv_tcpopt_base+17] = phv_tcpopt_options[183:176];
-        hdr_out[phv_tcpopt_base+18] = phv_tcpopt_options[175:168];
-        hdr_out[phv_tcpopt_base+19] = phv_tcpopt_options[167:160];
-        hdr_out[phv_tcpopt_base+20] = phv_tcpopt_options[159:152];
-        hdr_out[phv_tcpopt_base+21] = phv_tcpopt_options[151:144];
-        hdr_out[phv_tcpopt_base+22] = phv_tcpopt_options[143:136];
-        hdr_out[phv_tcpopt_base+23] = phv_tcpopt_options[135:128];
-        hdr_out[phv_tcpopt_base+24] = phv_tcpopt_options[127:120];
-        hdr_out[phv_tcpopt_base+25] = phv_tcpopt_options[119:112];
-        hdr_out[phv_tcpopt_base+26] = phv_tcpopt_options[111:104];
-        hdr_out[phv_tcpopt_base+27] = phv_tcpopt_options[103:96];
-        hdr_out[phv_tcpopt_base+28] = phv_tcpopt_options[95:88];
-        hdr_out[phv_tcpopt_base+29] = phv_tcpopt_options[87:80];
-        hdr_out[phv_tcpopt_base+30] = phv_tcpopt_options[79:72];
-        hdr_out[phv_tcpopt_base+31] = phv_tcpopt_options[71:64];
-        hdr_out[phv_tcpopt_base+32] = phv_tcpopt_options[63:56];
-        hdr_out[phv_tcpopt_base+33] = phv_tcpopt_options[55:48];
-        hdr_out[phv_tcpopt_base+34] = phv_tcpopt_options[47:40];
-        hdr_out[phv_tcpopt_base+35] = phv_tcpopt_options[39:32];
-        hdr_out[phv_tcpopt_base+36] = phv_tcpopt_options[31:24];
-        hdr_out[phv_tcpopt_base+37] = phv_tcpopt_options[23:16];
-        hdr_out[phv_tcpopt_base+38] = phv_tcpopt_options[15:8];
-        hdr_out[phv_tcpopt_base+39] = phv_tcpopt_options[7:0];
     end
     if (phv_udp_valid) begin
         hdr_out[phv_udp_base] = phv_udp_src_port[15:8];

@@ -68,9 +68,10 @@ class Result:
         self.records = records            # [(feature_export_name, value)]
         self.dropped = dropped
         # True when the PARSER ran out of bytes (P4's PacketTooShort), as
-        # distinct from the program choosing to drop. The generated design does
-        # not implement PacketTooShort, so the two legitimately differ there
-        # and the framework has to be able to say which kind of drop this was.
+        # distinct from the program choosing to drop. The design implements
+        # PacketTooShort since 2026-10-28, so the two now agree -- the flag is
+        # kept because the framework still reports WHICH kind of drop this was,
+        # and because a divergence here is the most interesting kind.
         self.truncated = truncated
 
 
@@ -119,6 +120,9 @@ class _State:
         self.records = []
         self.payload = b''
         self.parsed_bytes = 0
+        # (inst, field) -> the runtime width a varbit field was parsed with,
+        # so the deparser can emit exactly those bytes back.
+        self.varbit_bits = {}
 
 
 class Model:
@@ -152,6 +156,7 @@ class Model:
         self.deparse_order = list(ir.pipeline.deparser.emit_list) if ir.pipeline.deparser else []
         self.last_match_order = None
         self.hit_truncation = False
+        self.order_unchecked = []
         self.registers = {}
         for c in (self.ctrl, self.ectrl):
             for r in (getattr(c, 'registers', []) or []) if c else []:
@@ -210,6 +215,22 @@ class Model:
                 return f.width
         raise Unsupported(f'unknown field hdr.{inst}.{field}')
 
+    def fixed_bytes(self, inst):
+        """Bytes of this header's fixed fields -- its size NOT counting varbit."""
+        h = self.inst[inst]
+        bits = sum(f.width for f in h.header_type.fields if not f.is_varbit)
+        if bits % 8:
+            raise Unsupported(
+                f'the fixed part of header {inst!r} is {bits} bits, not a byte '
+                f'multiple -- the byte-stream model cannot place it')
+        return bits // 8
+
+    def varbit_max_bytes(self, inst):
+        """Bytes this header's varbit fields can hold at most."""
+        h = self.inst[inst]
+        bits = sum(f.width for f in h.header_type.fields if f.is_varbit)
+        return (bits + 7) // 8
+
     def header_bytes(self, inst):
         h = self.inst[inst]
         bits = sum(f.width for f in h.header_type.fields)
@@ -222,6 +243,7 @@ class Model:
     # ---------------- the run ----------------
     def run(self, packet, entries, ingress_port=0, timestamp=0):
         self.hit_truncation = False
+        self.order_unchecked = []
         st = _State()
         st.std = {k: 0 for k in self.std_widths}
         if 'ingress_port' in st.std:
@@ -309,14 +331,33 @@ class Model:
                 raise Unsupported(f'parser transitions to unknown state {state!r}')
             for ex in ps.extracts:
                 if ex.dynamic:
-                    raise Unsupported(
-                        f'extract(hdr.{ex.header}) with a runtime length is not modelled')
-                nb = self.header_bytes(ex.header)
+                    # extract(hdr.X, <length in bits>): the length is an
+                    # expression over fields already parsed, so it is
+                    # evaluated here, against the state as it stands.
+                    if not ex.length_expr:
+                        raise Unsupported(
+                            f'extract(hdr.{ex.header}) is variable-length but '
+                            f'the front end recorded no length expression')
+                    bits, _ = Evaluator(_Env(self, st, {})).eval(ex.length_expr)
+                    if bits % 8:
+                        raise Unsupported(
+                            f'extract(hdr.{ex.header}) asks for {bits} bits, '
+                            f'which is not a whole number of bytes')
+                    vb = bits // 8
+                    if vb > self.varbit_max_bytes(ex.header):
+                        # P4's HeaderTooShort: the length exceeds what the
+                        # varbit field was declared to hold, and the parser
+                        # rejects. The design saturates the same offset at the
+                        # declared maximum, so it drops the packet too.
+                        return False
+                    nb = self.fixed_bytes(ex.header) + vb
+                else:
+                    nb = self.header_bytes(ex.header)
                 if off + nb > len(packet):
                     # P4's PacketTooShort: extract() needs more bytes than the
-                    # packet has, the parser rejects, and in v1model the packet
-                    # is dropped. Flagged separately because the generated
-                    # design has no such check -- see the note on Result.
+                    # packet has, so the parser rejects and the architecture
+                    # discards the packet -- which the design now does too,
+                    # see the note on Result.
                     self.hit_truncation = True
                     return False
                 self._place(st, ex.header, packet[off:off+nb])
@@ -325,10 +366,30 @@ class Model:
             env = _Env(self, st, {})
             ev = Evaluator(env)
             for vf in ps.verifies:
-                cond, _err = _split_verify_args(vf.condition)
+                cond, err = _split_verify_args(vf.condition)
                 v, _ = ev.eval(cond)
                 if not v:
-                    return False
+                    # A failed verify() sends the parser to `reject`, and what
+                    # happens then is ARCHITECTURE-defined, not spec-defined.
+                    # Both v1model and xsa.p4 hand the packet to ingress with
+                    # standard_metadata.parser_error set and let the PROGRAM
+                    # decide -- smprobe.p4 is the project's own demonstration
+                    # of that contract: `if (smeta.parser_error !=
+                    # error.NoError) { smeta.drop = 1; }`.
+                    #
+                    # This model used to drop the packet here instead, which
+                    # agreed with the design only for programs that check
+                    # parser_error. The randomised stimulus caught it the first
+                    # time fiveTuple could be modelled at all: one frame with
+                    # tcp.dataOffset = 0, model dropping it, design forwarding
+                    # it with parser_error = 9, exactly as v1model would.
+                    #
+                    # Parsing STOPS, so headers the parser had already
+                    # extracted stay valid and later ones never appear.
+                    if 'parser_error' in st.std and err is not None:
+                        ecode, _ = Evaluator(env).eval(err)
+                        st.std['parser_error'] = ecode
+                    return True
             if ps.select is not None:
                 key, kw = ev.eval(ps.select.expression)
                 nxt = None
@@ -345,13 +406,28 @@ class Model:
         return state != 'reject'
 
     def _place(self, st, inst, raw):
-        """Deserialise a header's fields MSB-first out of `raw`."""
+        """Deserialise a header's fields MSB-first out of `raw`.
+
+        A varbit field takes whatever is left of `raw` after the fixed fields
+        -- its actual, runtime length -- and both the value and that length
+        are kept, because the deparser has to emit exactly those bytes back.
+        A varbit is the LAST field of its header in every program here; one
+        that is followed by more fields would need the remaining fixed widths
+        subtracted first, so that case is refused rather than mis-placed."""
         acc = int.from_bytes(raw, 'big')
         total = len(raw) * 8
         pos = total
-        for f in self.inst[inst].header_type.fields:
+        fields = self.inst[inst].header_type.fields
+        for i, f in enumerate(fields):
             if f.is_varbit:
-                raise Unsupported(f'varbit field in hdr.{inst}')
+                if i != len(fields) - 1:
+                    raise Unsupported(
+                        f'varbit field hdr.{inst}.{f.name} is followed by more '
+                        f'fields; only a trailing varbit is modelled')
+                st.hdr[inst][f.name] = acc & ((1 << pos) - 1) if pos else 0
+                st.varbit_bits[(inst, f.name)] = pos
+                pos = 0
+                continue
             pos -= f.width
             st.hdr[inst][f.name] = (acc >> pos) & ((1 << f.width) - 1)
         st.valid[inst] = True
@@ -376,13 +452,13 @@ class Model:
             cond = s.condition
             for m in re.finditer(r'(\w+)\.apply\(\)\.(hit|miss)', s.condition):
                 tname, which = m.group(1), m.group(2)
-                hit = self._apply_table(tname, ctrl, st, entries)
+                hit = self._apply_table(tname, ctrl, st, entries, scope)
                 truth = hit if which == 'hit' else (not hit)
                 cond = cond.replace(m.group(0), "1'd1" if truth else "1'd0")
             v, _ = Evaluator(_Env(self, st, scope)).eval(cond)
             self._exec_block(s.then_body if v else s.else_body, ctrl, st, entries, scope)
         elif isinstance(s, TableApply):
-            self._apply_table(s.table_name, ctrl, st, entries)
+            self._apply_table(s.table_name, ctrl, st, entries, scope)
         elif isinstance(s, Assignment):
             self._assign(st, scope, s.lhs, s.rhs)
         elif isinstance(s, ExternCall):
@@ -392,12 +468,12 @@ class Model:
         else:
             raise Unsupported(f'statement type {type(s).__name__} is not modelled')
 
-    def _apply_table(self, name, ctrl, st, entries):
+    def _apply_table(self, name, ctrl, st, entries, scope=None):
         """Apply one table. Returns True if an entry matched (its `.hit`)."""
         t = self.tables.get(name)
         if t is None:
             raise Unsupported(f'apply of unknown table {name!r}')
-        row = self._match(t, st, entries.get(name, []))
+        row = self._match(t, st, entries.get(name, []), scope)
         if row is None:
             dflt = t.default_action
             if dflt not in (None, 'NoAction'):
@@ -406,8 +482,13 @@ class Model:
         self._run_action(row.action, row.params, ctrl, st, entries)
         return True
 
-    def _match(self, t, st, rows):
-        env = _Env(self, st, {})
+    def _match(self, t, st, rows, scope=None):
+        # The key expressions are evaluated in the APPLYING CONTROL'S scope,
+        # not a fresh one: a key can be a control-local variable the apply
+        # block computed (fiveTuple keys on table_key_sport, assigned from
+        # whichever of udp/tcp is valid), and resolving those names needs the
+        # same scope the assignments went into.
+        env = _Env(self, st, scope if scope is not None else {})
         kvals = []
         for k in t.keys:
             v, w = Evaluator(env).eval(k.field)
@@ -472,6 +553,7 @@ class Model:
         specific entry first. Reported so it is a sentence, not a hex diff.
         """
         out = []
+        self.order_unchecked = []
         for tname, rows in (entries or {}).items():
             t = self.tables.get(tname)
             if t is None or not any(k.match_type in ('lpm', 'ternary') for k in t.keys):
@@ -487,7 +569,15 @@ class Model:
                 st.hdr[inst] = {f.name: 0 for f in self.inst[inst].header_type.fields}
             self._parse(st, packet)
             self.last_match_order = None
-            self._match(t, st, rows)
+            try:
+                self._match(t, st, rows)
+            except Unsupported as e:
+                # Keyed on something only the control knows (a local variable
+                # assigned in the apply block). Order dependence cannot be
+                # judged from the packet alone, so say so instead of skipping
+                # silently.
+                self.order_unchecked.append((tname, str(e)))
+                continue
             m = self.last_match_order
             if m and len(m) > 1:
                 by_index = m[0]
@@ -670,10 +760,13 @@ class Model:
                 continue
             acc, bits = 0, 0
             for f in self.inst[inst].header_type.fields:
-                if f.is_varbit:
-                    raise Unsupported(f'varbit field in emitted hdr.{inst}')
-                acc = (acc << f.width) | (st.hdr[inst][f.name] & ((1 << f.width) - 1))
-                bits += f.width
+                # A varbit is emitted at the length it was PARSED with, which
+                # is what P4 says and what the design does by leaving those
+                # received bytes in place (it has no write-back for them).
+                w = (st.varbit_bits.get((inst, f.name), 0) if f.is_varbit
+                     else f.width)
+                acc = (acc << w) | (st.hdr[inst][f.name] & ((1 << w) - 1))
+                bits += w
             if bits % 8:
                 raise Unsupported(f'emitted header {inst!r} is {bits} bits, not whole bytes')
             out += acc.to_bytes(bits // 8, 'big')

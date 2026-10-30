@@ -658,8 +658,16 @@ module egprobe_top #(
   wire iss_allocated = iss_behind_wr || ((iss_ptr == wr_ptr) && rx_active);
   wire iss_hdr_ready = (slot_beat_cnt[iss_slot] * BEAT_BYTES >= cutoff_byte) || slot_done[iss_slot];
   assign iss_fire = iss_allocated && iss_hdr_ready;
-  wire iss_too_short = slot_done[iss_slot]
-                       && (slot_byte_len[iss_slot] < cutoff_byte);
+  wire iss_too_short = (slot_done[iss_slot]
+                        && (slot_byte_len[iss_slot] < cutoff_byte))
+                       ;
+  // See the note in emit_top.py: a zero-latency pipeline issues and
+  // completes in one cycle, before slot_too_short[] has been written.
+  function automatic logic rejected(input [SLOT_AW-1:0] sl);
+    rejected = slot_too_short[sl]
+               || (iss_fire && (iss_slot == sl) && iss_too_short);
+  endfunction
+
   always_ff @(posedge clk) begin
     if (!rst_n) iss_ptr <= '0;
     else if (iss_fire) begin
@@ -681,7 +689,7 @@ module egprobe_top #(
     end else begin
       if (proc_out_valid) begin
         ig_ptr <= ig_ptr + 1'b1;
-        slot_drop[ig_slot] <= proc_drop || slot_too_short[ig_slot];
+        slot_drop[ig_slot] <= proc_drop || rejected(ig_slot);
         slot_phv_eth_valid[ig_slot] <= out_eth_valid;
         slot_phv_eth_dst[ig_slot] <= out_eth_dst;
         slot_phv_eth_src[ig_slot] <= out_eth_src;
@@ -690,7 +698,7 @@ module egprobe_top #(
         slot_std_meta_egress_port[ig_slot] <= ig_out_std_meta_egress_port;
       end
       if (eg_out_valid) begin
-        slot_drop[cmp_slot] <= eg_drop || slot_too_short[cmp_slot];
+        slot_drop[cmp_slot] <= eg_drop || rejected(cmp_slot);
         slot_phv_eth_valid[cmp_slot] <= eg_out_eth_valid;
         slot_phv_eth_dst[cmp_slot] <= eg_out_eth_dst;
         slot_phv_eth_src[cmp_slot] <= eg_out_eth_src;

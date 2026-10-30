@@ -368,17 +368,21 @@ def main(argv=None):
     pcapmod.write_pcap(os.path.join(work, 'expected.pcap'), expected)
     pcapmod.write_pcap(os.path.join(work, 'actual.pcap'), actual)
     verdict, detail = compare(expected, actual)
-    # A packet the model dropped for PacketTooShort, which the design forwards
-    # because it implements no such check, is a known difference between the
-    # two -- not a datapath mismatch. Reported on its own so it neither hides a
-    # real failure nor masquerades as one.
+    # This used to be the expected outcome for any pcap containing a frame that
+    # runs the parser past its end: the model dropped it, the design had no
+    # PacketTooShort check and forwarded it. The design implements the check
+    # now, so reaching this branch means the check has been LOST -- the shape
+    # is unmistakable (every extra output packet is one the model rejected as
+    # too short), so it is still detected, and named as a regression rather
+    # than as a known difference.
     if verdict == 'FAIL' and n_short and len(actual) == len(expected) + n_short:
         verdict = 'SHORT-PACKET'
         detail = (f'{n_short} packet(s) ran the parser past the end of the frame. '
-                  f'The P4 specification rejects those (PacketTooShort) and this '
-                  f'model drops them; the generated design has no such check and '
-                  f'forwards them, having parsed header fields from bytes that '
-                  f'were never received. Everything else matched.')
+                  f'The P4 specification rejects those (PacketTooShort), this '
+                  f'model drops them, and so should the design -- it forwarded '
+                  f'them instead, having parsed header fields from bytes that '
+                  f'were never received. Everything else matched, so the '
+                  f'short-packet check has regressed; see docs §6d.')
     print(f'{a.app}: {verdict} -- {detail}')
     if a.keep or verdict not in ('PASS',):
         print(f'  artifacts: {work}  (expected.pcap, actual.pcap, in.vec, entries.cp)')

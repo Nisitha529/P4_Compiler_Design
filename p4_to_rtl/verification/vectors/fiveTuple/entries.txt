@@ -1,0 +1,5 @@
+# fiveTuple: the same 5-tuple with 0, 4 and 8 bytes of IPv4 options and with TCP options, so the varbit lengths have to be right for the table to match; the 58/57-byte boundary of the exact PacketTooShort bound; a frame whose tcp.dataOffset asks for more option bytes than the varbit holds (HeaderTooShort); plus the UDP arm, a miss, a non-IPv4 frame and a truncated one
+# Regenerate with verification/vectors/make_vectors.py
+table_add FiveTuple InsertVLAN 0x0A000101 0x0A000205 0x06 0x0457 0x0050 => 0 1 0 100
+table_add FiveTuple InsertVLAN 0x0A000101 0x0A000205 0x11 0x0035 0x0035 => 1 2 0 200
+run_traffic traffic

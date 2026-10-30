@@ -1,4 +1,4 @@
-# load_balance_xsa: three flows that hash across two next hops, one address outside the prefix, a non-IPv4 frame, and one frame that ends before its TCP header (PacketTooShort); the IPv4 checksum is recomputed for each (XSA architecture)
+# load_balance_xsa: three flows that hash across two next hops, one address outside the prefix, a non-IPv4 frame, one frame that ends before its TCP header (PacketTooShort) and one carrying IPv4 options (which this program does not extract, so P4 reads them as its TCP header); the IPv4 checksum is recomputed for each (XSA architecture)
 # Regenerate with verification/vectors/make_vectors.py
 # ecmp_group is an LPM table: 10.0.2.0/24 spreads over two next hops
 table_add ecmp_group set_ecmp_select 0x0A000200/24 => 0 1

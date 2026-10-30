@@ -1,6 +1,6 @@
 {
   "app": "fiveTuple",
-  "compiler_git": "009320a-dirty",
+  "compiler_git": "88ec25f-dirty",
   "axi_data_width": 256,
   "clock_hz": null,
   "axil": {
