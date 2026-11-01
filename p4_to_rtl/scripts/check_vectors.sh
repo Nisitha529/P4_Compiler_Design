@@ -27,9 +27,14 @@ for d in "$V"/*/; do
   [ -f "$d/traffic.pcap" ] || continue
   flags=""
   [ -f "$d/flags.txt" ] && flags=$(cat "$d/flags.txt")
+  # in_port.txt: the ingress_port this app's traffic arrives on. Only mcprobe
+  # needs it -- its egress drops any copy whose egress_port equals the ingress
+  # port, so at port 0 half its replication cases are invisible.
+  inport=""
+  [ -f "$d/in_port.txt" ] && inport=$(cat "$d/in_port.txt")
   out=$(cd "$R" && timeout 1800 python3 verification/framework/p4v.py "$app" \
           --pcap "$d/traffic.pcap" --testcase "$d/entries.txt" \
-          ${flags:+--gen-flags "$flags"} --quiet 2>&1)
+          ${flags:+--gen-flags "$flags"} ${inport:+--in-port "$inport"} --quiet 2>&1)
   line=$(echo "$out" | grep -E "PASS|FAIL|NOT VERIFIED|VACUOUS|REORDERED" | head -1)
   case "$line" in
     *PASS*) echo "ok   $line" ;;

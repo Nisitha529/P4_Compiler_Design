@@ -43,6 +43,7 @@ from refmodel import Model, Entry                        # noqa: E402
 from expr import Unsupported                             # noqa: E402
 from emit_vector_tb import emit_vector_tb, PortError     # noqa: E402
 from p4v import cp_writes, model_entries, run_sim, compare   # noqa: E402
+from p4v import compare_by_queue, _meta_ports              # noqa: E402
 from tablemap import collisions                              # noqa: E402
 
 
@@ -141,7 +142,16 @@ def make_entries(rng, model, cpmap, packets, hit_fraction=0.7):
         raw[tname] = [r for r in raw[tname] if r is not drop]
         if not raw[tname]:
             del raw[tname]
-    return raw
+    # Random member masks for the replication table, if the program has one.
+    # Without this a multicast program is fuzzed only on its unicast FALLBACK
+    # path -- mcast_group gets set, every group is empty, and the shell sends
+    # one copy. The replication the app exists to exercise never runs.
+    mcast = {}
+    if cpmap.get('mcast'):
+        for grp in range(1, model.mcast_groups):
+            if rng.random() < 0.6:
+                mcast[grp] = rng.randrange(1 << model.qcount)
+    return raw, mcast
 
 
 # ── one case ─────────────────────────────────────────────────────────────────
@@ -166,35 +176,53 @@ class Harness:
             os.path.join(self.gen, x) for x in os.listdir(self.gen)
             if x.endswith('.sv') and '_pkg' not in x and 'selftest' not in x)
 
-    def run(self, packets, raw):
+    def run(self, packets, raw, mcast=None):
         """(verdict, detail) for one packet set and entry set."""
         ments = model_entries(raw, self.cpmap)
-        expected = []
+        self.model.mcast_members = dict(mcast or {})
+        expected, expected_q = [], []
         for p in packets:
             r = self.model.run(p, ments)
-            if r.out_packet is not None:
-                expected.append(r.out_packet)
+            # One entry per COPY: a multicast program produces several outputs
+            # per input, and the campaign has to expect all of them.
+            for port, out in r.out_packets:
+                expected.append(out)
+                expected_q.append((port, out))
         vec_in = os.path.join(self.work, 'in.vec')
         vec_out = os.path.join(self.work, 'out.vec')
         tbl = os.path.join(self.work, 'entries.cp')
         pcapmod.write_vector(vec_in, packets)
         with open(tbl, 'w') as f:
-            for addr, data in cp_writes(raw, self.cpmap):
+            for addr, data in cp_writes(raw, self.cpmap, mcast):
                 f.write(f'{addr} {data:08x}\n')
         if os.path.exists(vec_out):
             os.remove(vec_out)
+        meta_out = os.path.join(self.work, 'meta.txt')
+        if os.path.exists(meta_out):
+            os.remove(meta_out)
         run_sim(self.app, self.gen, self.tb, self.files, self.work,
-                {'vec_in': vec_in, 'vec_out': vec_out, 'tbl': tbl},
+                {'vec_in': vec_in, 'vec_out': vec_out, 'tbl': tbl,
+                 'meta_out': meta_out},
                 self.sim, self.axi_w // 8)
         actual = pcapmod.read_vector(vec_out) if os.path.exists(vec_out) else []
-        return compare(expected, actual)
+        verdict, detail = compare(expected, actual)
+        # A replicating program spreads its copies over queues, and the
+        # round-robin scheduler interleaves them with the next packet's -- so
+        # a global compare can only report REORDERED. Per queue is the
+        # guarantee the hardware makes; see compare_by_queue in p4v.py.
+        if verdict in ('REORDERED', 'FAIL') and self.model.does_mcast:
+            ports = _meta_ports(meta_out)
+            if ports is not None and len(ports) == len(actual):
+                verdict, detail = compare_by_queue(expected_q,
+                                                   list(zip(ports, actual)))
+        return verdict, detail
 
 
-def shrink(h, packets, raw):
+def shrink(h, packets, raw, mcast=None):
     """A minimal case that still fails: bisect the packets, then drop entries."""
     def fails(ps, rw):
         try:
-            v, _ = h.run(ps, rw)
+            v, _ = h.run(ps, rw, mcast)
         except Exception:
             return False
         return v not in ('PASS', 'VACUOUS')
@@ -290,9 +318,9 @@ def main(argv=None):
             print(f'  iteration {it}: could not generate {a.packets} '
                   f'non-truncated frame(s); use --truncated to allow them')
             break
-        raw = make_entries(rng, h.model, h.cpmap, packets)
+        raw, mcast = make_entries(rng, h.model, h.cpmap, packets)
         try:
-            verdict, detail = h.run(packets, raw)
+            verdict, detail = h.run(packets, raw, mcast)
         except Unsupported as u:
             print(f'  iteration {it}: NOT VERIFIED -- {u}')
             return 3
@@ -303,8 +331,8 @@ def main(argv=None):
             continue
         print(f'\n  iteration {it}: {verdict} -- {detail}')
         print('  shrinking...')
-        packets, raw = shrink(h, packets, raw)
-        v2, d2 = h.run(packets, raw)
+        packets, raw = shrink(h, packets, raw, mcast)
+        v2, d2 = h.run(packets, raw, mcast)
         bad_pcap = os.path.join(work, 'failing.pcap')
         pcapmod.write_pcap(bad_pcap, packets)
         with open(os.path.join(work, 'failing.txt'), 'w') as f:
@@ -314,6 +342,11 @@ def main(argv=None):
             # lengths and ternary masks, so the "minimal reproducer" did not
             # reproduce -- which is worse than no reproducer, because it sends
             # you looking for the difference in the wrong place.
+            for grp, mask in sorted(mcast.items()):
+                # Same discipline as the key forms below: a reproducer missing
+                # the multicast member masks would send one copy where the
+                # failing run sent several.
+                f.write(f'mcast_add {grp} {mask:#x}\n')
             for t, rows in raw.items():
                 for r in rows:
                     parts = []

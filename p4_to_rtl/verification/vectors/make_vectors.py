@@ -249,6 +249,40 @@ SPEC['load_balance_xsa'] = (SPEC['load_balance_p4rtl'][0],
                             SPEC['load_balance_p4rtl'][1],
                             SPEC['load_balance_p4rtl'][2] + ' (XSA architecture)')
 
+SPEC['mcprobe'] = (
+    # Every packet here arrives on ingress_port 1 (IN_PORT below), which is what
+    # makes the loop-prune and the empty-group fallback both visible.
+    [pad_to(eth(0x0001, b''), 64),      # group 1: queues 1,2,3 -> the q1 copy is
+                                        # loop-pruned, q2 and q3 must still come
+                                        # out, which is what proves a per-copy
+                                        # drop does not poison the ones after it
+     pad_to(eth(0x0002, b''), 64),      # group 2: queues 0,1,2 -> q1 pruned, so
+                                        # the surviving copies STRADDLE the
+                                        # pruned one
+     pad_to(eth(0x0003, b''), 64),      # group 3 has NO members: the shell falls
+                                        # back to ONE unicast copy on egress_port
+                                        # (0), which survives at ingress_port 1.
+                                        # v1model would have produced no copies
+                                        # at all -- see _mcast_copies
+     pad_to(eth(0x0004, b''), 64),      # plain unicast to port 2
+     pad_to(eth(0x1234, b''), 64)],     # matches nothing: egress_port stays 0
+    """table_add l2 mcast 0x0001 => 1
+table_add l2 mcast 0x0002 => 2
+table_add l2 mcast 0x0003 => 3
+table_add l2 fwd 0x0004 => 2
+table_add port_smac set_smac 0 => 0xAA0000000000
+table_add port_smac set_smac 1 => 0xAA0000000001
+table_add port_smac set_smac 2 => 0xAA0000000002
+table_add port_smac set_smac 3 => 0xAA0000000003
+# member masks are over the traffic manager's QUEUES, not ports
+mcast_add 1 0b1110
+mcast_add 2 0b0111
+mcast_add 3 0b0000
+""",
+    'one packet per replication case: a three-member group, a group one of '
+    'whose copies is loop-pruned, an empty group, a plain unicast, and a miss')
+
+
 # ── The two programs with variable-length (varbit) headers ──────────────────
 # These are the reason the framework can model varbit at all. Both extract an
 # IPv4 options header with a runtime length, so unlike load_balance above they
@@ -346,6 +380,13 @@ SPEC['echo'] = (
 # same core either way.
 FLAGS = {'qdprobe': '--nslot 8'}
 
+# The ingress_port every packet in this app's pcap arrives on (0 if absent).
+# mcprobe needs a NON-zero one: its egress loop-prune drops any copy whose
+# egress_port equals ingress_port, so at port 0 the cases that land on port 0 --
+# the empty-group fallback and the table miss -- are invisible, and the model
+# would agree with the design for the wrong reason.
+IN_PORT = {'mcprobe': 1}
+
 
 def main():
     for app, (packets, entries, note) in sorted(SPEC.items()):
@@ -363,6 +404,9 @@ def main():
         if app in FLAGS:
             with open(os.path.join(d, 'flags.txt'), 'w') as f:
                 f.write(FLAGS[app] + '\n')
+        if app in IN_PORT:
+            with open(os.path.join(d, 'in_port.txt'), 'w') as f:
+                f.write(str(IN_PORT[app]) + '\n')
         print(f'{app:22s} {len(packets)} packet(s), '
               f'{sum(1 for l in entries.splitlines() if l.startswith("table_add"))} entry/entries'
               f'  -- {note}')

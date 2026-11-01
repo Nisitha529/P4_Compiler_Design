@@ -53,12 +53,18 @@ class TestcaseError(Exception):
 
 def parse_testcase(path):
     """`table_add <table> <action> <k0> <k1> => <p0> <p1>` lines, plus
-    `run_traffic <name>` (accepted and ignored: the pcap is given on the
-    command line). Keys may be <value>, <value>/<prefix_len> for lpm, or
-    <value>&<mask> for ternary; `priority=<n>` sets a ternary priority."""
-    entries, traffic = {}, []
+    `mcast_add <group> <member-mask>` and `run_traffic <name>` (the latter
+    accepted and ignored: the pcap is given on the command line). Keys may be
+    <value>, <value>/<prefix_len> for lpm, or <value>&<mask> for ternary;
+    `priority=<n>` sets a ternary priority.
+
+    `mcast_add 1 0b0110` programs multicast group 1 with queues 1 and 2 as
+    members -- the mask is over the traffic manager's QUEUES, which is what
+    the shell's replication table holds. It goes to the model and to the
+    hardware from this one line, like every table entry."""
+    entries, traffic, mcast = {}, [], {}
     if not path:
-        return entries, traffic
+        return entries, traffic, mcast
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#')[0].strip()
@@ -67,9 +73,21 @@ def parse_testcase(path):
             if line.startswith('run_traffic'):
                 traffic.append(line.split()[1] if len(line.split()) > 1 else '')
                 continue
+            if line.startswith('mcast_add'):
+                toks = line.split()
+                if len(toks) != 3:
+                    raise TestcaseError(
+                        f'{path}:{lineno}: need "mcast_add <group> <member-mask>"')
+                grp, mask = int(toks[1], 0), int(toks[2], 0)
+                if grp == 0:
+                    raise TestcaseError(
+                        f'{path}:{lineno}: multicast group 0 means "not multicast" '
+                        f'and cannot have members')
+                mcast[grp] = mask
+                continue
             if not line.startswith('table_add'):
                 raise TestcaseError(f'{path}:{lineno}: unknown directive {line.split()[0]!r} '
-                                    f'(expected table_add or run_traffic)')
+                                    f'(expected table_add, mcast_add or run_traffic)')
             body = line[len('table_add'):].strip()
             keypart, _, parampart = body.partition('=>')
             toks = keypart.split()
@@ -94,7 +112,7 @@ def parse_testcase(path):
             entries.setdefault(table, []).append(
                 dict(action=action, keys=keys, masks=masks, prefix_len=plen,
                      priority=prio, params=params, line=lineno))
-    return entries, traffic
+    return entries, traffic, mcast
 
 
 def model_entries(raw, cpmap):
@@ -124,7 +142,7 @@ def model_entries(raw, cpmap):
     return out
 
 
-def cp_writes(raw, cpmap):
+def cp_writes(raw, cpmap, mcast=None):
     """Testcase rows -> [(word_address, data)] for the control plane.
 
     Uses the cp_map, which is the artifact that already describes every table's
@@ -167,6 +185,20 @@ def cp_writes(raw, cpmap):
                 for wi, w in enumerate(pdef['words']):
                     writes.append((base + w, (pval >> (32 * wi)) & 0xFFFFFFFF))
             writes.append((base + words['commit'], 1))
+
+    # The shell's replication table is not a match table -- it is a group ->
+    # member-mask array with its own three words, listed under cpmap['mcast'].
+    # Programmed from the same `mcast_add` lines the model reads.
+    for mc in (cpmap.get('mcast') or []):
+        w = mc['words']
+        for grp, mask in sorted((mcast or {}).items()):
+            writes.append((w['wr_idx'], grp))
+            writes.append((w['wr_mask'], mask))
+            writes.append((w['commit'], 1))
+    if mcast and not cpmap.get('mcast'):
+        raise TestcaseError(
+            'the testcase has mcast_add lines but this program has no '
+            'replication table -- it never writes standard_metadata.mcast_group')
     return writes
 
 
@@ -235,6 +267,73 @@ def compare(expected, actual):
     return 'FAIL', 'differ'
 
 
+def _meta_ports(path):
+    """standard_metadata.egress_port for each output packet, in wire order,
+    from the testbench's metadata sideband record -- or None if this design
+    does not expose it."""
+    if not os.path.exists(path):
+        return None
+    out = []
+    with open(path) as f:
+        for line in f:
+            # The testbench writes these with %0h -- HEX, no 0x prefix. Parsed
+            # as decimal, port 0x17a read back as 17 and the oracle reported a
+            # queue mismatch that was entirely in this function.
+            m = re.search(r'out_std_meta_egress_port=([0-9a-fA-F]+)', line)
+            if not m:
+                return None
+            out.append(int(m.group(1), 16))
+    return out
+
+
+def compare_by_queue(exp_pairs, act_pairs):
+    """(verdict, detail) comparing per OUTPUT QUEUE instead of globally.
+
+    The traffic manager has one FIFO per queue and a round-robin scheduler
+    across them, so the order packets leave in is NOT the order they were
+    enqueued: a multicast packet's copies interleave with the next packet's.
+    `compare` already says this in words when it returns REORDERED -- "legal
+    across queues, a bug within one" -- and this makes it a check instead.
+    Within one queue the order IS guaranteed, so each queue's sequence must
+    match exactly; between queues nothing is.
+
+    Both sides are [(queue, bytes)]. The design's queue comes from the
+    testbench's own per-packet metadata record of
+    standard_metadata.egress_port, so this needs no guess about which copy is
+    which.
+    """
+    if not exp_pairs and not act_pairs:
+        return 'VACUOUS', ('no packets on either side: the model expected none and '
+                           'none came out, so this run proves nothing. Program table '
+                           'entries, or send traffic the program forwards.')
+    by_e, by_a = {}, {}
+    for q, b in exp_pairs:
+        by_e.setdefault(q, []).append(b)
+    for q, b in act_pairs:
+        by_a.setdefault(q, []).append(b)
+    if set(by_e) != set(by_a):
+        only_e = sorted(set(by_e) - set(by_a))
+        only_a = sorted(set(by_a) - set(by_e))
+        bits = []
+        if only_e:
+            bits.append('expected output on queue(s) ' +
+                        ', '.join(str(q) for q in only_e) + ' and got none')
+        if only_a:
+            bits.append('got output on queue(s) ' +
+                        ', '.join(str(q) for q in only_a) + ' and expected none')
+        return 'FAIL', '; '.join(bits)
+    for q in sorted(by_e):
+        v, d = compare(by_e[q], by_a[q])
+        if v == 'PASS':
+            continue
+        if v == 'REORDERED':
+            # Within ONE queue, reordering is not legal.
+            return 'FAIL', f'queue {q}: {d}'
+        return v, f'queue {q}: {d}'
+    return 'PASS', (f'{len(act_pairs)} packet(s) matched across '
+                    f'{len(by_a)} queue(s)')
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('app')
@@ -279,10 +378,10 @@ def main(argv=None):
         return 3
 
     # 3. stimulus and entries
-    raw, _ = parse_testcase(a.testcase)
+    raw, _, mcast = parse_testcase(a.testcase)
     try:
         ments = model_entries(raw, cpmap)
-        writes = cp_writes(raw, cpmap)
+        writes = cp_writes(raw, cpmap, mcast)
     except TestcaseError as e:
         print(f'{a.app}: testcase error -- {e}')
         return 2
@@ -306,12 +405,21 @@ def main(argv=None):
 
     # 4. the model's answer
     expected, records = [], []
+    expected_q = []            # [(egress_port, bytes)] -- see compare_by_queue
     n_short, order_warn = 0, []
+    model.mcast_members = dict(mcast)
+    if model.does_mcast and not mcast:
+        say(f'  NOTE: {a.app} writes standard_metadata.mcast_group but the '
+            f'testcase programs no group (`mcast_add <group> <mask>`), so every '
+            f'multicast packet falls back to a single unicast copy.')
     try:
         for pkt in packets:
             r = model.run(pkt, ments, ingress_port=a.in_port)
-            if r.out_packet is not None:
-                expected.append(r.out_packet)
+            # One entry per COPY, in wire order: a multicast packet produces
+            # several, and they have to be compared as several.
+            for port, out in r.out_packets:
+                expected.append(out)
+                expected_q.append((port, out))
             if r.truncated:
                 n_short += 1
             order_warn += model.order_dependent(pkt, ments, a.in_port)
@@ -368,6 +476,19 @@ def main(argv=None):
     pcapmod.write_pcap(os.path.join(work, 'expected.pcap'), expected)
     pcapmod.write_pcap(os.path.join(work, 'actual.pcap'), actual)
     verdict, detail = compare(expected, actual)
+    # A program that REPLICATES puts its copies on different queues, and the
+    # traffic manager's round-robin scheduler interleaves those with the next
+    # packet's -- so the global order is not the enqueue order and comparing
+    # globally can only ever report REORDERED. Compare per queue instead,
+    # which is the guarantee the hardware actually makes. The design's queue
+    # per output packet comes from the testbench's own metadata record.
+    if verdict in ('REORDERED', 'FAIL') and model.does_mcast:
+        ports = _meta_ports(os.path.join(work, 'meta.txt'))
+        if ports is not None and len(ports) == len(actual):
+            verdict, detail = compare_by_queue(expected_q, list(zip(ports, actual)))
+            if verdict == 'PASS':
+                detail += (' (compared per queue: across queues the traffic '
+                           'manager may reorder, within one it may not)')
     # This used to be the expected outcome for any pcap containing a frame that
     # runs the parser past its end: the model dropped it, the design had no
     # PacketTooShort check and forwarded it. The design implements the check

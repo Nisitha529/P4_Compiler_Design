@@ -30,6 +30,7 @@ Semantics modelled (P4 semantics, not the shell's internal arrangement):
              parsed lengthens the packet, and invalidating a parsed one
              shortens it
 """
+import math
 import os
 import sys
 
@@ -46,6 +47,8 @@ from ir import (Assignment, ExternCall, IfStatement, TableApply)   # noqa: E402
 from emit_top import _split_verify_args                            # noqa: E402
 from crc_model import crc_of_bitvector, supported_algos             # noqa: E402
 from expr import Evaluator, Unsupported                            # noqa: E402
+from emit_top import MCAST_GROUPS as _MCAST_GROUPS                 # noqa: E402
+from emit_top import TM_QUEUES as _TM_QUEUES                       # noqa: E402
 
 
 class Entry:
@@ -61,8 +64,16 @@ class Entry:
 
 
 class Result:
-    def __init__(self, out_packet, std_meta, meta, records, dropped, truncated=False):
+    def __init__(self, out_packet, std_meta, meta, records, dropped, truncated=False,
+                 out_packets=None):
         self.out_packet = out_packet      # bytes, or None when dropped
+        # Every copy this packet produced, as [(egress_port, bytes)]. One entry
+        # for a normal packet; N for a multicast one, in the order the shell
+        # puts them on the wire. out_packet above is the first, kept because
+        # most callers want exactly that.
+        self.out_packets = (out_packets if out_packets is not None
+                            else ([(std_meta.get('egress_port', 0), out_packet)]
+                                  if out_packet is not None else []))
         self.std_meta = std_meta
         self.meta = meta
         self.records = records            # [(feature_export_name, value)]
@@ -162,15 +173,17 @@ class Model:
             for r in (getattr(c, 'registers', []) or []) if c else []:
                 self.registers[r.name] = [0] * (r.size or 1)
         # Multicast: the shell replicates a packet to every member of its
-        # group, so one input can produce several outputs. The model is a
-        # per-packet function and does not represent that. Refused rather
-        # than modelled-as-unicast, because unicast-when-it-should-replicate
-        # would report PASS whenever the group happens to be empty.
-        if self._writes_std(ir, 'mcast_group'):
-            raise Unsupported(
-                'the program writes standard_metadata.mcast_group: multicast '
-                'replication produces several packets per input, which this '
-                'per-packet model does not represent')
+        # group, so one input can produce several outputs. Modelled since
+        # 2026-11-01 -- see _mcast_copies for the replication rule and the two
+        # places it deviates from v1model. `self.qcount` and `self.mcast_groups`
+        # come from the COMPILER'S OWN constants rather than being restated
+        # here, so the two cannot drift.
+        self.does_mcast = self._writes_std(ir, 'mcast_group')
+        self.qcount = _TM_QUEUES
+        self.mcast_groups = _MCAST_GROUPS
+        # {group: member bitmask over queues}, from the testcase file's
+        # `mcast_add` lines; empty means no group was programmed.
+        self.mcast_members = {}
         self.fe_names = set()
         for c in (self.ctrl, self.ectrl):
             for fe in (getattr(c, 'feature_exports', []) or []) if c else []:
@@ -261,23 +274,105 @@ class Model:
         if 'parsed_bytes' in st.std:
             st.std['parsed_bytes'] = st.parsed_bytes
         if not ok:
-            # A failed verify() drops the packet in the generated shell; a
-            # truncated extract SHOULD, per the spec, but does not here.
+            # _parse returns False only for a drop the DESIGN also makes: a
+            # truncated extract (PacketTooShort) or a varbit length the field
+            # cannot hold (HeaderTooShort). A failed verify() is NOT one of
+            # these -- it sets parser_error and parsing continues to ingress,
+            # which is what both v1model and xsa.p4 do.
             return Result(None, st.std, st.meta, st.records, True,
                           truncated=self.hit_truncation)
 
         self._run_control(self.ctrl, st, entries)
-        dropped = bool(st.std.get('drop', 0))
-        if self.ectrl is not None:
-            # Egress runs for a dropped packet too (the shell drives it on
-            # dequeue with the sticky drop), which is what lets a program
-            # export a feature for a packet it discarded.
-            self._run_control(self.ectrl, st, entries)
-            dropped = dropped or bool(st.std.get('drop', 0))
-        if not dropped:
+        ig_dropped = bool(st.std.get('drop', 0))
+
+        outs = []
+        for port in self._mcast_copies(st):
+            # Each copy is dequeued with INGRESS's drop decision, not the
+            # previous copy's: the shell keeps slot_ig_drop separately for
+            # exactly this reason ("a copy that egress drops would otherwise
+            # make every later copy inherit that drop").
+            if 'drop' in st.std:
+                st.std['drop'] = 1 if ig_dropped else 0
+            if port is not None:
+                st.std['egress_port'] = port
+            dropped = ig_dropped
+            if self.ectrl is not None:
+                # Egress runs for a dropped packet too (the shell drives it on
+                # dequeue with the sticky drop), which is what lets a program
+                # export a feature for a packet it discarded.
+                #
+                # It runs on the SAME state for every copy, because the copies
+                # are serialised through one slot and egress writes its output
+                # PHV back into that slot -- so copy N+1 genuinely does start
+                # from copy N's egress result, not from the ingress result.
+                # See the egress-capture block in emit_top.py.
+                self._run_control(self.ectrl, st, entries)
+                dropped = dropped or bool(st.std.get('drop', 0))
+            if dropped:
+                continue
+            # The deparser's checksum is computed combinationally at TX from
+            # the PHV and is NOT written back into the slot, so it must not
+            # chain into the next copy -- snapshot and restore.
+            saved = {i: dict(f) for i, f in st.hdr.items()}
             self._checksums(st)
-        out = None if dropped else self._deparse(st, packet)
-        return Result(out, st.std, st.meta, st.records, dropped)
+            outs.append((st.std.get('egress_port', 0), self._deparse(st, packet)))
+            st.hdr = saved
+
+        first = outs[0][1] if outs else None
+        return Result(first, st.std, st.meta, st.records, not outs,
+                      out_packets=outs)
+
+    def _mcast_copies(self, st):
+        """The egress_port of each copy this packet produces, in wire order.
+
+        `[None]` means "one copy, leave egress_port alone" -- the ordinary
+        unicast path. Otherwise one entry per copy.
+
+        The rule, read off the shell (emit_top.py's replication block) rather
+        than off v1model, because the shell is what the oracle has to agree
+        with:
+
+        * `mcast_group == 0` is not multicast at all.
+        * otherwise the group's member set is a bitmask over the traffic
+          manager's QUEUES (`mcast_members[grp]`, programmed over AXI4-Lite),
+          and there is one copy per member, enqueued in ASCENDING queue index
+          order.
+        * a copy's `standard_metadata.egress_port` as egress sees it is the
+          QUEUE INDEX it was taken from, not the port ingress chose -- which
+          is the whole point of putting egress after the traffic manager, so
+          per-port rewrites and per-port drops apply per copy.
+
+        **Two deviations from v1model, both the shell's and both deliberate
+        enough to state:**
+
+        1. A non-zero `mcast_group` whose member set is EMPTY is not dropped.
+           The shell falls back to a single unicast copy on `egress_port`
+           (`slot_is_mcast <= enq_is_mcast && ig_has_member`, else branch).
+           v1model would produce no copies at all.
+        2. The member set selects queues, and a queue is
+           `egress_port[QSEL_W-1:0]` -- so with TM_QUEUES = 4 the shell has 4
+           distinct destinations, not 512. A program using port numbers above
+           that aliases them.
+        """
+        if not self.does_mcast:
+            return [None]
+        grp = st.std.get('mcast_group', 0)
+        if not grp:
+            return [None]
+        # The shell indexes its replication table with the LOW BITS of
+        # mcast_group only -- `mcast_members[enq_grp[gw-1:0]*QCOUNT +: QCOUNT]`
+        # with gw = ceil(log2(MCAST_GROUPS)) -- so a group number above the
+        # limit silently becomes a DIFFERENT group. The randomised stimulus
+        # found it on its first replicating run: group 0x1dc3 behaved as group
+        # 3. The model has to alias identically or it cannot check anything
+        # else about the program; the compiler now warns about the aliasing
+        # itself (see _mcast_group_width in emit_top.py).
+        gw = max(1, math.ceil(math.log2(max(self.mcast_groups, 2))))
+        mask = self.mcast_members.get(grp & ((1 << gw) - 1), 0)
+        members = [q for q in range(self.qcount) if mask >> q & 1]
+        if not members:
+            return [None]            # deviation 1, above
+        return members
 
     # ---------------- update_checksum() ----------------
     @staticmethod

@@ -2893,6 +2893,22 @@ def _write_module(f, ir, app_name, inst_map, layouts, valid_map,
         if mcast:
             gidx = max(0, (MCAST_GROUPS - 1).bit_length() - 1)
             gw   = ig_std_outs['mcast_group']
+            # The replication table has MCAST_GROUPS entries and is indexed by
+            # the LOW gidx+1 BITS of mcast_group, so a program whose
+            # mcast_group field is wider than that can name a group the shell
+            # cannot hold -- and the packet is replicated to a DIFFERENT
+            # group's members instead of being rejected or dropped. Silent,
+            # and found by the randomised stimulus rather than by reading:
+            # group 0x1dc3 behaved as group 3.
+            if gw > gidx + 1:
+                print(f"[WARN] standard_metadata.mcast_group is {gw} bits wide "
+                      f"but this shell holds MCAST_GROUPS={MCAST_GROUPS} groups, "
+                      f"indexed by its low {gidx + 1} bit(s).")
+                print(f"       A group number of {MCAST_GROUPS} or above is "
+                      f"SILENTLY ALIASED to group (n % {MCAST_GROUPS}) and the "
+                      f"packet is replicated to that group's members. Keep "
+                      f"group numbers below {MCAST_GROUPS}, or raise "
+                      f"MCAST_GROUPS in emit_top.py.")
             f.write('  // ── Enqueue stage (one cycle after ingress completion) ────────────────\n')
             f.write('  // The replication lookup is pipelined: ingress\'s result is latched\n')
             f.write('  // here and the member table is read on the NEXT cycle, so the table\n')

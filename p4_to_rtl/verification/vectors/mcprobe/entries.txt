@@ -1,0 +1,15 @@
+# mcprobe: one packet per replication case: a three-member group, a group one of whose copies is loop-pruned, an empty group, a plain unicast, and a miss
+# Regenerate with verification/vectors/make_vectors.py
+table_add l2 mcast 0x0001 => 1
+table_add l2 mcast 0x0002 => 2
+table_add l2 mcast 0x0003 => 3
+table_add l2 fwd 0x0004 => 2
+table_add port_smac set_smac 0 => 0xAA0000000000
+table_add port_smac set_smac 1 => 0xAA0000000001
+table_add port_smac set_smac 2 => 0xAA0000000002
+table_add port_smac set_smac 3 => 0xAA0000000003
+# member masks are over the traffic manager's QUEUES, not ports
+mcast_add 1 0b1110
+mcast_add 2 0b0111
+mcast_add 3 0b0000
+run_traffic traffic
