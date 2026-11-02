@@ -675,7 +675,6 @@ module mcprobe_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
-        slot_too_short[sl] <= 1'b0;
         slot_byte_len[sl] <= '0;
       end
     end else begin
@@ -744,7 +743,18 @@ module mcprobe_top #(
   endfunction
 
   always_ff @(posedge clk) begin
-    if (!rst_n) iss_ptr <= '0;
+    // slot_too_short[] is reset HERE, in the one block that writes
+    // it. It used to be cleared in the RX block's reset loop as
+    // well, which gave the array TWO procedural drivers: iverilog
+    // and Verilator both accept that, and Quartus rejects it
+    // outright -- "Can't resolve multiple constant drivers for net
+    // slot_too_short[0]" -- so from the day the PacketTooShort check
+    // was added until 2026-11-01 no app would synthesize, and the
+    // whole simulation suite stayed green. See scripts/check_synth.sh.
+    if (!rst_n) begin
+      iss_ptr <= '0;
+      for (int sl = 0; sl < NSLOT; sl++) slot_too_short[sl] <= 1'b0;
+    end
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
       slot_too_short[iss_slot] <= iss_too_short;
@@ -791,6 +801,19 @@ module mcprobe_top #(
     if (ig_members[1]) begin ig_first_q = 2'd1; ig_has_member = 1'b1; end
     if (ig_members[0]) begin ig_first_q = 2'd0; ig_has_member = 1'b1; end
   end
+  // The two things that can enqueue into a traffic-manager queue, named
+  // once so the enqueue block can arbitrate between them -- see the
+  // note there for what happened when it could not.
+  wire              ig_enq_v = enq_v;                 // ingress finished
+  wire [QSEL_W-1:0] ig_enq_q = (enq_is_mcast && ig_has_member)
+                             ? ig_first_q : enq_port_q;
+  wire              cp_enq_v = tx_finish && slot_has_next[tx_slot];
+  wire [QSEL_W-1:0] cp_enq_q = slot_next_q[tx_slot];
+  // On a clash the copy takes the next index. Computed as its own wire
+  // because a bit-select of an expression is not legal SystemVerilog.
+  wire [SLOT_AW-1:0] cp_enq_idx = tmq_wr[cp_enq_q][SLOT_AW-1:0]
+                               + ((ig_enq_v && (ig_enq_q == cp_enq_q))
+                                  ? 1'b1 : 1'b0);
   // ── Enqueue (ingress done) and capture (egress done) ─────────────────────
   // Ingress writes its WHOLE result into the slot -- that store is the
   // queueing point's packet state, which u_egress reads back at dequeue.
@@ -835,28 +858,37 @@ module mcprobe_top #(
       // enqueue: ingress finished, pick the queue from egress_port
       // Enqueue (from the registered stage). A multicast packet goes to
       // its FIRST member queue; the rest are recorded as pending copies.
-      if (enq_v) begin
+      //
+      // TWO WRITERS, ONE QUEUE. Ingress completing a packet and a
+      // multicast copy leaving the wire are independent events that can
+      // land in the SAME CYCLE and pick the SAME queue. Written as two
+      // separate `if`s each doing `tmq_wr[q] <= tmq_wr[q] + 1` they both
+      // wrote tmq_mem at the same index and both advanced the pointer
+      // once, so one slot reference was silently dropped and that packet
+      // never left -- the randomised stimulus found it as an output
+      // missing entirely from one queue. They now share one pointer
+      // update, and on a clash the copy takes the NEXT index.
+      if (ig_enq_v) begin
         slot_is_mcast[enq_slot] <= enq_is_mcast && ig_has_member;
-        if (enq_is_mcast && ig_has_member) begin
-          slot_pending[enq_slot] <= ig_members & ~mcast_bit(ig_first_q);
-          slot_copy_q[enq_slot]  <= ig_first_q;
-          tmq_mem[ig_first_q*NSLOT + tmq_wr[ig_first_q][SLOT_AW-1:0]] <= enq_slot;
-          tmq_wr[ig_first_q] <= tmq_wr[ig_first_q] + 1'b1;
-        end else begin
-          slot_pending[enq_slot] <= '0;
-          slot_copy_q[enq_slot]  <= enq_port_q;
-          tmq_mem[enq_port_q*NSLOT + tmq_wr[enq_port_q][SLOT_AW-1:0]] <= enq_slot;
-          tmq_wr[enq_port_q] <= tmq_wr[enq_port_q] + 1'b1;
-        end
+        slot_pending[enq_slot]  <= (enq_is_mcast && ig_has_member)
+                                 ? (ig_members & ~mcast_bit(ig_first_q))
+                                 : '0;
+        slot_copy_q[enq_slot]   <= ig_enq_q;
+        tmq_mem[ig_enq_q*NSLOT + tmq_wr[ig_enq_q][SLOT_AW-1:0]] <= enq_slot;
       end
       // A copy has left the wire: enqueue the next member, if any. The
       // slot's payload buffer is rewound on this same cycle.
-      if (tx_finish && slot_has_next[tx_slot]) begin
-        tmq_mem[slot_next_q[tx_slot]*NSLOT + tmq_wr[slot_next_q[tx_slot]][SLOT_AW-1:0]] <= tx_slot;
-        tmq_wr[slot_next_q[tx_slot]] <= tmq_wr[slot_next_q[tx_slot]] + 1'b1;
-        slot_pending[tx_slot] <= slot_pending[tx_slot] & ~mcast_bit(slot_next_q[tx_slot]);
-        slot_copy_q[tx_slot]  <= slot_next_q[tx_slot];
+      if (cp_enq_v) begin
+        tmq_mem[cp_enq_q*NSLOT + cp_enq_idx] <= tx_slot;
+        slot_pending[tx_slot] <= slot_pending[tx_slot] & ~mcast_bit(cp_enq_q);
+        slot_copy_q[tx_slot]  <= cp_enq_q;
       end
+      // One advance per queue, counting BOTH writers. This is the only
+      // place tmq_wr moves, so the two cannot overwrite each other.
+      for (int q = 0; q < QCOUNT; q++)
+        tmq_wr[q] <= tmq_wr[q]
+                   + ((ig_enq_v && (ig_enq_q == q[QSEL_W-1:0])) ? 1'b1 : 1'b0)
+                   + ((cp_enq_v && (cp_enq_q == q[QSEL_W-1:0])) ? 1'b1 : 1'b0);
       // dequeue: hand the scheduled slot to u_egress and remember it
       if (deq_fire) begin
         tmq_rd[sched_q] <= tmq_rd[sched_q] + 1'b1;

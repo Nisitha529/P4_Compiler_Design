@@ -480,9 +480,11 @@ from `scripts/regress.sh`:
 | `check_coverage.sh` | line coverage of the generated RTL (Verilator), against a recorded baseline — the answer to "did this change make the suite test less than it used to" |
 | `check_exact_match_ways.sh` | the d-way set-associative table, which needs `--exact-match-ways 4` to exist at all |
 | `check_refusals.sh` | programs the compiler must REFUSE, and the message it must refuse them with — each one was once accepted and silently miscompiled |
+| `check_uram.sh` | the board-selected RAM-style pragma on `Register` storage: the large-memory primitive above `URAM_MIN_BITS`, the ordinary one below it, and NEITHER when the read is asynchronous (an async-read array is not a RAM) |
+| `check_synth.sh` | the only non-simulator check: `quartus_map` on one app per shell shape, against a size baseline. Skips itself when Quartus is absent — see §6g |
 | `make_build_flags.py --check` | every committed build reproduces from its recorded `build.flags` |
 
-### 6c. Two hazards the compiler now says out loud
+### 6c. Hazards the compiler now says out loud
 
 Both were documented in places nobody reads, and both were found the hard way
 by the randomised stimulus.
@@ -646,6 +648,124 @@ wrongly) or they are v1model and module-level, so no layout is computed for
 them at all. The fix is in the P4, not the compiler. Side effect: dropping the invented worst case shrank
 `load_balance_xsa`'s header buffer from 96 bytes to 64.
 
+### 6f. Multicast replication
+
+One packet in, N out. Ingress sets `standard_metadata.mcast_group`; the shell
+looks that group up in a replication table (a bitmask over the traffic
+manager's **queues**, written over AXI4-Lite) and sends one copy to each
+member. Copies are **serialised** — the next is enqueued only when the previous
+has left the wire — because the output PHV lives per slot, not per copy. Each
+copy's `egress_port` as egress sees it is the queue index it came from, which
+is why egress runs *after* the traffic manager: per-port rewrites and per-port
+drops then apply per copy.
+
+Modelled since 2026-11-01, which is what took `mcprobe` from "the oracle
+refuses it" to verified. **Two places it deviates from v1model**, both the
+shell's and both now written down rather than discovered:
+
+1. A non-zero `mcast_group` whose member set is **empty** is not dropped — the
+   shell falls back to one unicast copy on `egress_port`. v1model would produce
+   no copies at all. `verification/vectors/mcprobe/` pins this: mutating the
+   model to drop instead fails with "queue 0: 2 packet(s) expected, 3 came
+   out".
+2. The member set selects **queues**, and a queue is `egress_port[QSEL_W-1:0]`,
+   so there are `TM_QUEUES` distinct destinations and not 512.
+
+**And a third thing that was simply a bug.** The replication table has
+`MCAST_GROUPS` entries and is indexed by the **low bits** of `mcast_group`, so
+a program whose field is wider — `mcprobe`'s is 16 bits against 8 groups — can
+name a group the shell cannot hold, and the packet is replicated to a
+*different* group's members. The randomised stimulus found it the first time it
+could program groups at all: group `0x1dc3` behaved as group 3. The compiler now
+warns, naming the limit.
+
+**What the oracle can and cannot check here.** Which packets land on which
+queue is checked exactly, via the testbench's own per-packet record of
+`egress_port`. The order *within* a queue is checked only as a multiset, and
+that is not laziness: because copies are enqueued one at a time, a later
+packet's copy legitimately sits ahead of an earlier packet's second copy in the
+same queue — packet A multicast to {1,2} puts its first copy on q1, B arrives
+and takes q2, and only when A's q1 copy leaves does A's q2 copy get enqueued,
+behind B. Predicting that needs the serialisation and the round-robin scheduler
+simulated, which a per-packet model is not and should not become.
+
+### 6g. Synthesis, and why simulating was not enough
+
+Every other check in this suite runs the design in a **simulator**, and the two
+simulators here — Icarus and Verilator — are permissive in exactly the
+direction Quartus is strict. The clearest case, found on 2026-11-01 the first
+time Quartus was pointed at a generated app:
+
+```
+Error (10028): Can't resolve multiple constant drivers for net "slot_too_short[0]"
+Error (10029): Constant driver at lmprobe_top.sv(529)
+Error (12153): Can't elaborate top-level user hierarchy
+```
+
+`slot_too_short[]` — the per-slot flag the `PacketTooShort` check added on
+2026-10-28 — was **cleared in the RX block's reset loop and written in the
+issue block**. Two `always_ff` blocks driving one unpacked array. Both
+simulators accept it; Quartus refuses to elaborate. So for four days **no app
+would synthesize at all**, while 985 assertions, the oracle over 17 apps, the
+randomised campaign and the coverage ratchet were every one of them green. The
+array is now reset in the single block that writes it.
+
+That is the whole argument for the check. `scripts/check_synth.sh` runs
+**Analysis & Synthesis only** (`quartus_map`), which is the deliberate trade:
+map catches elaboration and inference errors — the class above — in seconds,
+where a fit and timing analysis take minutes. Fmax needs `quartus_fit` plus
+`quartus_sta` and belongs in a slower job.
+
+It covers one app per distinct **shell shape** rather than all eighteen,
+because what it is looking for is a property of the shell:
+
+| app | shape |
+|---|---|
+| `lmprobe` | egress control + `Register`, no traffic-manager queueing |
+| `mcprobe` | multicast replication — two writers into one TM queue |
+| `fiveTuple` | `varbit` parsing + length-changing deparser |
+| `load_balance_xsa` | the xsa architecture, checksum, three tables |
+
+`verification/synth_baseline.json` is a size ratchet with a 10% tolerance, the
+same reasoning as the coverage baseline. Only those four are in it, so a
+regression costs seconds rather than minutes.
+
+**All eighteen were swept once** (`SYNTH_APPS="..." scripts/check_synth.sh`),
+and all eighteen synthesize. On EP4CE115F29C7 — 114,480 logic elements:
+
+| app | logic elements | registers | % of device |
+|---|---|---|---|
+| `mdprobe` | 90,591 | 54,455 | **79%** |
+| `fiveTuple` | 46,325 | 20,403 | 40% |
+| `ecn_p4rtl` | 27,881 | 18,791 | 24% |
+| `load_balance_p4rtl` | 27,353 | 18,512 | 24% |
+| `load_balance_xsa` | 26,641 | 18,399 | 23% |
+| `echo` | 17,118 | 7,905 | 15% |
+| `regprobe` | 14,903 | 8,534 | 13% |
+| `qdprobe` | 14,740 | 9,604 | 13% |
+| `ioprobe` | 10,628 | 7,199 | 9% |
+| `lenprobe` | 10,382 | 5,288 | 9% |
+| `egprobe` | 9,093 | 6,400 | 8% |
+| `lmprobe` | 8,444 | 5,729 | 7% |
+| `mcprobe` | 8,419 | 5,799 | 7% |
+| `feprobe` | 8,104 | 5,694 | 7% |
+| `egfeprobe` | 8,103 | 5,472 | 7% |
+| `rawprobe` | 7,184 | 5,152 | 6% |
+| `smprobe` | 7,028 | 5,076 | 6% |
+| `ueprobe` | 6,612 | 4,665 | 6% |
+
+Two of those are worth knowing before step 3 of the board bring-up. `mdprobe`
+at **79% of the device** is the headline: a `Meter` is a 1024-entry debit array
+plus a 1024-entry timestamp array, and those timestamps are 32 bits each. A
+plain `Register` of the same depth (`rawprobe`, `regprobe`) costs a fraction of
+it, so the cost is the meter's second array rather than the policing logic.
+`fiveTuple` at 40% is the varbit program, where `HDR_MAX_BYTES` is 160 and
+every one of those bytes is a register the field extractor reads
+combinationally.
+
+These are **Analysis & Synthesis estimates, not fits** — a fit can place and
+pack differently. They are a size signal, not a utilisation report.
+
 ### 7a. The pcap verification framework
 
 Everything else in this suite states expectations **a human worked out by
@@ -683,23 +803,27 @@ approximates**, because an oracle that guesses and reports `PASS` is worse than
 no oracle. Anything it cannot represent faithfully stops the run and names the
 construct.
 
-**15 of the 18 p4rtl/xsa apps agree with the model over their own pcap.** The
-other three are refused, for reasons that are properties of the programs rather
+**17 of the 18 p4rtl/xsa apps agree with the model over their own pcap.** The
+one still refused, for reasons that are properties of the programs rather
 than gaps to be papered over:
 
 | app | refused because |
 |---|---|
 | `ueprobe` | `UserExtern`'s RTL is user-supplied; its function is unknowable to a model |
-| `mdprobe` | a `Meter`'s debit bucket is implementation-defined, not a spec |
-| `mcprobe` | multicast turns one packet into several; the model is a per-packet function |
 
-`fiveTuple` and `echo` used to be refused for `varbit`; the model now parses a
-runtime-length `extract` by evaluating its length expression and emits the
-field back at the length it was parsed with, so both are verified — and
-`fiveTuple`'s pcap drives the same 5-tuple with 0, 4 and 8 bytes of IPv4
-options plus TCP options, which is what tests the offsets. (The count was
-previously given as "13 of 17", which undercounted: `echo` is an xsa app and
-was not in the total at all.)
+The other four were refused and no longer are, each for a different reason:
+
+* `fiveTuple` and `echo` for `varbit` — the model now evaluates a
+  runtime-length `extract` and emits the field back at the length it was
+  parsed with (§6e).
+* `mcprobe` for multicast — now modelled, including the two deviations from
+  v1model (§6f).
+* `mdprobe` because a `Meter`'s bucket looked implementation-defined — it is
+  not; it is the arithmetic in §8b, and the model implements it for the
+  zero-decay regime and refuses the rest by name.
+
+(The count was once given as "13 of 17", which undercounted: `echo` is an xsa
+app and was not in the total at all.)
 
 What the framework **cannot** catch, stated because overstating it would be the
 dangerous part: it consumes the same IR the emitters consume, so a
@@ -750,6 +874,9 @@ actions follow with no per-program knowledge.
 | A frame with `tcp.dataOffset = 0` being forwarded with garbage option offsets | **a real compiler gap**, fixed 2026-10-30: `HeaderTooShort` was not checked. See §6e |
 | A frame failing `verify()` being forwarded | **the reference model was wrong**, the second time this has happened. A failed `verify` sends the parser to `reject`, and what follows is *architecture*-defined: both v1model and `xsa.p4` hand the packet to ingress with `standard_metadata.parser_error` set and let the program decide. `smprobe.p4` is this project's own statement of that contract — `if (smeta.parser_error != error.NoError) { smeta.drop = 1; }`. The model dropped instead, which agreed with the design only for programs that check the field |
 | A frame too short for its FIRST extract being forwarded by three apps | **a real shell bug, introduced by the PacketTooShort fix itself.** The drop sites read the reject flag out of a register in the same cycle it was written, which only works when the match-action pipeline has at least one stage. See §6d |
+| No app synthesizing at all, for four days | **the worst kind: a real bug that every simulator accepted.** `slot_too_short[]` had two `always_ff` drivers, which Icarus and Verilator allow and Quartus rejects at elaboration. Found by the first `quartus_map` run on a generated app; see §6g, which is also why that run is now part of the suite |
+| A packet silently vanishing under multicast | **a real RTL bug in the traffic manager.** Ingress completing a packet and a multicast copy leaving the wire are independent events; both enqueued into a traffic-manager queue from their own `if`, each doing `tmq_wr[q] <= tmq_wr[q] + 1`, so when they landed in the same cycle on the same queue one slot reference was overwritten and that packet never left. Found by the randomised stimulus (18 enqueues attempted, 17 dequeued); the two writers now share one pointer update and the copy takes the next index on a clash. See §6f |
+| A multicast group number above the shell's limit aliasing to another group | **a real gap**, now warned about at compile time. `mcprobe`'s `mcast_group` is 16 bits against `MCAST_GROUPS = 8`, and group `0x1dc3` behaved as group 3. See §6f |
 | `fiveTuple`'s table matching nothing at all | **the framework's own bug.** Every generated table runs a power-on clear sweep over all `DEPTH` addresses and silently drops a CP write that arrives during it. The vector testbench waited 8 cycles; `fiveTuple`'s table is 8192 deep, so every entry was thrown away. It now waits out the deepest table (`_cp_ready_cycles`). Latent for any table deeper than the lead-in — `load_balance`'s 64-deep `ecmp_group` only survived because writing one entry takes ~50 cycles. The table still offers the control plane no way to ask whether it is ready, which is a real gap |
 
 **And one result that corrected an assumption:** widening the traffic barely
@@ -872,6 +999,24 @@ The shift keeps a multiplier off the packet path. Cost is one unit per **packet*
 `cp_rate_shift` and `cp_burst` are per **instance**, not per index — one set of
 knobs for the whole array — which is a real restriction, stated in `p4rtl.p4`.
 The read-modify-write hazard is the same as `Register`'s, for the same reason.
+
+Since 2026-11-01 the reference model implements that arithmetic too, so
+`mdprobe` is verified by the oracle instead of being the app it could not
+check. One thing it cannot do, and the reason this looked implementation-defined
+for so long: `now` counts **clock cycles**, so the decay between two packets
+depends on how many cycles the testbench left between them, which a per-packet
+model does not know. The model therefore covers the regime where the decay is
+provably zero — `rate_shift >= 31`, so no achievable elapsed count shifts to
+anything but 0 — and **refuses with that reason** otherwise rather than
+guessing. In that regime the meter is exactly "the first `burst` executes per
+index are GREEN, the rest RED", and `verification/vectors/mdprobe/` drives two
+indices to show the state is per-index.
+
+Measured rather than assumed, because it bounds what that test proves:
+mutating the model's burst comparison from `>=` to `>` is caught (6 expected, 5
+out), while mutating it to **charge a RED packet** is not — with no decay an
+over-charged bucket is still at or above `burst`, so the colour never differs.
+Telling those apart needs a non-zero decay, i.e. cycle-accurate timing.
 
 **Digest** pushes into a 16-deep FIFO the control plane drains over AXI4-Lite
 (`status` = overflow count + occupancy, then the data words, then a one-cycle
@@ -1163,9 +1308,7 @@ ten minutes on this tree.
 
 ## 11. Where to look next
 
-Ranked by value, with the reasoning. (The previous list is gone: its first,
-second and fifth items — length-changing deparser, `Meter`/`Digest`, a
-committed regression runner — are all done.)
+Ranked by value, with the reasoning.
 
 1. **Control-plane reads in the vector testbench.** The single biggest
    measurable gap: **51% of the uncovered lines are the CP read, table-query
@@ -1175,28 +1318,33 @@ committed regression runner — are all done.)
    decoder is already described by the cp_map.
 2. **A readiness bit on each table.** A CP write that lands during a table's
    power-on clear sweep is silently dropped and the table reports no hit, with
-   nothing to say it happened — found the hard way this session (§7a). The only
-   thing a writer can do today is wait out the deepest table. One status word
-   would make it answerable.
-3. **Support `switch (t.apply().action_run)`** rather than refusing it (§10).
+   nothing to say it happened (§7a). The only thing a writer can do today is
+   wait out the deepest table. One status word would make it answerable.
+3. **Fmax, as opposed to size.** `check_synth.sh` (§6g) now fails on a
+   synthesis error or a size jump, but it stops at Analysis & Synthesis.
+   Nothing fails if Fmax drops below the DE2-115's 50 MHz, which needs
+   `quartus_fit` + `quartus_sta` and so belongs in a slower job than
+   `regress.sh`.
+4. **Run the four DE2-115 bring-up testbenches in `regress.sh`.** They pass —
+   18/18, 16/16, 9/9, 10/10, 53 assertions — but nothing checks that they still
+   do, and their shared modules (`seg7`, `mdio_master`,
+   `avmm_axil_lite_bridge`) have to be found by hand to compile them.
+5. **Support `switch (t.apply().action_run)`** rather than refusing it (§10).
    p4test keeps the switch and lifts each arm into a hidden table, and
    `emit_processing` already dispatches per action id.
-4. **A resource and timing regression.** Quartus numbers live in prose in these
-   docs; nothing fails if logic jumps 30% or Fmax drops below the DE2-115's
-   50 MHz. The board bring-up flow under `hw/de2-115/` is a working harness to
-   borrow.
-5. **Specify the `Meter` bucket, and model multicast.** Both are why `mdprobe`
-   and `mcprobe` are the apps the oracle still refuses. The Meter needs a
-   written-down semantics first; multicast's replication rule is already known,
-   so it is a model gap rather than a spec one.
-6. **Emit the URAM pragma.** `boards/vcu118.json` carries `uram_style_pragma`
-   and says in its own notes that no emitter reads it. On VU9P that is the
-   difference between a large table fitting and not.
-7. **Pipeline the `InternetChecksum` adder tree.** It is the critical path; this
+6. **Pipeline the `InternetChecksum` adder tree.** It is the critical path; this
    is what would take Fmax past ~70 MHz.
-8. **Finish DE2-115 bring-up (step 3).** Steps 1 and 2 are compiled and
+7. **Finish DE2-115 bring-up (step 3).** Steps 1 and 2 are compiled and
    verified; step 3 is a P4RTL app on the board.
-9. **Collapse `valid_out` / `out_valid`.** Pure cleanup; touches ~10 testbenches.
+8. **Collapse `valid_out` / `out_valid`.** Pure cleanup; touches ~10 testbenches.
+
+Done since this list was last written: the URAM pragma is emitted and checked
+(`scripts/check_uram.sh`), the `Meter` is modelled and `mdprobe` verified
+(§8b), multicast is modelled and `mcprobe` verified (§6f),
+`boards/de2-115.json` now records the fitted evidence for its device part
+instead of a guess, and the generated RTL is run through Quartus Analysis &
+Synthesis on every regression (§6g) — which immediately found that none of it
+had been synthesizable for four days.
 
 ### The history, if you need the reasoning
 

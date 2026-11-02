@@ -1,6 +1,6 @@
 {
   "app": "lenprobe",
-  "compiler_git": "88ec25f-dirty",
+  "compiler_git": "291032a-dirty",
   "axi_data_width": 256,
   "clock_hz": 250000000,
   "axil": {

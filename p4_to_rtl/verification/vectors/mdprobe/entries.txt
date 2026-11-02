@@ -1,0 +1,5 @@
+# mdprobe: eight packets over two meter indices with burst 3: three green then red on one index, a separate allowance on the other, and a ninth execute on the saturated index to show a red packet is not charged
+# Regenerate with verification/vectors/make_vectors.py
+meter_set rate_limit 31 3
+table_add fwd pass_through 0x001122334455 => 1
+run_traffic traffic

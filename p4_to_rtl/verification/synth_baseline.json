@@ -1,0 +1,18 @@
+{
+  "fiveTuple": {
+    "logic_elements": 46325,
+    "registers": 20403
+  },
+  "lmprobe": {
+    "logic_elements": 8444,
+    "registers": 5729
+  },
+  "load_balance_xsa": {
+    "logic_elements": 26641,
+    "registers": 18399
+  },
+  "mcprobe": {
+    "logic_elements": 8419,
+    "registers": 5799
+  }
+}

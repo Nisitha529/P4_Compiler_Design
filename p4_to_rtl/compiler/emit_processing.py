@@ -1581,6 +1581,43 @@ def _emit_stmts(f, stmts, amap, ind, cmap, ctrl_tables, stack_info=None, extern_
 # Main emitter
 # ============================================================
 
+# ── RAM-style pragma for Register storage ─────────────────────────────────────
+# Threshold in BITS above which a Register array is directed at the board's
+# large-memory primitive rather than its default block RAM. UltraScale+ URAM is
+# a 288Kb block, so anything smaller than one block cannot benefit and would
+# waste a whole URAM; the number is that block size, not a tuned constant.
+URAM_MIN_BITS = 288 * 1024
+
+
+def _ram_pragma_for(f, board, bits, name, register_ram):
+    """Write the RAM-style attribute for one Register array, if the board has
+    one and the array is a RAM at all.
+
+    With the default asynchronous read a Register array is NOT a RAM -- it is
+    read combinationally at an arbitrary address in the same cycle, which no
+    block RAM can do, and a style pragma on it is at best ignored and at worst
+    forces the tool into the fallback mux network (the same trap pkt_buf_hdr
+    documents in emit_top.py). So the pragma is only emitted under
+    --register-ram, where the read is genuinely synchronous.
+
+    A board may name a second, larger primitive via uram_style_pragma -- on
+    VU9P the difference between a large table fitting and not. It is used for
+    arrays of at least URAM_MIN_BITS; below that a URAM would be mostly empty.
+    """
+    if board is None or not register_ram:
+        return
+    uram = board.get('uram_style_pragma')
+    ram = board.get('ram_style_pragma')
+    if uram and bits >= URAM_MIN_BITS:
+        f.write(f'  // {name}: {bits} bits >= {URAM_MIN_BITS}, so the board\'s '
+                f'large-memory primitive\n')
+        f.write(f'  {uram}\n')
+    elif ram:
+        f.write(f'  {ram}\n')
+    else:
+        f.write(f"  // {name}: board '{board['name']}' defines no RAM-style pragma\n")
+
+
 def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1, enable_query=False,
                      checksum_updates=None, register_ram=False, board=None, drop_in=False):
     # drop_in: True only for the EGRESS module on the p4test/P4RtlPipeline
@@ -2565,6 +2602,8 @@ def emit_processing(ir, output_path, stage='ingress', budget_levels=None, ways=1
                 f.write(f'  // {reg.name}: declared index type is bit<{iw}> but the array has '
                         f'{reg.size} entries -- indices wrap mod {reg.size}\n')
             f.write(f'  // {reg.name}: register<bit<{reg.data_width}>>({reg.size})\n')
+            _ram_pragma_for(f, board, reg.data_width * reg.size, reg.name,
+                            register_ram)
             f.write(f'  logic [{reg.data_width-1}:0] {reg.name}_mem [0:{reg.size-1}];\n')
             f.write(f'  logic        {reg.name}_wr_en;\n')
             f.write(f'  logic [{addr_w-1}:0] {reg.name}_wr_addr;\n')

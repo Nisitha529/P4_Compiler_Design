@@ -52,9 +52,9 @@ def build_and_run(app, work, pcap_path, testcase, axi_w=256, gen_flags=''):
     vec_in = os.path.join(work, 'in.vec')
     pcapmod.write_vector(vec_in, packets)
     tbl = os.path.join(work, 'entries.cp')
-    raw, _, mcast = parse_testcase(testcase) if testcase else ({}, [], {})
+    raw, _, mcast, meters = parse_testcase(testcase) if testcase else ({}, [], {}, {})
     with open(tbl, 'w') as f:
-        for addr, data in cp_writes(raw, cpmap):
+        for addr, data in cp_writes(raw, cpmap, mcast, meters):
             f.write(f'{addr} {data:08x}\n')
 
     files = [os.path.join(gen, f'{app}_pkg.sv')] + sorted(

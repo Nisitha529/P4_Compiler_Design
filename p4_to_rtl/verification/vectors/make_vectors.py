@@ -249,6 +249,34 @@ SPEC['load_balance_xsa'] = (SPEC['load_balance_p4rtl'][0],
                             SPEC['load_balance_p4rtl'][1],
                             SPEC['load_balance_p4rtl'][2] + ' (XSA architecture)')
 
+SPEC['mdprobe'] = (
+    # The meter is indexed by the low 10 bits of etherType and burst is 3, so
+    # index 1 is GREEN for three packets and RED after that, while index 2 has
+    # its own allowance -- which is what makes the state per-index rather than
+    # per-instance.
+    #
+    # rate_shift is 31, which pins the decay at zero for any achievable run.
+    # That is the regime the reference model covers and the reason this app
+    # could not be verified at all before: with a small shift the allowance
+    # returns at a rate measured in CLOCK CYCLES, and how many cycles separate
+    # two packets is not something a per-packet model can know.
+    #
+    # What that regime does NOT pin, measured rather than assumed: whether a
+    # RED packet is charged. Mutating the model to charge one still passes,
+    # because with no decay an over-charged bucket is still at or above burst
+    # and the colour never differs. Telling those two apart needs the decay to
+    # be non-zero, i.e. cycle-accurate timing. The off-by-one on the burst
+    # comparison IS pinned -- that mutation fails with 6 expected, 5 out.
+    [pad_to(eth(0x0001, b''), 64) for _ in range(5)]
+    + [pad_to(eth(0x0002, b''), 64) for _ in range(2)]
+    + [pad_to(eth(0x0001, b''), 64)],
+    """meter_set rate_limit 31 3
+table_add fwd pass_through 0x001122334455 => 1
+""",
+    'eight packets over two meter indices with burst 3: three green then red '
+    'on one index, a separate allowance on the other, and a ninth execute on '
+    'the saturated index to show a red packet is not charged')
+
 SPEC['mcprobe'] = (
     # Every packet here arrives on ingress_port 1 (IN_PORT below), which is what
     # makes the loop-prune and the empty-group fallback both visible.

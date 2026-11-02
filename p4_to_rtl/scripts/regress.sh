@@ -135,6 +135,35 @@ if [ -x "$R/scripts/check_refusals.sh" ]; then
   fi
 fi
 
+# Synthesis (Analysis & Synthesis only -- seconds, not the minutes a fit takes).
+# Skips itself when Quartus is not installed. This is the ONLY check in the
+# suite that is not a simulator, and it exists because the two simulators here
+# are permissive exactly where Quartus is strict -- see the header of the
+# script.
+if [ -x "$R/scripts/check_synth.sh" ]; then
+  if ! "$R/scripts/check_synth.sh" > "$O/synth.log" 2>&1; then
+    echo "-----"; echo "SYNTHESIS:"; sed 's/^/  /' "$O/synth.log"
+    bad="$bad synth"
+  else
+    echo "-----"
+    if grep -q 'skipping synthesis check' "$O/synth.log"; then
+      sed 's/^/  /' "$O/synth.log"
+    else
+      echo "synth: $(grep -c '^ok ' "$O/synth.log") app(s) synthesize at or near baseline size"
+    fi
+  fi
+fi
+
+if [ -x "$R/scripts/check_uram.sh" ]; then
+  if ! "$R/scripts/check_uram.sh" > "$O/uram.log" 2>&1; then
+    echo "-----"; echo "RAM-STYLE PRAGMA:"; sed 's/^/  /' "$O/uram.log"
+    bad="$bad uram"
+  else
+    echo "-----"
+    echo "uram: $(grep -c '^ok ' "$O/uram.log") RAM-style pragma case(s) correct"
+  fi
+fi
+
 # Every committed build must be reproducible from its recorded flags. The flags
 # used to exist only as artifacts you had to infer, and three regenerations
 # silently lost one.

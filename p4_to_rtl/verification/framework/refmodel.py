@@ -94,9 +94,18 @@ class _Env:
         self.st = st
         self.scope = scope               # action params + local vars
 
+    # MeterColor_t is the only enum a program can read in an expression (an
+    # error.NAME is substituted numerically at ingestion). emit_processing.py
+    # maps GREEN -> 1'b0 and RED -> 1'b1 in two places; the same mapping has to
+    # be here or `if (c == MeterColor_t.RED)` -- which is the whole shape of a
+    # policer -- cannot be evaluated.
+    _ENUMS = {'MeterColor_t.GREEN': (0, 1), 'MeterColor_t.RED': (1, 1)}
+
     def lookup(self, path):
         if path in self.scope:
             return self.scope[path]
+        if path in self._ENUMS:
+            return self._ENUMS[path]
         if path.startswith('hdr.'):
             parts = path.split('.')
             if len(parts) != 3:
@@ -184,10 +193,28 @@ class Model:
         # {group: member bitmask over queues}, from the testcase file's
         # `mcast_add` lines; empty means no group was programmed.
         self.mcast_members = {}
+        # Meters. {name: {'rate_shift': int, 'burst': int}} from the testcase
+        # file's `meter_set` lines, and the per-index debit state that
+        # _meter_execute keeps across packets.
+        self.meters = {m.name: m for c in (self.ctrl, self.ectrl)
+                       for m in ((getattr(c, 'meters', []) or []) if c else [])}
+        self.meter_cfg = {}
+        self.meter_debt = {name: [0] * (getattr(m, 'size', 1) or 1)
+                           for name, m in self.meters.items()}
         self.fe_names = set()
         for c in (self.ctrl, self.ectrl):
             for fe in (getattr(c, 'feature_exports', []) or []) if c else []:
                 self.fe_names.add(fe.name)
+        # Digest<T>.pack() pushes a value into a FIFO the control plane drains
+        # over AXI4-Lite. It never touches the packet, so it is recorded the
+        # same way a FeatureExport push is and is invisible to the packet diff.
+        # NOTE those records are not yet COMPARED against the design: reading
+        # them back needs control-plane reads, which the vector testbench
+        # cannot issue (see docs/compiler_design.md section 11, item 1).
+        self.digest_names = set()
+        for c in (self.ctrl, self.ectrl):
+            for dg in (getattr(c, 'digests', []) or []) if c else []:
+                self.digest_names.add(dg.name)
         self.hashes = {}
         for c in (self.ctrl, self.ectrl):
             for h in (getattr(c, 'hashes', []) or []) if c else []:
@@ -254,6 +281,21 @@ class Model:
         return bits // 8
 
     # ---------------- the run ----------------
+    def reset_state(self):
+        """Clear everything that persists BETWEEN packets.
+
+        Registers and meter buckets are deliberately carried from one packet to
+        the next -- that is what makes them stateful. They must NOT carry from
+        one RUN to the next, though: the design is reset before each testbench
+        run, so a model reused across runs (the fuzzer reuses one for every
+        iteration, and again while shrinking) would be comparing a warm model
+        against a cold design. Callers invoke this once per packet set.
+        """
+        for name, vals in self.registers.items():
+            self.registers[name] = [0] * len(vals)
+        for name, vals in self.meter_debt.items():
+            self.meter_debt[name] = [0] * len(vals)
+
     def run(self, packet, entries, ingress_port=0, timestamp=0):
         self.hit_truncation = False
         self.order_unchecked = []
@@ -563,6 +605,70 @@ class Model:
         else:
             raise Unsupported(f'statement type {type(s).__name__} is not modelled')
 
+    # ---------------- Meter ----------------
+    # The specification, which did not exist before 2026-11-01 -- the extern's
+    # behaviour was whatever the RTL happened to do, and that is why mdprobe
+    # could not be verified. Read off emit_processing.py's output and written
+    # down here so the two can be compared rather than one defining the other.
+    #
+    # Per index: `debt` (how far into its burst allowance this index is) and
+    # `ts` (the cycle of its last execute). Per INSTANCE, from the control
+    # plane: `rate_shift` and `burst`.
+    #
+    #   elapsed  = now - ts[idx]                  (free-running cycle counter)
+    #   decay    = elapsed >> rate_shift          one unit returns per 2^shift cycles
+    #   debt_now = max(debt[idx] - decay, 0)      saturating
+    #   colour   = RED if debt_now >= burst else GREEN
+    #   debt[idx]= debt_now + (1 if GREEN else 0) a conforming packet costs one unit
+    #   ts[idx]  = now
+    #
+    # So it is a DEBIT bucket, not a token bucket: it counts upward from zero
+    # and the rate drains it. A RED packet is not charged, which means a
+    # saturated index recovers after `burst << rate_shift` idle cycles rather
+    # than being pushed further under by the traffic it is rejecting. That last
+    # clause is modelled but NOT currently testable: with the decay pinned at
+    # zero (below) an over-charged bucket is still at or above burst, so the
+    # colour is the same either way.
+    #
+    # `now` counts CLOCK CYCLES, and that is the one part a per-packet model
+    # cannot know: the decay between two packets depends on how many cycles
+    # the testbench left between them. The model therefore handles only the
+    # regime where the decay is provably zero for the whole run -- rate_shift
+    # large enough that no achievable elapsed count shifts to anything but 0 --
+    # and refuses otherwise, naming the reason. In that regime the meter is
+    # exactly "the first `burst` executes per index are GREEN, the rest RED",
+    # which is a real and checkable property of the extern.
+    METER_ZERO_DECAY_SHIFT = 31
+
+    def _meter_execute(self, name, s, st, scope):
+        cfg = self.meter_cfg.get(name)
+        if cfg is None:
+            raise Unsupported(
+                f'meter {name!r} is executed but the testcase sets no rate for '
+                f'it; add `meter_set {name} <rate_shift> <burst>`')
+        shift, burst = cfg['rate_shift'], cfg['burst']
+        if shift < self.METER_ZERO_DECAY_SHIFT:
+            raise Unsupported(
+                f'meter {name!r} has rate_shift={shift}: its allowance decays by '
+                f'(elapsed_CYCLES >> {shift}) between executes, and how many '
+                f'cycles separate two packets is not something a per-packet '
+                f'model can know. Set rate_shift >= '
+                f'{self.METER_ZERO_DECAY_SHIFT} to make the decay zero for the '
+                f'whole run, which is the regime this model covers')
+        if len(s.args) < 2:
+            raise Unsupported(f'{name}.execute needs (index, colour_out)')
+        env = _Env(self, st, scope)
+        idx, _ = Evaluator(env).eval(s.args[0])
+        size = len(self.meter_debt[name])
+        idx %= size                      # an out-of-range index wraps, as the RTL does
+        debt = self.meter_debt[name][idx]
+        red = debt >= burst
+        self.meter_debt[name][idx] = debt if red else debt + 1
+        # The out-parameter is a write (the rule that cost this compiler two
+        # silent table-never-matches). MeterColor_t: GREEN = 0, RED = 1, which
+        # is what the generated RTL's one-bit colour means.
+        self._assign(st, scope, s.args[1].strip(), "1'b1" if red else "1'b0")
+
     def _apply_table(self, name, ctrl, st, entries, scope=None):
         """Apply one table. Returns True if an entry matched (its `.hit`)."""
         t = self.tables.get(name)
@@ -793,9 +899,16 @@ class Model:
         if name == 'mark_to_drop' or meth == 'mark_to_drop':
             st.std['drop'] = 1
             return
+        if meth == 'pack' and base in self.digest_names:
+            v, w = Evaluator(_Env(self, st, scope)).eval(args[0])
+            st.records.append((base, v, w))
+            return
         if meth == 'push' and base in self.fe_names:
             v, w = Evaluator(_Env(self, st, scope)).eval(args[0])
             st.records.append((base, v, w))
+            return
+        if meth == 'execute' and base in self.meters:
+            self._meter_execute(base, s, st, scope)
             return
         if meth in self._STAT_EXTERNS:
             return                      # statistics only: invisible to a packet diff

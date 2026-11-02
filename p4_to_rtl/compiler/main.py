@@ -819,11 +819,28 @@ def main():
         except ValueError as e:
             parser.error(str(e))
         if board['vendor'] != 'xilinx':
-            print(
-                f"[WARN] --board {args.board}: {board['vendor']}/{board['toolchain']} "
-                f"output is UNVERIFIED on this machine (no {board['toolchain']} "
-                f"installed here) -- structural skeleton only, never synthesized."
-            )
+            # Whether the vendor's tool is actually here is something to LOOK
+            # UP, not assert. This used to say "no quartus installed here"
+            # unconditionally, which stopped being true once Quartus Prime
+            # 25.1std was installed and used to fit the DE2-115 bring-up
+            # designs -- a warning that is wrong teaches people to ignore
+            # warnings.
+            _tool = {'quartus': 'quartus_map', 'vivado': 'vivado'}.get(
+                board['toolchain'], board['toolchain'])
+            if shutil.which(_tool) is None:
+                print(
+                    f"[WARN] --board {args.board}: {board['vendor']}/"
+                    f"{board['toolchain']} output is UNVERIFIED -- "
+                    f"{_tool} is not on PATH here, so this is a structural "
+                    f"skeleton that has never been synthesized."
+                )
+            else:
+                print(
+                    f"[NOTE]  --board {args.board}: {board['toolchain']} is on "
+                    f"PATH ({shutil.which(_tool)}); the constraint skeleton is "
+                    f"still a SKELETON and this compiler does not run the "
+                    f"vendor flow for you."
+                )
         if not board['device_part_verified']:
             print(
                 f"[WARN] --board {args.board}: device_part is not independently "

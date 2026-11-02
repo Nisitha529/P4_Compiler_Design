@@ -180,6 +180,15 @@ class Harness:
         """(verdict, detail) for one packet set and entry set."""
         ments = model_entries(raw, self.cpmap)
         self.model.mcast_members = dict(mcast or {})
+        # A meter's decay depends on inter-packet CYCLE spacing, which the
+        # model cannot know; rate_shift 31 pins the decay at zero for any
+        # achievable run, which is the regime it does model. See
+        # Model._meter_execute.
+        self.model.meter_cfg = {mt['name']: {'rate_shift': 31, 'burst': 4}
+                                for mt in (self.cpmap.get('meters') or [])}
+        # The design is reset before every run; the model must be too, or a
+        # warm model is compared against a cold design.
+        self.model.reset_state()
         expected, expected_q = [], []
         for p in packets:
             r = self.model.run(p, ments)
@@ -193,7 +202,7 @@ class Harness:
         tbl = os.path.join(self.work, 'entries.cp')
         pcapmod.write_vector(vec_in, packets)
         with open(tbl, 'w') as f:
-            for addr, data in cp_writes(raw, self.cpmap, mcast):
+            for addr, data in cp_writes(raw, self.cpmap, mcast, self.model.meter_cfg):
                 f.write(f'{addr} {data:08x}\n')
         if os.path.exists(vec_out):
             os.remove(vec_out)

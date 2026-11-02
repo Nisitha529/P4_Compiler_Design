@@ -633,7 +633,6 @@ module egfeprobe_top #(
       for (int sl = 0; sl < NSLOT; sl++) begin
         slot_beat_cnt[sl] <= '0; slot_done[sl] <= 1'b0; slot_overflow[sl] <= 1'b0;
         slot_txdone[sl] <= 1'b0;
-        slot_too_short[sl] <= 1'b0;
         slot_byte_len[sl] <= '0;
       end
     end else begin
@@ -697,7 +696,18 @@ module egfeprobe_top #(
   endfunction
 
   always_ff @(posedge clk) begin
-    if (!rst_n) iss_ptr <= '0;
+    // slot_too_short[] is reset HERE, in the one block that writes
+    // it. It used to be cleared in the RX block's reset loop as
+    // well, which gave the array TWO procedural drivers: iverilog
+    // and Verilator both accept that, and Quartus rejects it
+    // outright -- "Can't resolve multiple constant drivers for net
+    // slot_too_short[0]" -- so from the day the PacketTooShort check
+    // was added until 2026-11-01 no app would synthesize, and the
+    // whole simulation suite stayed green. See scripts/check_synth.sh.
+    if (!rst_n) begin
+      iss_ptr <= '0;
+      for (int sl = 0; sl < NSLOT; sl++) slot_too_short[sl] <= 1'b0;
+    end
     else if (iss_fire) begin
       iss_ptr <= iss_ptr + 1'b1;
       slot_too_short[iss_slot] <= iss_too_short;
